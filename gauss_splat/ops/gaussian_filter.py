@@ -1,0 +1,49 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import gauss_splat._C
+
+# pylint: disable=too-many-arguments,huawei-too-many-arguments,too-many-return-values
+def gaussian_filter(means,
+            colors,
+            det,
+            opacities,
+            means2d,
+            depths,
+            radius,
+            conics,
+            covars2d,
+            compensations,
+            width,
+            height,
+            near_plane,
+            far_plane):
+    means_culling, colors_culling, means2d_culling, depths_culling, radius_culling,\
+        covars2d_culling, conics_culling, opacities_culling, proj_filter, cnt = gauss_splat._C.gaussian_filter(
+        means,
+        colors,
+        det,
+        opacities,
+        means2d,
+        depths,
+        radius,
+        conics,
+        covars2d,
+        compensations,
+        width,
+        height,
+        near_plane,
+        far_plane)
+    return means_culling, colors_culling, means2d_culling, depths_culling, radius_culling,\
+           covars2d_culling, conics_culling, opacities_culling, proj_filter, cnt

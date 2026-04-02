@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from torch_npu.testing.testcase import TestCase, run_tests
 from torch import Tensor
 
-from gauss_splat._C import fully_fused_projection_bwd
+from gauss_splat.gsplat_c import fully_fused_projection_bwd
 
 torch.npu.set_device('npu:0')
 torch.set_printoptions(sci_mode=False)

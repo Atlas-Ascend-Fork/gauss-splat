@@ -10,7 +10,7 @@ __all__ = [
 
 import os
 import torch
-import gauss_splat._C
+from gauss_splat.gsplat_c import _init_op_api_so_path
 
 from .ops.projection_three_dims_gaussian_fused import projection_three_dims_gaussian_fused
 from .ops.calc_render import calc_render
@@ -32,6 +32,6 @@ def _set_env():
     )
     os.environ["ASCEND_CUSTOM_OPP_PATH"] = ascend_custom_opp_path
     gauss_splat_op_api_so_path = os.path.join(gauss_splat_opp_path, "op_api", "lib", "libcust_opapi.so")
-    gauss_splat._C._init_op_api_so_path(gauss_splat_op_api_so_path)
+    _init_op_api_so_path(gauss_splat_op_api_so_path)
 
 _set_env()

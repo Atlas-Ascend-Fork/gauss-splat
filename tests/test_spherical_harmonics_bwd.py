@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from torch_npu.testing.testcase import TestCase, run_tests
 from torch import Tensor
  
-from gauss_splat._C import spherical_harmonics_bwd
+from gauss_splat.gsplat_c import spherical_harmonics_bwd
 torch.npu.set_device('npu:0')
 torch.set_printoptions(sci_mode=False)
 np.set_printoptions(threshold=np.inf)

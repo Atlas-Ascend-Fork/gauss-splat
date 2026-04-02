@@ -10,7 +10,10 @@
 import torch
 from torch.autograd import Function
 import torch.nn.functional as F
-import gauss_splat._C
+from gauss_splat.gsplat_c import (
+    spherical_harmonics_forward,
+    spherical_harmonics_bwd,
+)
 class SphericalHarmonicsForward(Function):
     @staticmethod
     def forward(ctx,
@@ -21,7 +24,7 @@ class SphericalHarmonicsForward(Function):
             raise ValueError("Spherical harmonics order should be 0 ~ 4, but got degrees which is not supported.")
         ctx.save_for_backward(dirs, coeffs)
         ctx.degree = degrees_to_use
-        output = gauss_splat._C.spherical_harmonics_forward(
+        output = spherical_harmonics_forward(
                 dirs,
                 coeffs,
                 degrees_to_use
@@ -33,7 +36,7 @@ class SphericalHarmonicsForward(Function):
         v_colors = args[0]
         dirs, coeffs = ctx.saved_tensors
         degree = ctx.degree
-        v_dirs, v_coeffs = gauss_splat._C.spherical_harmonics_bwd(
+        v_dirs, v_coeffs = spherical_harmonics_bwd(
                 dirs,
                 coeffs,
                 v_colors,

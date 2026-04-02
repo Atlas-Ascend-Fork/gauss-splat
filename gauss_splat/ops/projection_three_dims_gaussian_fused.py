@@ -10,7 +10,11 @@
 import torch
 from torch.autograd import Function
 import torch.nn.functional as F
-import gauss_splat._C
+from gauss_splat.gsplat_c import (
+    projection_three_dims_gaussian_forward,
+    gaussian_filter as _gaussian_filter,
+    fully_fused_projection_bwd,
+)
 class ProjectionThreeDimsGaussianFused(Function):
     @staticmethod
     # pylint: disable=too-many-arguments,huawei-too-many-arguments,too-many-return-values
@@ -46,7 +50,7 @@ class ProjectionThreeDimsGaussianFused(Function):
         means = means.permute((0, 2, 1)).contiguous()
 
         means2d, depths, conics, compensations, det, radius, covars2d = \
-            gauss_splat._C.projection_three_dims_gaussian_forward(
+            projection_three_dims_gaussian_forward(
                 means,
                 covars,
                 opacities,
@@ -68,7 +72,7 @@ class ProjectionThreeDimsGaussianFused(Function):
         
         means_culling, colors_culling, means2d_culling, depths_culling, \
         radius_culling, covars2d_culling, conics_culling, opacities_culling, proj_filter, cnt = \
-            gauss_splat._C.gaussian_filter(
+            _gaussian_filter(
                 means,
                 colors,
                 det,
@@ -99,7 +103,7 @@ class ProjectionThreeDimsGaussianFused(Function):
         width = ctx.width
         height = ctx.height
         v_means2d, v_depths, v_conics, v_opacities_culling, v_radii, v_covar2d, v_colors_culling, v_cnt = v_args
-        v_pw, v_quats, v_scales, v_r, v_colors, v_opacities = gauss_splat._C.fully_fused_projection_bwd(
+        v_pw, v_quats, v_scales, v_r, v_colors, v_opacities = fully_fused_projection_bwd(
                 means,
                 quats,
                 scales,

@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import gauss_splat._C
+from gauss_splat.gsplat_c import get_render_schedule
 def get_render_schedule_cpp(nums, num_bins):
-    return gauss_splat._C.get_render_schedule(nums, num_bins)
+    return get_render_schedule(nums, num_bins)

@@ -10,11 +10,11 @@
 import torch
 from torch.autograd import Function
 
-import gauss_splat._C
+from gauss_splat.gsplat_c import gaussian_sort as _gaussian_sort
 class GaussianSort(Function):
     @staticmethod
     def forward(ctx, all_in_mask: torch.Tensor, depths: torch.Tensor):
-        sorted_gs_ids, tile_offsets = gauss_splat._C.gaussian_sort(all_in_mask, depths)
+        sorted_gs_ids, tile_offsets = _gaussian_sort(all_in_mask, depths)
         return sorted_gs_ids, tile_offsets
 
 

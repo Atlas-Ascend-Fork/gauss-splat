@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import gauss_splat._C
+from gauss_splat.gsplat_c import gaussian_filter as _gaussian_filter
 
 # pylint: disable=too-many-arguments,huawei-too-many-arguments,too-many-return-values
 def gaussian_filter(means,
@@ -30,7 +30,7 @@ def gaussian_filter(means,
             near_plane,
             far_plane):
     means_culling, colors_culling, means2d_culling, depths_culling, radius_culling,\
-        covars2d_culling, conics_culling, opacities_culling, proj_filter, cnt = gauss_splat._C.gaussian_filter(
+        covars2d_culling, conics_culling, opacities_culling, proj_filter, cnt = _gaussian_filter(
         means,
         colors,
         det,

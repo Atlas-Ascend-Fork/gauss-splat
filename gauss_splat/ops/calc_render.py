@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import torch
+from gauss_splat.gsplat_c import calc_render_fwd_double_clip_gsids, calc_render_bwd_var_clip_gsids
 
 # pylint: disable=too-many-arguments,huawei-too-many-arguments,too-many-return-values
 class CalcRender(torch.autograd.Function):
@@ -37,7 +38,7 @@ class CalcRender(torch.autograd.Function):
             depths_
             ], dim=0).T.contiguous()
         color, depth, last_cumsum, error, gs_clip_index, alpha_clip_index = \
-            gauss_splat._C.calc_render_fwd_double_clip_gsids(gs, tile_coords, offsets, sorted_gs_ids)
+            calc_render_fwd_double_clip_gsids(gs, tile_coords, offsets, sorted_gs_ids)
         
         ctx.save_for_backward(gs, depths, tile_coords, offsets, sorted_gs_ids,
             last_cumsum, error, gs_clip_index, alpha_clip_index)
@@ -65,7 +66,7 @@ class CalcRender(torch.autograd.Function):
         gs, depths, tile_coords, offsets, sorted_gs_ids, last_cumsum, error, gs_clip_index, \
             alpha_clip_index = ctx.saved_tensors
 
-        v_gs = gauss_splat._C.calc_render_bwd_var_clip_gsids(
+        v_gs = calc_render_bwd_var_clip_gsids(
             v_color, v_depth, last_cumsum, error,
             gs,
             tile_coords, offsets,

@@ -15,8 +15,7 @@ from torch.autograd import Function
 from torch.nn import Module
 from torch import Tensor
 import torch.nn.functional as F
-
-import gauss_splat._C
+from gauss_splat.gsplat_c import flash_gaussian_build_mask as _flash_gaussian_build_mask_cpp
 
 class FlashGaussianBuildMask(Function):
     @staticmethod
@@ -35,7 +34,7 @@ class FlashGaussianBuildMask(Function):
         if opacity is None:
             raise ValueError("Opacity must be Tensor while using FlashGS.")
 
-        mask = gauss_splat._C.flash_gaussian_build_mask(
+        mask = _flash_gaussian_build_mask_cpp(
             means2d,
             opacity,
             conics,

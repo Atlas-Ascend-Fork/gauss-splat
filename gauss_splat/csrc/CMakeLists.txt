@@ -19,18 +19,18 @@ if(BUILD_STAGE EQUAL 2)
 
   set(EXT_CXX_FLAGS "${EXT_CXX_FLAGS}")
   separate_arguments(EXT_CXX_FLAGS)
-  add_library(_C SHARED ${ASCEND_CSRC_SRC})
+  add_library(gsplat_c SHARED ${ASCEND_CSRC_SRC})
   set_target_properties(
-    _C
-    PROPERTIES OUTPUT_NAME "${gauss_splat_PATH}/_C.${Python3_SOABI}"
+    gsplat_c
+    PROPERTIES OUTPUT_NAME "${gauss_splat_PATH}/gsplat_c.${Python3_SOABI}"
                PREFIX ""
                SUFFIX ".so")
 
   if(${COMPILE_WITH_XLA})
-    target_compile_definitions(_C PRIVATE COMPILE_WITH_XLA)
+    target_compile_definitions(gsplat_c PRIVATE COMPILE_WITH_XLA)
   endif()
   target_include_directories(
-    _C
+    gsplat_c
     PRIVATE ${Python3_INCLUDE_DIRS}
             ${PROJECT_SOURCE_DIR}/include
             ${TORCH_NPU_PATH}/include
@@ -39,21 +39,21 @@ if(BUILD_STAGE EQUAL 2)
             ${TORCH_PATH}/include
             ${TORCH_PATH}/include/torch/csrc/api/include)
   target_compile_options(
-    _C
+    gsplat_c
     PRIVATE -fPIC
             $<$<CONFIG:Release>:-O3>
             $<$<CONFIG:Debug>:-O0
             -g>
             -fstack-protector-all
             -DTORCH_API_INCLUDE_EXTENSION_H
-            -DTORCH_EXTENSION_NAME=_C
+            -DTORCH_EXTENSION_NAME=gsplat_c
             -D_GLIBCXX_USE_CXX11_ABI=${ABI}
             ${EXT_CXX_FLAGS})
 
-  target_link_directories(_C PRIVATE ${TORCH_PATH}/lib ${TORCH_NPU_PATH}/lib)
-  target_link_libraries(_C PRIVATE c10 torch torch_python torch_npu)
+  target_link_directories(gsplat_c PRIVATE ${TORCH_PATH}/lib ${TORCH_NPU_PATH}/lib)
+  target_link_libraries(gsplat_c PRIVATE c10 torch torch_python torch_npu)
   target_link_options(
-    _C
+    gsplat_c
     PRIVATE
     $<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:-pie>
     $<$<CONFIG:Release>:-s>

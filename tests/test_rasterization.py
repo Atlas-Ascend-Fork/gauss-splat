@@ -10,7 +10,7 @@ import torch
 import torch_npu
 from torch_npu.testing.testcase import TestCase, run_tests
 
-# from gauss_splat import Rasterizer
+from gauss_splat import Rasterizer
 
 torch.npu.set_device('npu:0')
 torch.manual_seed(42)

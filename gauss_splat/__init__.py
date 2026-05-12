@@ -6,6 +6,7 @@ __all__ = [
     "spherical_harmonics",
     "flash_gaussian_build_mask",
     "gaussian_filter",
+    "Rasterizer",
 ]
 
 import os
@@ -19,6 +20,7 @@ from .ops.get_render_schedule import get_render_schedule_cpp
 from .ops.spherical_harmonics import spherical_harmonics
 from .ops.flash_gaussian_build_mask import flash_gaussian_build_mask
 from .ops.gaussian_filter import gaussian_filter
+from .ops.rendering import Rasterizer
 
 
 def _set_env():

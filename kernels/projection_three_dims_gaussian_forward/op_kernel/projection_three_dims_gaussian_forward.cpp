@@ -1,17 +1,10 @@
 /**
- * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
  */
 
 #include "kernel_operator.h"
@@ -182,7 +175,7 @@ public:
     {
         uint64_t taskCopyIndex = taskStartIndex + taskLoopIndex * taskNumPerLoop;
         ComputingTaskNum(taskLoopIndex);
-        CopyIn(batchCopyinIndex, taskCopyIndex); // 搬入means等变量
+        CopyIn(batchCopyinIndex, taskCopyIndex, taskLoopIndex); // 搬入means等变量
         ComputingMeansCamera(); // 世界坐标系->相机坐标系
         ComputingCovarsCamera();
         if (cameraModel == 0) {
@@ -191,15 +184,7 @@ public:
         ComputingDet();
         ComputingConics();
         ComputingRadius();
-
-        if (taskLoopIndex == taskLoop - 1 && tailNum != 0 && this->blockIndex == blockDim - 1) {
-            ProcessDirtyData();
-            SetAtomicAdd<float>();
-            CopyOut(batchCopyoutIndex, cameraCopyoutIndex, taskCopyIndex); // 尾核&非对齐&最后一次循环时搬出
-            SetAtomicNone();
-        } else {
-            CopyOut(batchCopyoutIndex, cameraCopyoutIndex, taskCopyIndex); // 非尾核或对齐场景搬出
-        }
+        CopyOut(batchCopyoutIndex, cameraCopyoutIndex, taskCopyIndex, taskLoopIndex);
     }
 
     __aicore__ inline void CopyInCameraParams(uint64_t cameraCopyinIndex)
@@ -235,21 +220,30 @@ public:
         }
     }
 
-    __aicore__ inline void CopyIn(uint64_t batchCopyinIndex, uint64_t taskCopyIndex)
+    __aicore__ inline void CopyIn(uint64_t batchCopyinIndex, uint64_t taskCopyIndex, uint64_t taskLoopIndex)
     {
-        set_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
-        wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
+        uint16_t copyPadLength = (taskLoopIndex == taskLoop - 1 && this->blockIndex == blockDim - 1) ? \
+                                 (taskNumPerCurLoop - tailNum) * FLOAT_SIZE : \
+                                 (taskNumPerCurLoop * FLOAT_SIZE);
+        DataCopyParams dataCopyParams{1, copyPadLength, 0, 0};
+        DataCopyPadParams dataCopyPadParams{false, 0, 0, 0};
 
+        set_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
         for (int32_t i = 0; i < MEANS_TAIL_DIM; i++) {
-            DataCopy(MeansTensor[taskNumPerCurLoop * i], \
-                     meansGM[batchCopyinIndex * MEANS_TAIL_DIM + i * gaussianNum + taskCopyIndex], \
-                     taskNumPerCurLoop);
+            wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
+            DataCopyPad(MeansTensor[taskNumPerCurLoop * i], \
+                        meansGM[batchCopyinIndex * MEANS_TAIL_DIM + i * gaussianNum + taskCopyIndex], \
+                        dataCopyParams, dataCopyPadParams);
+            set_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
         }
         for (int32_t i = 0; i < COVARS_TAIL_DIM; i++) {
-            DataCopy(CovarsTensor[taskNumPerCurLoop * i], \
-                     covarsGM[batchCopyinIndex * COVARS_TAIL_DIM + i * gaussianNum + taskCopyIndex], \
-                     taskNumPerCurLoop);
+            wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
+            DataCopyPad(CovarsTensor[taskNumPerCurLoop * i], \
+                        covarsGM[batchCopyinIndex * COVARS_TAIL_DIM + i * gaussianNum + taskCopyIndex], \
+                        dataCopyParams, dataCopyPadParams);
+            set_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
         }
+        wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
 
         set_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
         wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
@@ -955,44 +949,51 @@ public:
         }
     }
 
-    __aicore__ inline void CopyOut(uint64_t batchCopyoutIndex, uint64_t cameraCopyoutIndex, uint64_t taskCopyIndex)
+    __aicore__ inline void CopyOut(uint64_t batchCopyoutIndex, uint64_t cameraCopyoutIndex, \
+                                   uint64_t taskCopyIndex, uint64_t taskLoopIndex)
     {
+        uint16_t copyPadLength = (taskLoopIndex == taskLoop - 1 && this->blockIndex == blockDim - 1) ? \
+                                 (taskNumPerCurLoop - tailNum) * FLOAT_SIZE : \
+                                 (taskNumPerCurLoop * FLOAT_SIZE);
+        DataCopyParams dataCopyParams{1, copyPadLength, 0, 0};
+
         set_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
         wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID0);
 
-        DataCopy(depthsGM[batchCopyoutIndex + cameraCopyoutIndex + taskCopyIndex], \
-                 MeansTensor[taskNumPerCurLoop * MEANS_OFFSET_2], taskNumPerCurLoop);
-        DataCopy(detGM[batchCopyoutIndex + cameraCopyoutIndex + taskCopyIndex], \
-                 ComputingTensor[taskNumPerCurLoop * COMPUTE_OFFSET_3], taskNumPerCurLoop);
+        DataCopyPad(depthsGM[batchCopyoutIndex + cameraCopyoutIndex + taskCopyIndex], \
+                    MeansTensor[taskNumPerCurLoop * MEANS_OFFSET_2], dataCopyParams);
+        DataCopyPad(detGM[batchCopyoutIndex + cameraCopyoutIndex + taskCopyIndex], \
+                    ComputingTensor[taskNumPerCurLoop * COMPUTE_OFFSET_3], dataCopyParams);
 
-        DataCopy(radiusGM[(batchCopyoutIndex + cameraCopyoutIndex) * RADIUS_TAIL_DIM + taskCopyIndex], \
-                 CovarsTensor[taskNumPerCurLoop * COVARS_OFFSET_3], taskNumPerCurLoop);
-        DataCopy(radiusGM[(batchCopyoutIndex + cameraCopyoutIndex) * RADIUS_TAIL_DIM + taskCopyIndex + gaussianNum], \
-                 CovarsTensor[taskNumPerCurLoop * COVARS_OFFSET_4], taskNumPerCurLoop);
+        DataCopyPad(radiusGM[(batchCopyoutIndex + cameraCopyoutIndex) * RADIUS_TAIL_DIM + taskCopyIndex], \
+                    CovarsTensor[taskNumPerCurLoop * COVARS_OFFSET_3], dataCopyParams);
+        DataCopyPad(radiusGM[(batchCopyoutIndex + cameraCopyoutIndex) * RADIUS_TAIL_DIM + taskCopyIndex + \
+                    gaussianNum], CovarsTensor[taskNumPerCurLoop * COVARS_OFFSET_4], dataCopyParams);
 
-        DataCopy(means2dGM[(batchCopyoutIndex + cameraCopyoutIndex) * MEANS2D_TAIL_DIM + taskCopyIndex], \
-                 ComputingTensor, taskNumPerCurLoop);
-        DataCopy(means2dGM[(batchCopyoutIndex + cameraCopyoutIndex) * MEANS2D_TAIL_DIM + taskCopyIndex + gaussianNum], \
-                 ComputingTensor[taskNumPerCurLoop], taskNumPerCurLoop);
+        DataCopyPad(means2dGM[(batchCopyoutIndex + cameraCopyoutIndex) * MEANS2D_TAIL_DIM + taskCopyIndex], \
+                    ComputingTensor, dataCopyParams);
+        DataCopyPad(means2dGM[(batchCopyoutIndex + cameraCopyoutIndex) * MEANS2D_TAIL_DIM + taskCopyIndex + \
+                    gaussianNum], ComputingTensor[taskNumPerCurLoop], dataCopyParams);
 
-        DataCopy(conicsGM[(batchCopyoutIndex + cameraCopyoutIndex) * CONICS_TAIL_DIM + taskCopyIndex], \
-                 CovarsTensor, taskNumPerCurLoop);
-        DataCopy(conicsGM[(batchCopyoutIndex + cameraCopyoutIndex) * CONICS_TAIL_DIM + taskCopyIndex + gaussianNum], \
-                 CovarsTensor[taskNumPerCurLoop], taskNumPerCurLoop);
-        DataCopy(conicsGM[(batchCopyoutIndex + cameraCopyoutIndex) * CONICS_TAIL_DIM + taskCopyIndex + gaussianNum \
-                 * COVARS_OFFSET_2], CovarsTensor[taskNumPerCurLoop * COVARS_OFFSET_2], taskNumPerCurLoop);
+        DataCopyPad(conicsGM[(batchCopyoutIndex + cameraCopyoutIndex) * CONICS_TAIL_DIM + taskCopyIndex], \
+                    CovarsTensor, dataCopyParams);
+        DataCopyPad(conicsGM[(batchCopyoutIndex + cameraCopyoutIndex) * CONICS_TAIL_DIM + taskCopyIndex + \
+                    gaussianNum], CovarsTensor[taskNumPerCurLoop], dataCopyParams);
+        DataCopyPad(conicsGM[(batchCopyoutIndex + cameraCopyoutIndex) * CONICS_TAIL_DIM + taskCopyIndex + \
+                    gaussianNum * COVARS_OFFSET_2], CovarsTensor[taskNumPerCurLoop * \
+                    COVARS_OFFSET_2], dataCopyParams);
 
-        DataCopy(covars2dGM[(batchCopyoutIndex + cameraCopyoutIndex) * COVARS2D_TAIL_DIM + taskCopyIndex], \
-                 ComputingTensor[taskNumPerCurLoop * COMPUTE_OFFSET_8], taskNumPerCurLoop);
-        DataCopy(covars2dGM[(batchCopyoutIndex + cameraCopyoutIndex) * COVARS2D_TAIL_DIM + taskCopyIndex + \
-                 gaussianNum], ComputingTensor[taskNumPerCurLoop * COMPUTE_OFFSET_9], taskNumPerCurLoop);
-        DataCopy(covars2dGM[(batchCopyoutIndex + cameraCopyoutIndex) * COVARS2D_TAIL_DIM + taskCopyIndex + \
-                 gaussianNum * COVARS_OFFSET_2], ComputingTensor[taskNumPerCurLoop * COMPUTE_OFFSET_11], \
-                 taskNumPerCurLoop);
+        DataCopyPad(covars2dGM[(batchCopyoutIndex + cameraCopyoutIndex) * COVARS2D_TAIL_DIM + taskCopyIndex], \
+                    ComputingTensor[taskNumPerCurLoop * COMPUTE_OFFSET_8], dataCopyParams);
+        DataCopyPad(covars2dGM[(batchCopyoutIndex + cameraCopyoutIndex) * COVARS2D_TAIL_DIM + taskCopyIndex + \
+                    gaussianNum], ComputingTensor[taskNumPerCurLoop * COMPUTE_OFFSET_9], dataCopyParams);
+        DataCopyPad(covars2dGM[(batchCopyoutIndex + cameraCopyoutIndex) * COVARS2D_TAIL_DIM + taskCopyIndex + \
+                    gaussianNum * COVARS_OFFSET_2], ComputingTensor[taskNumPerCurLoop * COMPUTE_OFFSET_11], \
+                    dataCopyParams);
 
         if (calcCompensations) {
-            DataCopy(compensationsGM[batchCopyoutIndex + cameraCopyoutIndex + taskCopyIndex], \
-                     ComputingTensor[taskNumPerCurLoop * COMPUTE_OFFSET_7], taskNumPerCurLoop);
+            DataCopyPad(compensationsGM[batchCopyoutIndex + cameraCopyoutIndex + taskCopyIndex], \
+                        ComputingTensor[taskNumPerCurLoop * COMPUTE_OFFSET_7], dataCopyParams);
         }
 
         set_flag(PIPE_MTE3, PIPE_V, EVENT_ID0);

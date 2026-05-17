@@ -1,5 +1,11 @@
 # coding=utf-8
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 """
 Gaussian Splatting Rasterization 性能基准测试脚本
 支持功能:
@@ -62,7 +68,7 @@ def parse_args():
 # ============================================================================
 
 def gen_splats(n_gs, sh_degree, device='npu'):
-    means = (torch.rand(n_gs, 3, dtype=torch.float32) - 0.5) * 4.0
+    means = (torch.rand(n_gs, 3, dtype=torch.float32) - 0.5) * 0.3
     quats = torch.randn(n_gs, 4, dtype=torch.float32)
     quats = quats / quats.norm(dim=-1, keepdim=True)
     scales = torch.log(torch.ones(n_gs, 3, dtype=torch.float32) * 0.01)
@@ -86,7 +92,7 @@ def gen_camera(width, height, device='npu'):
     camtoworlds = torch.eye(4, dtype=torch.float32, device=device).unsqueeze(0)
     camtoworlds[0, 2, 3] = 4.0
 
-    fx = fy = 300.0
+    fx = fy = 50.0
     cx, cy = width / 2.0, height / 2.0
     Ks = torch.tensor([[[fx, 0, cx],
                          [0, fy, cy],

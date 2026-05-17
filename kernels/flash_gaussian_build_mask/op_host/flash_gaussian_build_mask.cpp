@@ -1,17 +1,10 @@
 /**
- * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
  */
 
 #include <cmath>
@@ -24,9 +17,13 @@ const uint32_t MEANS2D_PTR_INDEX = 0;
 const uint32_t OPACITY_PTR_INDEX = 1;
 const uint32_t CONICS_PTR_INDEX = 2;
 const uint32_t COVARS2D_PTR_INDEX = 3;
-const uint32_t CNT_PTR_INDEX = 4;
-const uint32_t TILE_GRID_PTR_INDEX = 5;
-const uint32_t MASK_PTR_INDEX = 0;
+const uint32_t DEPTHS_PTR_INDEX = 4;
+const uint32_t CNT_PTR_INDEX = 5;
+const uint32_t TILE_GRID_PTR_INDEX = 6;
+const uint32_t GATHER_MASK_PTR_INDEX = 7;
+const uint32_t TILE_SUM_PTR_INDEX = 0;
+const uint32_t TILE_DEPTHS_PTR_INDEX = 1;
+const uint32_t GAUSS_INDEX_PTR_INDEX = 2;
 
 const uint32_t BATCH_SIZE_INDEX = 0;
 const uint32_t CAMERA_NUM_INDEX = 1;
@@ -37,7 +34,7 @@ const uint32_t IMAGE_HEIGHT_INDEX = 1;
 const uint32_t TILE_SIZE_INDEX = 2;
 const uint32_t ALIGN_VALUE = 64;
 
-const uint32_t TASK_BUFFER_NUM = 16;
+const uint32_t TASK_BUFFER_NUM = 20;
 const int32_t FLOAT_SIZE = 4;
 const float UB_RATIO = 0.85;
 }
@@ -54,11 +51,14 @@ static ge::graphStatus TilingForFlashGaussianBuildMask(gert::TilingContext* cont
     auto opacityTensorPtr = context->GetInputTensor(OPACITY_PTR_INDEX);
     auto conicsTensorPtr = context->GetInputTensor(CONICS_PTR_INDEX);
     auto covars2dTensorPtr = context->GetInputTensor(COVARS2D_PTR_INDEX);
+    auto depthsTensorPtr = context->GetInputTensor(DEPTHS_PTR_INDEX);
     auto cntTensorPtr = context->GetInputTensor(CNT_PTR_INDEX);
     auto tilegridTensorPtr = context->GetInputTensor(TILE_GRID_PTR_INDEX);
+    auto gatherMaskTensorPtr = context->GetInputTensor(GATHER_MASK_PTR_INDEX);
     if (means2dTensorPtr == nullptr || opacityTensorPtr == nullptr || \
         conicsTensorPtr == nullptr || covars2dTensorPtr == nullptr || \
-        cntTensorPtr == nullptr || tilegridTensorPtr ==nullptr) {
+        depthsTensorPtr == nullptr || cntTensorPtr == nullptr || \
+        tilegridTensorPtr ==nullptr || gatherMaskTensorPtr == nullptr) {
         return ge::GRAPH_FAILED;
     }
 
@@ -66,11 +66,14 @@ static ge::graphStatus TilingForFlashGaussianBuildMask(gert::TilingContext* cont
     auto opacityShape = context->GetInputShape(OPACITY_PTR_INDEX);
     auto conicsShape = context->GetInputShape(CONICS_PTR_INDEX);
     auto covars2dShape = context->GetInputShape(COVARS2D_PTR_INDEX);
+    auto depthsShape = context->GetInputShape(DEPTHS_PTR_INDEX);
     auto cntShape = context->GetInputShape(CNT_PTR_INDEX);
     auto tilegridShape = context->GetInputShape(TILE_GRID_PTR_INDEX);
+    auto gatherMaskShape = context->GetInputShape(GATHER_MASK_PTR_INDEX);
     if (means2dShape == nullptr || opacityShape == nullptr || \
         conicsShape == nullptr || covars2dShape == nullptr || \
-        cntShape == nullptr || tilegridShape == nullptr) {
+        depthsShape == nullptr || cntShape == nullptr || \
+        tilegridShape == nullptr || gatherMaskShape == nullptr) {
         return ge::GRAPH_FAILED;
     }
 
@@ -156,9 +159,12 @@ static ge::graphStatus InferShape(gert::InferShapeContext* context)
     const gert::Shape* opacityShape = context->GetInputShape(OPACITY_PTR_INDEX);
     const gert::Shape* conicsShape = context->GetInputShape(CONICS_PTR_INDEX);
     const gert::Shape* covars2dShape = context->GetInputShape(COVARS2D_PTR_INDEX);
+    const gert::Shape* depthsShape = context->GetInputShape(DEPTHS_PTR_INDEX);
     const gert::Shape* tilegridShape = context->GetInputShape(TILE_GRID_PTR_INDEX);
+    const gert::Shape* gatherMaskShape = context->GetInputShape(GATHER_MASK_PTR_INDEX);
     if (means2dShape == nullptr || cntShape == nullptr || opacityShape == nullptr \
-        || conicsShape == nullptr || covars2dShape == nullptr || tilegridShape == nullptr) {
+        || conicsShape == nullptr || covars2dShape == nullptr || depthsShape == nullptr \
+        || tilegridShape == nullptr || gatherMaskShape == nullptr) {
         return ge::GRAPH_FAILED;
     }
     return GRAPH_SUCCESS;
@@ -198,6 +204,11 @@ public:
             .DataType({ge::DT_FLOAT})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
+        this->Input("depths")
+            .ParamType(OPTIONAL)
+            .DataType({ge::DT_FLOAT})
+            .Format({ge::FORMAT_ND})
+            .UnknownShapeFormat({ge::FORMAT_ND});
         this->Input("cnt")
             .ParamType(OPTIONAL)
             .DataType({ge::DT_INT32})
@@ -208,7 +219,22 @@ public:
             .DataType({ge::DT_FLOAT})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
-        this->Output("mask")
+        this->Input("gather_mask")
+            .ParamType(OPTIONAL)
+            .DataType({ge::DT_FLOAT})
+            .Format({ge::FORMAT_ND})
+            .UnknownShapeFormat({ge::FORMAT_ND});
+        this->Output("tile_sum")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_INT32})
+            .Format({ge::FORMAT_ND})
+            .UnknownShapeFormat({ge::FORMAT_ND});
+        this->Output("tile_depths")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_FLOAT})
+            .Format({ge::FORMAT_ND})
+            .UnknownShapeFormat({ge::FORMAT_ND});
+        this->Output("gauss_index")
             .ParamType(REQUIRED)
             .DataType({ge::DT_FLOAT})
             .Format({ge::FORMAT_ND})

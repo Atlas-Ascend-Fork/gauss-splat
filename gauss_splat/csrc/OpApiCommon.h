@@ -1,18 +1,12 @@
-// Copyright (c) 2024 Huawei Technologies Co., Ltd
-// Copyright (c) 2019, Facebook CORPORATION.
-// All rights reserved.
-//
-// Licensed under the BSD 3-Clause License  (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// https://opensource.org/licenses/BSD-3-Clause
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/**
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+
 #ifndef CSRC_OP_API_COMMON_H_
 #define CSRC_OP_API_COMMON_H_
 #include <c10/util/Exception.h>
@@ -560,9 +554,10 @@ typedef void (*ReleaseHugeMem)(void*, bool);
             executor = ptaGetExecCacheFunc(hashId, workspace_size_addr);                                             \
             if (executor != nullptr) {                                                                               \
                 void* workspace_addr = nullptr;                                                                      \
+                at::Tensor workspace_tensor;                                                                         \
                 if (workspace_size != 0) {                                                                           \
                     at::TensorOptions options = at::TensorOptions(torch_npu::utils::get_npu_device_type());          \
-                    auto workspace_tensor = at::empty({workspace_size}, options.dtype(at::kByte));                   \
+                    workspace_tensor = at::empty({workspace_size}, options.dtype(at::kByte));                        \
                     workspace_addr = const_cast<void*>(workspace_tensor.storage().data());                           \
                 }                                                                                                    \
                 auto acl_call = [workspace_addr, workspace_size, acl_stream, executor]() -> int {                    \
@@ -587,9 +582,10 @@ typedef void (*ReleaseHugeMem)(void*, bool);
         auto workspace_status = call(getWorkspaceSizeFunc, converted_params);                                        \
         TORCH_CHECK(workspace_status == 0, "call " #aclnn_api " failed, detail:", aclGetRecentErrMsg());             \
         void* workspace_addr = nullptr;                                                                              \
+        at::Tensor workspace_tensor;                                                                                 \
         if (workspace_size != 0) {                                                                                   \
             at::TensorOptions options = at::TensorOptions(torch_npu::utils::get_npu_device_type());                  \
-            auto workspace_tensor = at::empty({workspace_size}, options.dtype(at::kByte));                           \
+            workspace_tensor = at::empty({workspace_size}, options.dtype(at::kByte));                                \
             workspace_addr = const_cast<void*>(workspace_tensor.storage().data());                                   \
         }                                                                                                            \
         auto acl_call = [converted_params, workspace_addr, workspace_size, acl_stream, executor]() -> int {          \
@@ -646,9 +642,10 @@ typedef void (*ReleaseHugeMem)(void*, bool);
         auto workspace_status = call(getWorkspaceSizeFunc, converted_params);                                        \
         TORCH_CHECK(workspace_status == 0, "call " #aclnn_api " failed, detail:", aclGetRecentErrMsg());             \
         void* workspace_addr = nullptr;                                                                              \
+        at::Tensor workspace_tensor;                                                                                 \
         if (workspace_size != 0) {                                                                                   \
             at::TensorOptions options = at::TensorOptions(torch_npu::utils::get_npu_device_type());                  \
-            auto workspace_tensor = at::empty({workspace_size}, options.dtype(at::kByte));                           \
+            workspace_tensor = at::empty({workspace_size}, options.dtype(at::kByte));                                \
             workspace_addr = const_cast<void*>(workspace_tensor.storage().data());                                   \
         }                                                                                                            \
         auto acl_call = [converted_params, workspace_addr, workspace_size, acl_stream, executor]() -> int {          \

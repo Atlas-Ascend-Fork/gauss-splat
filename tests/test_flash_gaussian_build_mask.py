@@ -1,10 +1,9 @@
 # coding=utf-8
-# This program is free software, you can redistribute it and/or modify it.
-# Copyright (c) 2025 Huawei Technologies Co., Ltd.
-# This file is a part of the CANN Open Software.
-# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
 # Please refer to the License for details. You may not use this file except in compliance with the License.
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
 import unittest
@@ -32,8 +31,8 @@ option = {}
 option['ACL_OP_DEBUG_LEVEL'] = 1
 torch.npu.set_option(option)
 
-ExecResults = namedtuple('ExecResults', ['mask'])
-Inputs = namedtuple('Inputs', ['means2d', 'opacity', 'conics', 'covars2d', 'cnt', 'tile_grid'])
+ExecResults = namedtuple('ExecResults', ['tile_sum', 'tile_offset'])
+Inputs = namedtuple('Inputs', ['means2d', 'opacity', 'conics', 'covars2d', 'cnt', 'tile_grid', 'depth'])
 
 LN2 = 0.69314718055
 
@@ -109,7 +108,7 @@ def golden(means2d, opacity, conics, covars2d, tile_grid, image_width, image_hei
     h_upper_bound = torch.clamp(rmax_h[:, None].expand(num_gs, num_tile), \
                     max=tile_grid[None, :, 0] + tile_size).expand(num_gs, num_tile)
     h_lower_bound = torch.clamp(rmin_h[:, None].expand(num_gs, num_tile), \
-                    min=tile_grid[None, :, 0]).expand(num_gs, num_tile)
+                   min=tile_grid[None, :, 0]).expand(num_gs, num_tile)
 
     all_in_mask = (w_right_bound > w_left_bound) & (h_upper_bound > h_lower_bound)
 
@@ -133,6 +132,7 @@ class TestFlashGaussianBuildMask(TestCase):
         self.test_cases = [
             [6789, 9, 11, 64],
             [128, 16, 16, 16],
+            [135791, 160, 120, 40],
             [112233, 72, 72, 18]
         ]
         self.test_results = self.gen_results()
@@ -144,6 +144,7 @@ class TestFlashGaussianBuildMask(TestCase):
         conics = torch.rand(batch_size, camera_num, gaussian_num, 3).float()
         opacity = torch.rand(batch_size, camera_num, gaussian_num, 1).float()
         covars2d = torch.rand(batch_size, camera_num, gaussian_num, 3).float()
+        depth = torch.rand(batch_size, camera_num, gaussian_num, 1).float()
         cnt = torch.rand(batch_size, camera_num, 1).float()
         cnt.uniform_(1, gaussian_num)
         padded_width = math.ceil(image_width / tile_size) * tile_size
@@ -151,23 +152,7 @@ class TestFlashGaussianBuildMask(TestCase):
         tile_grid = torch.stack(torch.meshgrid(torch.arange(0, padded_height, tile_size), \
                     torch.arange(0, padded_width, tile_size), indexing='ij'), dim=-1).view(-1, 2).float()
 
-        return Inputs(means2d, opacity, conics, covars2d, cnt.int(), tile_grid)
-
-    def gen_results(self):
-        test_results = []
-        for test_case in self.test_cases:
-            gaussian_num, image_width, image_height, tile_size = test_case
-            inputs = self.gen_inputs([self.batch_size, self.camera_num, \
-                     gaussian_num, image_width, image_height, tile_size])
-
-            npu_results = self.npu_to_exec(inputs, image_width, image_height, tile_size)
-            cpu_results = torch.zeros_like(npu_results.mask, device=npu_results.mask.device)
-            for b in range(self.batch_size):
-                for c in range(self.camera_num):
-                    cpu_result = self.cpu_to_exec(inputs, image_width, image_height, tile_size, b, c)
-                    cpu_results[b, c] = cpu_result.mask
-            test_results.append((cpu_results, npu_results))
-        return test_results
+        return Inputs(means2d, opacity, conics, covars2d, cnt.int(), tile_grid, depth)
 
     # pylint: disable=too-many-arguments,huawei-too-many-arguments,too-many-return-values
     def cpu_to_exec(self, inputs, image_width, image_height, tile_size, b, c):
@@ -181,9 +166,12 @@ class TestFlashGaussianBuildMask(TestCase):
         mask = golden(means2d, opacity, conics, covars2d, tile_grid, image_width, image_height, tile_size).permute(1, 0)
 
         mask[:, cnt:] = 0
-        
+        tile_sum = torch.sum(mask, dim=1).reshape(-1, 1)
+        tile_offset = torch.cumsum(tile_sum, dim=0).reshape(-1, 1)
+
         return ExecResults(
-            mask=mask.detach().float()
+            tile_sum=tile_sum.detach().float(),
+            tile_offset=tile_offset.detach().float()
         )
 
     # pylint: disable=too-many-arguments,huawei-too-many-arguments,too-many-return-values
@@ -194,17 +182,42 @@ class TestFlashGaussianBuildMask(TestCase):
         cnt = inputs.cnt.npu()
         tile_grid = inputs.tile_grid.npu()
         opacity = inputs.opacity.permute(0, 1, 3, 2).npu()
+        depth = inputs.depth.permute(0, 1, 3, 2).npu()
 
-        mask = flash_gaussian_build_mask(means2d, opacity, conics, covars2d, cnt, tile_grid, \
-                                         image_width, image_height, tile_size)
-        
-        return ExecResults(
-            mask=mask.detach().float()
+        tile_sum, tile_offset, tile_depths, gauss_index = flash_gaussian_build_mask(
+            means2d, opacity, conics, covars2d, depth, cnt, tile_grid, image_width, image_height, tile_size
         )
+
+        return ExecResults(
+            tile_sum=tile_sum.detach().float(),
+            tile_offset=tile_offset.detach().float()
+        )
+
+    def gen_results(self):
+        test_results = []
+        for test_case in self.test_cases:
+            gaussian_num, image_width, image_height, tile_size = test_case
+            inputs = self.gen_inputs([self.batch_size, self.camera_num, \
+                     gaussian_num, image_width, image_height, tile_size])
+
+            npu_results = self.npu_to_exec(inputs, image_width, image_height, tile_size)
+            cpu_results = ExecResults(
+                            tile_sum=torch.zeros_like(npu_results.tile_sum, device=npu_results.tile_sum.device),
+                            tile_offset=torch.zeros_like(npu_results.tile_offset, device=npu_results.tile_offset.device)
+                        )
+            for b in range(self.batch_size):
+                for c in range(self.camera_num):
+                    cpu_result = self.cpu_to_exec(inputs, image_width, image_height, tile_size, b, c)
+                    cpu_results.tile_sum[b, c] = cpu_result.tile_sum
+                    cpu_results.tile_offset[b, c] = cpu_result.tile_offset
+            test_results.append((cpu_results, npu_results))
+        return test_results
 
     def test_flash_gaussian_build_mask(self):
         for cpu_results, npu_results in self.test_results:
-            self.assertRtolEqual(cpu_results.cpu().numpy(), npu_results.mask.cpu().numpy())
+            self.assertRtolEqual(cpu_results.tile_sum.cpu().numpy(), npu_results.tile_sum.cpu().numpy())
+            self.assertRtolEqual(cpu_results.tile_offset.cpu().numpy(), npu_results.tile_offset.cpu().numpy())
+
 
 if __name__ == "__main__":
     run_tests()

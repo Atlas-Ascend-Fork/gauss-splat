@@ -1,4 +1,5 @@
 /**
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd.
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
@@ -63,17 +64,6 @@ static ge::graphStatus Tiling4SphericalHarmonicsBwd(gert::TilingContext *context
     tiling.set_batchNum(batchNum);
     tiling.set_gaussNum(gaussNum);
 
-    int64_t blockLength = 0;
-    if (maxCoreNum != 0) {
-        blockLength = (gaussNum + maxCoreNum - 1) / maxCoreNum;
-    } else {
-        return ge::GRAPH_FAILED;
-    }
-
-    int64_t lastblockLength = gaussNum - blockLength * (maxCoreNum - 1);
-    tiling.set_blockLength(blockLength);
-    tiling.set_lastcoreNum(lastblockLength);
-
     const gert::RuntimeAttrs *attrs = context->GetAttrs();
     int64_t degree = *(attrs->GetInt(0));
     if (K != (degree + 1) * (degree + 1)) {
@@ -83,7 +73,23 @@ static ge::graphStatus Tiling4SphericalHarmonicsBwd(gert::TilingContext *context
 
     int64_t ubSize_ = static_cast<int64_t>(ubSize) - RESERVED_BUFFER;
     int64_t perloopNum = 240;
-    tiling.set_needCoreNum(maxCoreNum);
+    int64_t needCoreNum = (gaussNum < maxCoreNum) ? gaussNum : maxCoreNum;
+    if (needCoreNum == 0) {
+        return ge::GRAPH_FAILED;
+    }
+    int64_t blockLength = (gaussNum + needCoreNum - 1) / needCoreNum;
+    int64_t lastblockLength = gaussNum - blockLength * (needCoreNum - 1);
+    if (lastblockLength <= 0) {
+        needCoreNum = (gaussNum + blockLength - 1) / blockLength;
+        if (needCoreNum <= 0) {
+            return ge::GRAPH_FAILED;
+        }
+        blockLength = (gaussNum + needCoreNum - 1) / needCoreNum;
+        lastblockLength = gaussNum - blockLength * (needCoreNum - 1);
+    }
+    tiling.set_blockLength(blockLength);
+    tiling.set_lastcoreNum(lastblockLength);
+    tiling.set_needCoreNum(needCoreNum);
     tiling.set_K(K);
     int64_t bufferLen = 0;
     if (degree == DEGREE_ZERO) {
@@ -109,7 +115,7 @@ static ge::graphStatus Tiling4SphericalHarmonicsBwd(gert::TilingContext *context
     tiling.SaveToBuffer(context->GetRawTilingData()->GetData(), context->GetRawTilingData()->GetCapacity());
     context->GetRawTilingData()->SetDataSize(tiling.GetDataSize());
     context->SetTilingKey(1);
-    context->SetBlockDim(maxCoreNum);
+    context->SetBlockDim(needCoreNum);
     return ge::GRAPH_SUCCESS;
 }
 } // namespace optiling

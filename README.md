@@ -36,7 +36,7 @@ gauss-splat是基于[CANN](https://hiascend.com/software/cann)的3D Gaussian Spl
 git clone -b ${tag_version} https://gitcode.com/cann/gauss-splat.git
 cd gauss-splat
 source ${CAN_INSTALL_PATH}/ascend-toolkit/set_env.sh
-pip install -e .
+pip install . --no-build-isolation
 
 ```
 
@@ -72,6 +72,10 @@ rendered_images = rasterizer.rasterization(
     height=600
 )
 ```
+
+### 其他
+
+参考tests目录下的测试代码。
 
 ## 📖Python API
 

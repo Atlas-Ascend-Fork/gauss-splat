@@ -141,6 +141,39 @@ class ExtBuild(build_ext):
             env=os.environ,
         )
 
+class DevelopBuild(develop):
+    user_options = develop.user_options + [
+        ("kernel-name=", None, "Build the single kernel with the specified name"),
+        ("release", None, "Build the release version"),
+    ]
+
+    def initialize_options(self) -> None:
+        super().initialize_options()
+        self.kernel_name = None
+        self.release = False
+
+    def install_for_development(self) -> None:
+        self.reinitialize_command("build_py", build_lib="")
+        self.reinitialize_command("build_clib", kernel_name=self.kernel_name, debug=not self.release)
+        self.reinitialize_command("build_ext", debug=not self.release)
+
+        if self.kernel_name:
+            self.run_command("build_clib")
+            return
+
+        self.run_command("egg_info")
+        self.run_command("build_clib")
+        self.run_command("build_ext")
+
+        if not self.dry_run:
+            with os.fdopen(
+                os.open(self.egg_link, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IWUSR | stat.S_IRUSR),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(self.egg_path + "\n" + self.setup_path)
+        self.process_distribution(None, self.dist, not self.no_deps)
+
 def get_sha(pytorch_root: Union[str, Path]) -> str:
     try:
         return (
@@ -165,6 +198,7 @@ setup(
     cmdclass={
         "build_clib": CPPLibBuild,
         "build_ext": ExtBuild,
+        "develop": DevelopBuild,
     },
     packages=find_packages(),
     include_package_data=True,

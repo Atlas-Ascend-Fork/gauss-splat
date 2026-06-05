@@ -3,8 +3,12 @@
 set +e
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)
-BUILD_DIR=${PROJECT_ROOT}/build/packages/vendors/customize
-
+_PYTHON_SITE=$($(dirname $(which python))/../bin/python -c "import gauss_splat, os; print(os.path.dirname(os.path.abspath(gauss_splat.__file__)))" 2>/dev/null)
+if [ -n "$_PYTHON_SITE" ]; then
+    BUILD_DIR=${_PYTHON_SITE}/packages/vendors/customize
+else
+    BUILD_DIR=${PROJECT_ROOT}/build/lib.linux-x86_64-cpython-39/gauss_splat/packages/vendors/customize
+fi
 CANN_PATH=$ASCEND_TOOLKIT_HOME
 
 GS_PACKAGES=${BUILD_DIR}

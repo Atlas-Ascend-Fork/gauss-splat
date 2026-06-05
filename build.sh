@@ -1,4 +1,4 @@
-# Copyright 2023 Huawei Technologies Co., Ltd
+# Copyright 2026 Huawei Technologies Co., Ltd
 CUR_DIR=$(dirname $(readlink -f $0))
 SCRIPTS_DIR=${CUR_DIR}/scripts
 BUILD_PACKAGES_DIR=${CUR_DIR}/gauss_splat/packages

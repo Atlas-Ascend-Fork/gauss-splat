@@ -17,27 +17,40 @@ gauss-splat是基于[CANN](https://hiascend.com/software/cann)的3D Gaussian Spl
 
 ### 系统要求
 
+| 项目      | 要求                                              |
+| :-------- | :------------------------------------------------ |
+| 硬件      | Atlas A2训练推理系列产品/Atlas A3训练推理系列产品 |
+| 操作系统  | Linux (Ubuntu 18.04/20.04)                        |
+| CANN版本  | 8.5.0及以上                                       |
+| Python    | 3.7-3.9                                           |
+| PyTorch   | 配套CANN版本，2.7.1                             |
+| torch_npu | 配套torch版本 ，7.3.0                                    |
 
-| 项目      | 要求                                      |
-| :-------- | :---------------------------------------- |
-| 硬件      | Atlas A2训练系列产品/Atlas A3训练系列产品 |
-| 操作系统  | Linux (Ubuntu 18.04/20.04, CentOS 7/8)    |
-| CANN版本  | 8.0.RC1及以上                             |
-| Python    | 3.7-3.9                                   |
-| PyTorch   | 1.11.0及以上                              |
-| torch_npu | 配套CANN版本                              |
+CANN环境准备
 
-[环境部署](docs/install/quick_install.md)是体验本项目能力的前提，请先完成NPU驱动、CANN包安装、torch_npu安装等，确保环境正常。
+1. 本样例的执行依赖CANN开发套件包（cann-toolkit）与CANN二进制算子包（cann-kernels），使用CANN软件版本为CANN 8.5。 请从[CANN软件包下载地址](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.5.0)下载 `Ascend-cann-toolkit_${version}_linux-${arch}.run`与 `Ascend-cann-kernels-${chip_type}_${version}_linux-${arch}.run`软件包，并参考[CANN安装文档](https://www.hiascend.com/document/detail/zh/canncommercial/850/softwareinst/instg/instg_0000.html?Mode=PmIns&InstallType=local&OS=Ubuntu)进行安装。
+2. 本样例依赖的**torch与torch_npu版本为2.7.1和v7.3.0**，请从[Ascend Extension for PyTorch插件](https://www.hiascend.com/document/detail/zh/Pytorch/730/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md)下载并安装torch与torch_npu安装包。
 
 ## ⬇️安装
 
 ```bash
 ``编译安装
+conda create -n 3dgs python=3.9
+conda activate 3dgs
+
 git clone -b ${tag_version} https://gitcode.com/cann/gauss-splat.git
 cd gauss-splat
 source ${CAN_INSTALL_PATH}/ascend-toolkit/set_env.sh
-pip install . --no-build-isolation
 
+pip install numpy==1.23 decorator sympy scipy attrs cloudpickle psutil synr==0.5.0 tornado cmake pyyaml expecttest protobuf
+
+方法1：
+bash build.sh --python=3.9
+参数`--python`指定编译使用的python版本，支持3.8及以上版本。编译成功后会在当前目录下生成`build`,  `dist`文件夹，生成的whl包在`dist`目录下。
+pip install dist/*.whl --force-reinstall
+
+方法2：
+pip install . --no-build-isolation
 ```
 
 ## 🚀快速开始
@@ -79,26 +92,24 @@ rendered_images = rasterizer.rasterization(
 
 ## 📖Python API
 
+| Python接口名                             | 功能说明                                                                                         |
+| :--------------------------------------- | :----------------------------------------------------------------------------------------------- |
+| `spherical_harmonics`                  | 球谐函数计算，支持自动反向传播，将方向向量转换为视角相关颜色                                     |
+| `projection_three_dims_gaussian_fused` | 投影筛选融合算子，完整的3D→2D投影流水线（协方差计算+投影变换+高斯筛选），支持自动反向传播       |
+| `gaussian_sort`                        | 高斯球深度排序，对高斯球按深度进行Tile-based排序，用于渲染流水线                                 |
+| `flash_gaussian_build_mask`            | Flash渲染掩码构建，构建Flash Gaussian Splatting渲染所需的掩码和索引                              |
+| `gaussian_filter`                      | 高斯球筛选（低级API），独立筛选算子，通常在 `projection_three_dims_gaussian_fused`内部自动调用 |
+| `Rasterizer`                           | 完整渲染器（推荐），封装完整渲染流水线（投影+排序+Tile构建+渲染计算）                            |
+| `get_render_schedule_cpp`              | 渲染调度辅助，获取渲染调度信息（内部辅助函数）                                                   |
 
-| Python接口名                           | 功能说明                                                                                      |
-| :------------------------------------- | :-------------------------------------------------------------------------------------------- |
-| `spherical_harmonics`                  | 球谐函数计算，支持自动反向传播，将方向向量转换为视角相关颜色                                  |
-| `projection_three_dims_gaussian_fused` | 投影筛选融合算子，完整的3D→2D投影流水线（协方差计算+投影变换+高斯筛选），支持自动反向传播    |
-| `gaussian_sort`                        | 高斯球深度排序，对高斯球按深度进行Tile-based排序，用于渲染流水线                              |
-| `flash_gaussian_build_mask`            | Flash渲染掩码构建，构建Flash Gaussian Splatting渲染所需的掩码和索引                           |
-| `gaussian_filter`                      | 高斯球筛选（低级API），独立筛选算子，通常在`projection_three_dims_gaussian_fused`内部自动调用 |
-| `Rasterizer`                           | 完整渲染器（推荐），封装完整渲染流水线（投影+排序+Tile构建+渲染计算）                         |
-| `get_render_schedule_cpp`              | 渲染调度辅助，获取渲染调度信息（内部辅助函数）                                                |
-
-**详细接口说明**： 各API的具体参数和返回值见[API参考文档](docs/python_api.md)
+**详细接口说明**： 各API的具体参数和返回值见[API参考文档](docs/gauss_splat_api.md)
 
 ## 🔧底层算子接口（ACLNN）
 
 对于需要直接调用底层算子的高级用户，本项目提供ACLNN级别的C++/Python接口。详细API文档见[docs/kernels/](docs/kernels/)。
 
-
-| 序号 | 算子名称                           | Python接口                                                    | 文档链接                                                           |
-| :--: | :--------------------------------- | :------------------------------------------------------------ | :----------------------------------------------------------------- |
+| 序号 | 算子名称                           | Python接口                                                      | 文档链接                                                        |
+| :--: | :--------------------------------- | :-------------------------------------------------------------- | :-------------------------------------------------------------- |
 |  1  | SphericalHarmonicsForward          | `gauss_splat.gsplat_c.spherical_harmonics_forward`            | [API文档](docs/kernels/aclnnSphericalHarmonicsForward.md)          |
 |  2  | SphericalHarmonicsBwd              | `gauss_splat.gsplat_c.spherical_harmonics_bwd`                | [API文档](docs/kernels/aclnnSphericalHarmonicsBwd.md)              |
 |  3  | QuatScalesToCovars                 | `gauss_splat.gsplat_c.quat_scales_to_covars`                  | [API文档](docs/kernels/aclnnQuatScalesToCovars.md)                 |
@@ -153,7 +164,7 @@ gauss-splat/
 - [贡献指南](CONTRIBUTING.md)：如何参与项目开发
 - [安全声明](SECURITY.md)：安全使用指南
 - [许可证](LICENSE)：CANN Open Software License Agreement Version 2.0
-- [所属SIG](https://gitcode.com/cann/community/tree/master/CANN/sigs/gauss-splat)：CANN社区SIG
+- [所属SIG](https://gitcode.com/cann/community/tree/master/CANN/sigs/render)：CANN社区render SIG
 
 ---
 
@@ -162,3 +173,4 @@ PS：本项目功能和文档正在持续更新和完善中，欢迎您关注最
 - **问题反馈**：通过GitCode [Issues](https://gitcode.com/cann/gauss-splat/issues)提交问题。
 - **社区互动**：通过GitCode [讨论](https://gitcode.com/cann/gauss-splat/discussions)参与交流。
 - **技术专栏**：通过GitCode [Wiki](https://gitcode.com/cann/gauss-splat/wiki)获取技术文章。
+

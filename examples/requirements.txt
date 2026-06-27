@@ -16,4 +16,4 @@ tensorly
 pyyaml
 matplotlib
 fsspec==2024.10.0
-torchvision==0.16.0
+torchvision==0.22.1

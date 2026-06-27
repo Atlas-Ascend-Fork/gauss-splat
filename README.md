@@ -28,7 +28,7 @@ gauss-splat是基于[CANN](https://hiascend.com/software/cann)的3D Gaussian Spl
 
 CANN环境准备
 
-1. 本样例的执行依赖CANN开发套件包（cann-toolkit）与CANN二进制算子包（cann-kernels），使用CANN软件版本为CANN 8.5。 请从[CANN软件包下载地址](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.5.0)下载 `Ascend-cann-toolkit_${version}_linux-${arch}.run`与 `Ascend-cann-kernels-${chip_type}_${version}_linux-${arch}.run`软件包，并参考[CANN安装文档](https://www.hiascend.com/document/detail/zh/canncommercial/850/softwareinst/instg/instg_0000.html?Mode=PmIns&InstallType=local&OS=Ubuntu)进行安装。
+1. 本样例的执行依赖CANN开发套件包（cann-toolkit）与CANN二进制算子包（cann-kernels），使用CANN软件版本为CANN 8.5。 请从[CANN软件包下载地址](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.5.0)下载 `Ascend-cann-toolkit_${version}_linux-${arch}.run`与 `Ascend-cann-${chip_type}-ops_${version}_linux-${arch}.run`软件包，并参考[CANN安装文档](https://www.hiascend.com/document/detail/zh/canncommercial/850/softwareinst/instg/instg_0000.html?Mode=PmIns&InstallType=local&OS=Ubuntu)进行安装。
 2. 本样例依赖的**torch与torch_npu版本为2.7.1和v7.3.0**，请从[Ascend Extension for PyTorch插件](https://www.hiascend.com/document/detail/zh/Pytorch/730/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md)下载并安装torch与torch_npu安装包。
 
 ## ⬇️安装
@@ -58,32 +58,44 @@ pip install . --no-build-isolation
 ### 完整渲染流程（使用Rasterizer）
 
 ```python
-from gauss_splat import Rasterizer
+import torch
+import gauss_splat
 
-# 初始化渲染器
-rasterizer = Rasterizer()
+# 1. 初始化光栅化器
+rasterizer = gauss_splat.Rasterizer()
 
-# 准备高斯球参数
-N = 10000  # 高斯球数量
-C = 1      # 相机数量
-means = torch.randn(N, 3).npu()
-quats = torch.randn(N, 4).npu()
-scales = torch.randn(N, 3).npu()
-opacities = torch.randn(N).npu()
-colors = torch.randn(N, 16, 3).npu()  # 球谐系数
+# 2. 准备高斯点云数据
+N = 10000  # 高斯点数量
+splats = {
+    "means": torch.randn(N, 3, device='npu:0'),           # 位置
+    "quats": torch.randn(N, 4, device='npu:0'),           # 四元数
+    "scales": torch.randn(N, 3, device='npu:0'),          # 缩放（log空间）
+    "opacities": torch.randn(N, device='npu:0'),          # 不透明度（logits）
+    "sh0": torch.randn(N, 1, 3, device='npu:0'),          # 球谐第0阶
+    "shN": torch.randn(N, 15, 3, device='npu:0'),         # 球谐高阶
+}
 
-# 准备相机参数
-viewmats = torch.randn(C, 4, 4).npu()
-Ks = torch.randn(C, 3, 3).npu()
+# 3. 准备相机参数
+C = 1  # 相机数量
+camtoworlds = torch.eye(4, device='npu:0').unsqueeze(0).expand(C, -1, -1)
+Ks = torch.tensor([
+    [500.0, 0.0, 960.0],
+    [0.0, 500.0, 540.0],
+    [0.0, 0.0, 1.0]
+], device='npu:0').unsqueeze(0).expand(C, -1, -1)
 
-# 渲染输出
-rendered_images = rasterizer.rasterization(
-    (means, quats, scales, opacities, colors),
-    (viewmats, Ks, "pinhole", "RGB"),
-    sh_degree=3,
-    width=800,
-    height=600
+# 4. 渲染
+render_colors, render_depths, info = rasterizer.rasterization(
+    cam=(camtoworlds, Ks, "RGB"),
+    size=(1920, 1080),
+    tile_size=32,
+    active_sh_degree=3,
+    splats=splats,
+    camera_model="pinhole"
 )
+
+print(f"渲染颜色形状: {render_colors.shape}")  # (1, 3, 1080, 1920)
+print(f"渲染深度形状: {render_depths.shape}")  # (1, 1, 1080, 1920)
 ```
 
 ### 其他

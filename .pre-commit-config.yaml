@@ -1,0 +1,22 @@
+repos:
+  # C++/C code formatting with clang-format
+  - repo: local
+    hooks:
+      - id: clang-format
+        name: clang-format
+        entry: clang-format -i
+        language: system
+        types_or: [c++, c]
+        stages: [commit]
+
+  # OAT compliance check (Open Source Audit Tool)
+  - repo: local
+    hooks:
+      - id: oat-check
+        name: OAT Compliance Check
+        entry: bash scripts/oat_check.sh
+        language: system
+        pass_filenames: true
+        types: [file]
+        stages: [commit]
+        verbose: true

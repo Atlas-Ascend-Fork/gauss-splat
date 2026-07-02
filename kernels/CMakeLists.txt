@@ -15,7 +15,6 @@ set(ASCEND_OPS
     spherical_harmonics_forward
 )
 
-# 收集所有算子的源文件
 set(ASCEND_HOST_SRC "")
 set(ASCEND_KERNEL_SRC "")
 
@@ -35,7 +34,6 @@ foreach(op_name ${ASCEND_OPS})
     list(APPEND ASCEND_KERNEL_SRC ${op_kernel_src})
 endforeach()
 
-# 打印收集到的源文件（用于调试）
 message(STATUS "Ascend host source files:")
 foreach(src ${ASCEND_HOST_SRC})
     message(STATUS "  ${src}")

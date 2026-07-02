@@ -56,15 +56,12 @@ def _spherical_harmonics_bwd(
     v_colors, # [..., 3]
 ):
     v_colors = v_colors.permute(0, 2, 1).contiguous()
-    # degree = int(math.sqrt(coeffs.shape[-2]) - 1)
     v_coeffs = torch.zeros_like(coeffs)
     v_dirs = torch.zeros_like(dirs)
-    # case l=0, m=0
     c00 = 0.2820947917738781
     v_coeffs[..., 0, :3] = c00 * v_colors[..., :3]
 
     if degree == 0:
-        # e.g degree=0
         return v_dirs, v_coeffs
 
     inorm = torch.rsqrt((dirs ** 2).sum(-1, keepdim=True))
@@ -75,13 +72,10 @@ def _spherical_harmonics_bwd(
     v_coeffs[..., 2, :3] = 0.48860251190292 * z[..., None] * v_colors[..., :3]
     v_coeffs[..., 3, :3] = -0.48860251190292 * x[..., None] * v_colors[..., :3]
     
-    # v_dir degree=1
     v_x = (-0.48860251190292 * coeffs[..., 3, :3] * v_colors[..., :3]).sum(-1, keepdim=True)
     v_y = (-0.48860251190292 * coeffs[..., 1, :3] * v_colors[..., :3]).sum(-1, keepdim=True)
     v_z = (0.48860251190292 * coeffs[..., 2, :3] * v_colors[..., :3]).sum(-1, keepdim=True)
-    
-    # vec3 v_d = (v_dir_n - glm::dot(v_dir_n, dir_n) * dir_n) * inorm
-    
+        
     if degree == 1:
         v_dir_n = torch.concat([v_x, v_y, v_z], dim=-1)
         v_d = (v_dir_n - torch.einsum('bni,bni->bn', v_dir_n, dirs)[..., None] * dirs) * inorm
@@ -103,7 +97,6 @@ def _spherical_harmonics_bwd(
     v_coeffs[..., 7, :3] = p_sh7[..., None] * v_colors[..., :3]
     v_coeffs[..., 8, :3] = p_sh8[..., None] * v_colors[..., :3]
 
-    # v_dir degree=2
     ftmp_0b_z = -1.092548430592079
     fc1_x = 2.0 * x
     fc1_y = -2.0 * y

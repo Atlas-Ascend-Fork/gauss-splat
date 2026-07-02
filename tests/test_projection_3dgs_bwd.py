@@ -76,14 +76,8 @@ def pos_w2c(r, t, p_w):
 
 
 def pos_w2c_vjp(r, t, p_w, v_p_c):
-    # torch.outer: This function does not broadcast.
-    # v_r = torch.outer(v_p_c, p_w)
-    # 利用 einsum求batch外积
     v_r = torch.einsum('...cni,...nj->...cij', v_p_c, p_w)
-    # v_t = v_p_c
     v_t = torch.einsum('...cni->...ci', v_p_c)
-    # v_p_w = r.T @ v_p_c
-    # v_p_w = torch.bmm(r.T[None, :, :].expand(v_p_c.shape[0],3,3), v_p_c[:,:, None]).squeeze()
     v_p_w = torch.einsum("...cji,...cnj->...ni", r.transpose(-2, -1), v_p_c)  # (n, 3)
     
     return v_r, v_t, v_p_w
@@ -114,7 +108,6 @@ def _quat_to_rotmat_vjp(quats: Tensor, v_r: Tensor) -> Tensor:
     """Convert quaternion to rotation matrix."""
     quats_n = F.normalize(quats, p=2, dim=-1)
     w, x, y, z = torch.unbind(quats_n, dim=-1)
-    # glm index [colum index, row_index] =  python index [row_index, colum index]
     vr12_vr21 = v_r[..., 2, 1] - v_r[..., 1, 2]
     vr20_vr02 = v_r[..., 0, 2] - v_r[..., 2, 0]
     vr01_vr10 = v_r[..., 1, 0] - v_r[..., 0, 1]
@@ -136,7 +129,6 @@ def _quat_to_rotmat_vjp(quats: Tensor, v_r: Tensor) -> Tensor:
 
     v_quat = (v_quat_n - torch.einsum('...ni,...ni->...n', v_quat_n, quats_n)[..., None] * quats_n) *\
              torch.rsqrt((quats * quats).sum(-1, keepdim=True))
-    # v_quat = (v_quat_n - torch.einsum('...ni,...ni->...n', v_quat_n, quats_n)[..., None] * quats_n)
     return v_quat
 
 
@@ -284,7 +276,6 @@ def _fully_fused_projection_bwd(means, quats, scales, conics, viewmats, ks, v_me
     v_covar2d_inv = torch.stack([v_conics[..., 0], v_conics[..., 1] * 0.5, v_conics[..., 1] * 0.5,\
                                 v_conics[..., 2]], dim=-1).reshape(conics.shape[:-1] + (2, 2))
     
-    # inverse_vjp(covar2d_inv, v_covar2d_inv, v_covar2d);
     v_covar2d = inverse_vjp(covar2d_inv, v_covar2d_inv)
 
     r = viewmats[..., :3, :3]

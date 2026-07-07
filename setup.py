@@ -108,7 +108,7 @@ class ExtBuild(build_ext):
 
         ext_cxx_flags = ["-std=c++17"]
         for name in ["COMPILER_TYPE", "STDLIB", "BUILD_ABI"]:
-            val = getattr(torch._C, f"_PYBIND11_{name}")
+            val = getattr(torch._C, f"_PYBIND11_{name}", None)
             if val:
                 ext_cxx_flags.append(f"-D_PYBIND11_{name}={val}")
 

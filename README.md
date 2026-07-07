@@ -20,11 +20,10 @@ gauss-splat是基于[CANN](https://hiascend.com/software/cann)的3D Gaussian Spl
 | 项目      | 要求                                              |
 | :-------- | :------------------------------------------------ |
 | 硬件      | Atlas A2训练推理系列产品/Atlas A3训练推理系列产品 |
-| 操作系统  | Linux (Ubuntu 18.04/20.04)                        |
-| CANN版本  | 8.5.0及以上                                       |
-| Python    | 3.7-3.9                                           |
-| PyTorch   | 配套CANN版本，2.7.1                             |
-| torch_npu | 配套torch版本 ，7.3.0                                    |
+| CANN版本  | 8.5.0及以上（详见tag）                                       |
+| Python    | >=3.7                                           |
+| PyTorch   | 配套CANN版本，>=2.7.1                               |
+| torch_npu | 配套torch版本 ，>=7.3.0                             |
 
 CANN环境准备
 

@@ -427,6 +427,9 @@ public:
 
                 Select(vAlpha_[sta_pix1], mask_[sta_pix1], vAlpha_[sta_pix1], 0.0f,
                                                     SELMODE::VSEL_TENSOR_SCALAR_MODE, calPixel_1);
+                Select(gaussWeight_[sta_pix1], mask_[sta_pix1], gaussWeight_[sta_pix1], 0.0f,
+                                                    SELMODE::VSEL_TENSOR_SCALAR_MODE, calPixel_1);
+                                                    
                 Muls(vX_[sta_pix1], x_[sta_pix1], -gsAttr_.GetValue(ATTR_CONIC_0), calPixel_1); // conic0
                 Muls(vY_[sta_pix1], y_[sta_pix1], -gsAttr_.GetValue(ATTR_CONIC_2), calPixel_1); // conic2
 

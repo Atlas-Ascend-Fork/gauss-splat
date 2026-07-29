@@ -184,11 +184,11 @@ class Rasterizer:
             tile_sums, tile_offsets, tile_depths, tile_gauss_ids = (
                 flash_gaussian_build_mask(
                     means2d,
-                    opacities[None, :],
+                    opacities.unsqueeze(2),
                     conics,
                     covars2d,
-                    depths,
-                    cnt[None, :],
+                    depths.unsqueeze(2),
+                    cnt.unsqueeze(2),
                     self.tile_grid.float(),
                     width,
                     height,

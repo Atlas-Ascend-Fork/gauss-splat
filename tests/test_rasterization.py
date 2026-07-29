@@ -118,8 +118,8 @@ def _golden_rasterization(splats, cam, size, tile_size, active_sh_degree, camera
 
     with torch.no_grad():
         tile_sums_g, tile_offsets_g, tile_depths_g, gauss_index_g = flash_gaussian_build_mask(
-            means2d, opacities_proj[None, :], conics, covars2d, depths,
-            cnt[None, :], tile_grid.float(), width, height, tile_size)
+            means2d, opacities_proj.unsqueeze(2), conics, covars2d, depths.unsqueeze(2),
+            cnt.unsqueeze(2), tile_grid.float(), width, height, tile_size)
 
         sorted_cnts = tile_offsets_g.squeeze(-1)[:, :, -1]
         sorted_cnts_flatten = sorted_cnts.flatten()
@@ -389,6 +389,75 @@ class TestRasterizerValidation(TestCase):
                 active_sh_degree=0, splats=splats, camera_model="pinhole",
             )
 
+def _gen_multi_camera(width, height, n_cams=2, device='npu'):
+    camtoworlds = torch.eye(4, dtype=torch.float32, device=device).unsqueeze(0).expand(n_cams, -1, -1).clone()
+    for i in range(n_cams):
+        camtoworlds[i, 2, 3] = 4.0 + i * 0.5
+
+    fx = fy = 50.0
+    cx, cy = width / 2.0, height / 2.0
+    Ks = torch.tensor([[[fx, 0, cx],
+                         [0, fy, cy],
+                         [0, 0, 1]]], dtype=torch.float32, device=device).expand(n_cams, -1, -1).clone()
+
+    render_mode = "RGB"
+    return (camtoworlds, Ks, render_mode)
+
+
+class TestRasterizerMultiCamera(TestCase):
+
+    def setUp(self):
+        torch.manual_seed(123)
+
+    def test_multi_camera_output_shape(self):
+        n_cams = 2
+        n_gs = 20
+        width, height, tile_size, sh_degree = 32, 32, 32, 0
+
+        splats = _gen_splats(n_gs, sh_degree)
+        cam = _gen_multi_camera(width, height, n_cams)
+        rasterizer = Rasterizer()
+        render_colors, render_depths, meta = rasterizer.rasterization(
+            cam=cam, size=(width, height), tile_size=tile_size,
+            active_sh_degree=sh_degree, splats=splats, camera_model="pinhole",
+        )
+        _assert_shape(self, render_colors, (n_cams, height, width, 3), "colors")
+        _assert_shape(self, render_depths, (n_cams, height, width, 1), "depths")
+        self.assertEqual(meta["n_cameras"], n_cams)
+        del splats, cam, render_colors, render_depths, meta
+        gc.collect()
+        torch.npu.empty_cache()
+
+    def test_multi_camera_different_positions(self):
+        n_cams = 2
+        n_gs = 50
+        width, height, tile_size, sh_degree = 64, 64, 32, 0
+
+        splats = _gen_splats(n_gs, sh_degree)
+
+        camtoworlds = torch.eye(4, dtype=torch.float32, device='npu').unsqueeze(0).expand(n_cams, -1, -1).clone()
+        camtoworlds[0, 2, 3] = 4.0
+        camtoworlds[1, 0, 3] = 2.0
+        camtoworlds[1, 2, 3] = 4.0
+
+        fx = fy = 50.0
+        cx, cy = width / 2.0, height / 2.0
+        Ks = torch.tensor([[[fx, 0, cx],
+                             [0, fy, cy],
+                             [0, 0, 1]]], dtype=torch.float32, device='npu').expand(n_cams, -1, -1).clone()
+        cam = (camtoworlds, Ks, "RGB")
+
+        rasterizer = Rasterizer()
+        render_colors, render_depths, meta = rasterizer.rasterization(
+            cam=cam, size=(width, height), tile_size=tile_size,
+            active_sh_degree=sh_degree, splats=splats, camera_model="pinhole",
+        )
+        _assert_shape(self, render_colors, (n_cams, height, width, 3), "colors")
+        _assert_shape(self, render_depths, (n_cams, height, width, 1), "depths")
+        self.assertEqual(meta["n_cameras"], n_cams)
+        del splats, cam, render_colors, render_depths, meta
+        gc.collect()
+        torch.npu.empty_cache()
 
 class TestRasterizerMinimalGaussians(TestCase):
 

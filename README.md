@@ -2,8 +2,8 @@
 
 ## 🔥Latest News
 
-- [2026/06] gauss-splat项目首次上线，开源算子支持Atlas A2/A3系列产品。
-- [2026/06] 支持10个3D Gaussian Splatting核心算子，包括球谐函数、协方差计算、投影、排序、筛选等。
+- [2026/07] gauss-splat项目首次上线，开源算子支持Atlas A2/A3系列产品。
+- [2026/07] 支持10个3D Gaussian Splatting核心算子，包括球谐函数、协方差计算、投影、排序、筛选等。
 
 ## 🚀概述
 

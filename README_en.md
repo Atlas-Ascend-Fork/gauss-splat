@@ -2,8 +2,8 @@
 
 ## Latest News
 
-- [2026/06] The gauss-splat project is initially launched, with open-source operators supporting Atlas A2/A3 series products.
-- [2026/06] Supports 10 core 3D Gaussian Splatting operators, including spherical harmonics, covariance computation, projection, sorting, and filtering.
+- [2026/07] The gauss-splat project is initially launched, with open-source operators supporting Atlas A2/A3 series products.
+- [2026/07] Supports 10 core 3D Gaussian Splatting operators, including spherical harmonics, covariance computation, projection, sorting, and filtering.
 
 ## Overview
 

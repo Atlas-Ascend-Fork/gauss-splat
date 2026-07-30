@@ -113,30 +113,30 @@ print(f"渲染深度形状: {render_depths.shape}")  # (1, 1, 1080, 1920)
 | `Rasterizer`                           | 完整渲染器（推荐），封装完整渲染流水线（投影+排序+Tile构建+渲染计算）                            |
 | `get_render_schedule_cpp`              | 渲染调度辅助，获取渲染调度信息（内部辅助函数）                                                   |
 
-**详细接口说明**： 各API的具体参数和返回值见[API参考文档](docs/gauss_splat_api.md)
+**详细接口说明**： 各API的具体参数和返回值见[API参考文档](docs/zh/gauss_splat_api.md)
 
 ## 🔧底层算子接口（ACLNN）
 
-对于需要直接调用底层算子的高级用户，本项目提供ACLNN级别的C++/Python接口。详细API文档见[docs/kernels/](docs/kernels/)。
+对于需要直接调用底层算子的高级用户，本项目提供ACLNN级别的C++/Python接口。详细API文档见[docs/zh/kernels/](docs/zh/kernels/)。
 
 | 序号 | 算子名称                           | Python接口                                                      | 文档链接                                                        |
 | :--: | :--------------------------------- | :-------------------------------------------------------------- | :-------------------------------------------------------------- |
-|  1  | SphericalHarmonicsForward          | `gauss_splat.gsplat_c.spherical_harmonics_forward`            | [API文档](docs/kernels/aclnnSphericalHarmonicsForward.md)          |
-|  2  | SphericalHarmonicsBwd              | `gauss_splat.gsplat_c.spherical_harmonics_bwd`                | [API文档](docs/kernels/aclnnSphericalHarmonicsBwd.md)              |
-|  3  | QuatScalesToCovars                 | `gauss_splat.gsplat_c.quat_scales_to_covars`                  | [API文档](docs/kernels/aclnnQuatScalesToCovars.md)                 |
-|  4  | ProjectionThreeDimsGaussianForward | `gauss_splat.gsplat_c.projection_three_dims_gaussian_forward` | [API文档](docs/kernels/aclnnProjectionThreeDimsGaussianForward.md) |
-|  5  | GaussianSort                       | `gauss_splat.gsplat_c.gaussian_sort`                          | [API文档](docs/kernels/aclnnGaussianSort.md)                       |
-|  6  | GaussianFilter                     | `gauss_splat.gsplat_c.gaussian_filter`                        | [API文档](docs/kernels/aclnnGaussianFilter.md)                     |
-|  7  | FullyFusedProjectionBwd            | `gauss_splat.gsplat_c.fully_fused_projection_bwd`             | [API文档](docs/kernels/aclnnFullyFusedProjectionBwd.md)            |
-|  8  | CalcRenderFwdDoubleClipGsids       | `gauss_splat.gsplat_c.calc_render_fwd_double_clip_gsids`      | [API文档](docs/kernels/aclnnCalcRenderFwdDoubleClipGsids.md)       |
-|  9  | CalcRenderBwdVarClipGsids          | `gauss_splat.gsplat_c.calc_render_bwd_var_clip_gsids`         | [API文档](docs/kernels/aclnnCalcRenderBwdVarClipGsids.md)          |
-|  10  | FlashGaussianBuildMask             | `gauss_splat.gsplat_c.flash_gaussian_build_mask`              | [API文档](docs/kernels/aclnnFlashGaussianBuildMask.md)             |
+|  1  | SphericalHarmonicsForward          | `gauss_splat.gsplat_c.spherical_harmonics_forward`            | [API文档](docs/zh/kernels/aclnnSphericalHarmonicsForward.md)          |
+|  2  | SphericalHarmonicsBwd              | `gauss_splat.gsplat_c.spherical_harmonics_bwd`                | [API文档](docs/zh/kernels/aclnnSphericalHarmonicsBwd.md)              |
+|  3  | QuatScalesToCovars                 | `gauss_splat.gsplat_c.quat_scales_to_covars`                  | [API文档](docs/zh/kernels/aclnnQuatScalesToCovars.md)                 |
+|  4  | ProjectionThreeDimsGaussianForward | `gauss_splat.gsplat_c.projection_three_dims_gaussian_forward` | [API文档](docs/zh/kernels/aclnnProjectionThreeDimsGaussianForward.md) |
+|  5  | GaussianSort                       | `gauss_splat.gsplat_c.gaussian_sort`                          | [API文档](docs/zh/kernels/aclnnGaussianSort.md)                       |
+|  6  | GaussianFilter                     | `gauss_splat.gsplat_c.gaussian_filter`                        | [API文档](docs/zh/kernels/aclnnGaussianFilter.md)                     |
+|  7  | FullyFusedProjectionBwd            | `gauss_splat.gsplat_c.fully_fused_projection_bwd`             | [API文档](docs/zh/kernels/aclnnFullyFusedProjectionBwd.md)            |
+|  8  | CalcRenderFwdDoubleClipGsids       | `gauss_splat.gsplat_c.calc_render_fwd_double_clip_gsids`      | [API文档](docs/zh/kernels/aclnnCalcRenderFwdDoubleClipGsids.md)       |
+|  9  | CalcRenderBwdVarClipGsids          | `gauss_splat.gsplat_c.calc_render_bwd_var_clip_gsids`         | [API文档](docs/zh/kernels/aclnnCalcRenderBwdVarClipGsids.md)          |
+|  10  | FlashGaussianBuildMask             | `gauss_splat.gsplat_c.flash_gaussian_build_mask`              | [API文档](docs/zh/kernels/aclnnFlashGaussianBuildMask.md)             |
 
 **注意**：直接调用底层算子需要手动处理shape变换和内存管理，推荐使用高层Python API。
 
 ## 🏗️项目结构
 
-```
+```text
 gauss-splat/
 ├── gauss_splat/            # Python封装层（用户接口）
 │   ├── ops/                # 高层Python算子接口
@@ -170,7 +170,7 @@ gauss-splat/
 
 ## 💬更多信息
 
-- [算子API文档](docs/kernels/)：底层ACLNN算子详细说明
+- [算子API文档](docs/zh/kernels/)：底层ACLNN算子详细说明
 - [算子测试](tests/kernel_tests/)：C++测试代码与执行指南
 - [贡献指南](CONTRIBUTING.md)：如何参与项目开发
 - [安全声明](SECURITY.md)：安全使用指南
@@ -184,4 +184,3 @@ PS：本项目功能和文档正在持续更新和完善中，欢迎您关注最
 - **问题反馈**：通过GitCode [Issues](https://gitcode.com/cann/gauss-splat/issues)提交问题。
 - **社区互动**：通过GitCode [讨论](https://gitcode.com/cann/gauss-splat/discussions)参与交流。
 - **技术专栏**：通过GitCode [Wiki](https://gitcode.com/cann/gauss-splat/wiki)获取技术文章。
-

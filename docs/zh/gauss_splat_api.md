@@ -4,7 +4,6 @@
 
 `gauss_splat` 是一个基于华为昇腾NPU的高斯溅射（Gaussian Splatting）渲染库，提供了完整的3D高斯渲染流水线。该库包含投影、排序、渲染等核心操作，支持可微分渲染。
 
-
 ## 对外接口列表
 
 ### 1. Rasterizer 类
@@ -20,6 +19,7 @@
 渲染3D高斯点云到2D图像。
 
 **参数**:
+
 - `cam` (Tuple): 相机参数元组
   - `camtoworlds` (Tensor): 相机到世界变换矩阵，形状 (C, 4, 4)
   - `Ks` (Tensor): 相机内参矩阵，形状 (C, 3, 3)
@@ -37,6 +37,7 @@
 - `camera_model` (str): 相机模型，可选值: "pinhole", "ortho", "fisheye"，默认为"pinhole"
 
 **返回值**:
+
 - `render_colors` (Tensor): 渲染的颜色图像，形状 (C, 3, H, W)
 - `render_depth` (Tensor): 渲染的深度图像，形状 (C, 1, H, W)
 - `info` (dict): 元数据字典，包含:
@@ -48,6 +49,7 @@
   - `n_cameras`: 相机数量
 
 **示例**:
+
 ```python
 rasterizer = gauss_splat.Rasterizer()
 render_colors, render_depth, info = rasterizer.rasterization(
@@ -69,6 +71,7 @@ render_colors, render_depth, info = rasterizer.rasterization(
 **位置**: `gauss_splat.projection_three_dims_gaussian_fused`
 
 **参数**:
+
 - `means` (Tensor): 高斯中心位置，形状 (B, N, 3)
 - `colors` (Tensor): 颜色值，形状 (B, N, 3) 或 (B, C, N, 3)
 - `covars` (Tensor, optional): 协方差矩阵，形状 (B, N, 3, 3)。与quat/scales互斥
@@ -86,6 +89,7 @@ render_colors, render_depth, info = rasterizer.rasterization(
 - `camera_model` (str): 相机模型，默认"pinhole"
 
 **返回值**:
+
 - `means2d` (Tensor): 2D投影坐标，形状 (B, C, N, 2)
 - `depths` (Tensor): 深度值，形状 (B, C, N)
 - `conics` (Tensor): 2D协方差逆矩阵（锥形参数），形状 (B, C, N, 3)
@@ -96,6 +100,7 @@ render_colors, render_depth, info = rasterizer.rasterization(
 - `cnt` (Tensor): 有效高斯点数量
 
 **示例**:
+
 ```python
 means2d, depths, conics, opacities, radius, covars2d, colors, cnt = \
     gauss_splat.projection_three_dims_gaussian_fused(
@@ -120,6 +125,7 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt = \
 **位置**: `gauss_splat.calc_render`
 
 **参数**:
+
 - `means` (Tensor): 2D高斯中心坐标，形状 (2, N)
 - `conic0s` (Tensor): 协方差逆矩阵元素0，形状 (1, N)
 - `conic1s` (Tensor): 协方差逆矩阵元素1，形状 (1, N)
@@ -132,6 +138,7 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt = \
 - `sorted_gs_ids` (Tensor): 排序后的高斯点ID
 
 **返回值**:
+
 - 如果提供`depths`:
   - `color` (Tensor): 渲染的颜色图像
   - `depth` (Tensor): 渲染的深度图像
@@ -139,6 +146,7 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt = \
   - `color` (Tensor): 渲染的颜色图像
 
 **示例**:
+
 ```python
 render_colors, render_depths = gauss_splat.calc_render(
     means=means2d,
@@ -163,14 +171,17 @@ render_colors, render_depths = gauss_splat.calc_render(
 **位置**: `gauss_splat.spherical_harmonics`
 
 **参数**:
+
 - `degrees_to_use` (int): 球谐函数阶数，范围0-4
 - `dirs` (Tensor): 方向向量，形状 (B, N, 3)
 - `coeffs` (Tensor): 球谐系数，形状 (B, N, K, 3)，其中K=(degrees_to_use+1)²
 
 **返回值**:
+
 - `output` (Tensor): 计算得到的颜色值，形状 (B, N, 3)
 
 **示例**:
+
 ```python
 colors = gauss_splat.spherical_harmonics(
     degrees_to_use=3,
@@ -188,6 +199,7 @@ colors = gauss_splat.spherical_harmonics(
 **位置**: `gauss_splat.gaussian_sort`
 
 **参数**:
+
 - `lb_sched` (Tensor): 负载均衡调度张量
 - `gaussian_cnt` (Tensor): 每个tile的高斯点计数
 - `depths` (Tensor): 深度值
@@ -196,9 +208,11 @@ colors = gauss_splat.spherical_harmonics(
 - `max_tile_gauss` (int): 单个tile最大高斯点数
 
 **返回值**:
+
 - `sorted_gs_ids` (Tensor): 排序后的高斯点ID
 
 **示例**:
+
 ```python
 sorted_gs_ids = gauss_splat.gaussian_sort(
     lb_sched=lb_sched_tensor,
@@ -219,6 +233,7 @@ sorted_gs_ids = gauss_splat.gaussian_sort(
 **位置**: `gauss_splat.flash_gaussian_build_mask`
 
 **参数**:
+
 - `means2d` (Tensor): 2D投影坐标，形状 (B, C, N, 2)
 - `opacity` (Tensor): 不透明度，形状 (B, C, N)
 - `conics` (Tensor): 协方差逆矩阵，形状 (B, C, N, 3)
@@ -231,12 +246,14 @@ sorted_gs_ids = gauss_splat.gaussian_sort(
 - `tile_size` (int): tile大小，默认64
 
 **返回值**:
+
 - `tile_sum` (Tensor): 每个tile的高斯点和
 - `tile_offset` (Tensor): tile偏移量
 - `tile_depths` (Tensor): tile深度
 - `gauss_index` (Tensor): 高斯点索引
 
 **示例**:
+
 ```python
 tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
     gauss_splat.flash_gaussian_build_mask(
@@ -262,6 +279,7 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 **位置**: `gauss_splat.gaussian_filter`
 
 **参数**:
+
 - `means` (Tensor): 3D高斯中心位置
 - `colors` (Tensor): 颜色值
 - `det` (Tensor): 协方差行列式
@@ -278,6 +296,7 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 - `far_plane` (float): 远平面距离
 
 **返回值**:
+
 - `means_culling`: 过滤后的3D坐标
 - `colors_culling`: 过滤后的颜色
 - `means2d_culling`: 过滤后的2D坐标
@@ -298,13 +317,16 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 **位置**: `gauss_splat.get_render_schedule_cpp`
 
 **参数**:
+
 - `nums_tensor` (Tensor): 每个tile的高斯点数量
 - `num_bins` (int): 分箱数量（向量处理器数量）
 
 **返回值**:
+
 - `lb_sched_tensor` (Tensor): 负载均衡调度张量
 
 **示例**:
+
 ```python
 vector_num = acl.get_device_capability(0, 1)[0]
 lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
@@ -332,6 +354,7 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 ### 相机模型
 
 支持三种相机模型：
+
 - **pinhole**: 针孔相机模型
 - **ortho**: 正交投影
 - **fisheye**: 鱼眼镜头
@@ -390,7 +413,6 @@ print(f"渲染深度形状: {render_depths.shape}")  # (1, 1, 1080, 1920)
 ```
 
 ---
-
 
 ## 版本信息
 

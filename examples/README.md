@@ -12,7 +12,7 @@
 
 ### python外部依赖安装
 
-```
+```bash
 cd examples
 pip install -r requirements.txt
 ```
@@ -21,7 +21,7 @@ pip install -r requirements.txt
 
 在`examples`路径下执行：
 
-```
+```bash
 python datasets/download_dataset.py
 ```
 
@@ -31,25 +31,25 @@ python datasets/download_dataset.py
 
 本样例准备了单卡环境下的训练和推理脚本。执行脚本前，参考[Ascend社区](https://www.hiascend.com/document/detail/zh/canncommercial/82RC1/softwareinst/instg/instg_0008.html?Mode=PmIns&InstallType=local&OS=Ubuntu&Software=cannToolKit)中的CANN安装软件教程配置环境变量：
 
-```
+```bash
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
 ```
 
 **运行训练脚本：**
 
-```
+```bash
 ASCEND_RT_VISIBLE_DEVICES=1 python train.py
 ```
 
 `ASCEND_RT_VISIBLE_DEVICES=1`指定npu设备1卡，不指定则默认启动0卡。模型训推的配置文件为`rasterization/config.py`，`--data_dir`指定训练数据集路径，默认为`data/360_v2/garden`，`--result_dir`指定训练结果输出路径，默认为`results/garden`。
 
-```
+```bash
 python train.py --data_dir data/360_v2/bonsai --result_dir results/bonsai
 ```
 
 **运行推理脚本：**
 
-```
+```bash
 python train.py --data_dir data/360_v2/bonsai --result_dir results/bonsai --ckpt path_to_ckpt.pt
 ```
 
@@ -59,13 +59,13 @@ python train.py --data_dir data/360_v2/bonsai --result_dir results/bonsai --ckpt
 
 `train_all.sh`按脚本中指定顺序执行数据集中所有场景的训练和推理。
 
-```
+```bash
 bash train_all.sh
 ```
 
 ## 目录结构介绍
 
-```
+```text
 ├── examples                
 │  ├── datasets             # 数据集下载及解析模块
 |  ├── gsplat               # gsplat框架提供的工具函数和分布式训练模块
@@ -82,7 +82,7 @@ bash train_all.sh
 
 ## Citation
 
-```
+```text
 @article{kerbl3Dgaussians,
     author={Kerbl, Bernhard and Kopanas, Georgios and Leimk{\"u}hler, Thomas and Drettakis, George},
     title={3D Gaussian Splatting for Real-Time Radiance Field Rendering},
@@ -104,4 +104,3 @@ bash train_all.sh
     year={2025}
 }
 ```
-

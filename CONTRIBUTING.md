@@ -11,10 +11,6 @@
 
 ## 一、贡献新算子
 
-  算子开发贡献流程如下：
-
-  ![算子开发贡献流程](./docs/zh/figures/算子开发贡献流程.png "算子开发贡献流程图")
-
   如果您有全新的算子希望基于NPU设计与实现，欢迎在Issue中提出您的想法与设计方案。完整的贡献过程如下：
 
 ### 1. 创建Issue需求
@@ -49,8 +45,8 @@ ${op_class}                                          # 算子分类
 
 PR上库要求：
 
-- 代码交付件：需提供算子Kernel实现、算子测试文件，开发过程参考[fast_kernel_launch_example](examples/fast_kernel_launch_example/README.md)。
-- 文档交付件：算子README文档为必选，其余文档可视情况提供。文档写作模板和规范参考[文档贡献指南](docs/CONTRIBUTING_DOCS.md)。
+- 代码交付件：需提供算子Kernel实现、算子测试文件，开发过程参考[fast_kernel_launch_example](https://gitcode.com/cann/ops-nn/blob/master/examples/fast_kernel_launch_example/README.md)。
+- 文档交付件：算子README文档为必选，其余文档可视情况提供。文档写作模板和规范参考[文档贡献指南](https://gitcode.com/cann/ops-nn/blob/master/docs/CONTRIBUTING_DOCS.md)。
 - 精度要求：新贡献算子需满足精度标准，具体请参见[生态算子开源精度标准](https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/experimental_standard.md)。
 - 合规检查：
   - 代码是否符合《[C++ 编程规范](https://gitcode.com/cann/community/blob/master/contributor/coding-standards/C++%20Coding%20standards.md)》
@@ -94,7 +90,7 @@ Committer检视通过后，标注 `/lgtm`标签。Maintainer将在1天内进行�
 
 ## 四、文档纠错
 
-如果您在本项目中发现某些算子文档描述错误，欢迎您新建Issue进行反馈和修复，文档规范参考[文档贡献指南](docs/CONTRIBUTING_DOCS.md)。
+如果您在本项目中发现某些算子文档描述错误，欢迎您新建Issue进行反馈和修复，文档规范参考[文档贡献指南](https://gitcode.com/cann/ops-nn/blob/master/docs/CONTRIBUTING_DOCS.md)。
 
 您可以按照[提交Issue/处理Issue任务](https://gitcode.com/cann/community#提交Issue处理Issue任务)指引新建 `Documentation|文档反馈` 类Issue指出对应文档的问题，然后在评论框中输入“/assign”或“/assign @yourself”，将该Issue分配给您纠正对应文档描述。
 
@@ -128,8 +124,8 @@ ${op_class}                                          # 算子分类
 
 PR上库要求：
 
-- 代码交付件：需提供op_host算子Tiling实现、op_kernel算子Kernel实现、算子UT测试文件，开发过程请参考[算子开发指南](docs/zh/develop/aicore_develop_guide.md)。
-- 文档交付件：算子README文档为必选，其余文档可视情况提供。文档写作模板和规范请参见[文档贡献指南](docs/CONTRIBUTING_DOCS.md)。
+- 代码交付件：需提供op_host算子Tiling实现、op_kernel算子Kernel实现、算子UT测试文件，开发过程请参考[算子开发指南](https://gitcode.com/cann/ops-nn/blob/master/docs/zh/develop/aicore_develop_guide.md)。
+- 文档交付件：算子README文档为必选，其余文档可视情况提供。文档写作模板和规范请参见[文档贡献指南](https://gitcode.com/cann/ops-nn/blob/master/docs/CONTRIBUTING_DOCS.md)。
 - 合规检查：
   - 代码是否符合《[C++ 编程规范](https://gitcode.com/cann/community/blob/master/contributor/coding-standards/C++%20Coding%20standards.md)》、是否符合标准算子基础编程规范
   - 代码是否编译通过

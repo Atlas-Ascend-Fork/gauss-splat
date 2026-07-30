@@ -1,70 +1,63 @@
-# aclnnCalcRenderFwdDoubleClipGsids
+# aclnnCalcRenderBwdVarClipGsids
 
-[📄 查看源码](https://gitcode.com/cann/gauss-splat/tree/master/kernels/calc_render_fwd_double_clip_gsids)
+[📄 查看源码](https://gitcode.com/cann/gauss-splat/blob/master/kernels/calc_render_bwd_var_clip_gsids/op_kernel/calc_render_bwd_var_clip_gsids.cpp)
 
 ## 产品支持情况
 
-
 | 产品                                                     | 是否支持 |
 | :------------------------------------------------------- | :------: |
-| <term>Ascend 950PR/Ascend 950DT</term>                   |    ×    |
-| <term>Atlas A3 训练系列产品/Atlas A3 推理系列产品</term> |    √    |
-| <term>Atlas A2 训练系列产品/Atlas A2 推理系列产品</term> |    √    |
-| <term>Atlas 200I/500 A2 推理产品</term>                  |    ×    |
-| <term>Atlas 推理系列产品</term>                          |    ×    |
-| <term>Atlas 训练系列产品</term>                          |    ×    |
+| Ascend 950PR/Ascend 950DT                   |    ×    |
+| Atlas A3 训练系列产品/Atlas A3 推理系列产品 |    √    |
+| Atlas A2 训练系列产品/Atlas A2 推理系列产品 |    √    |
+| Atlas 200I/500 A2 推理产品                  |    ×    |
+| Atlas 推理系列产品                          |    ×    |
+| Atlas 训练系列产品                          |    ×    |
 
 ## 功能说明
 
-- 接口功能：`calc_render_fwd_double_clip_gsids`计算渲染前向过程，使用双裁剪策略处理高斯球ID，用于3D Gaussian Splatting渲染。
+- 接口功能：`calc_render_bwd_var_clip_gsids`计算渲染反向传播，使用裁剪策略计算高斯球参数的梯度。
 - 计算公式：
 
-渲染前向计算输出颜色和深度：
+反向传播计算高斯球参数的梯度：
 
 $$
-color = \sum_{i} \alpha_i \cdot c_i \cdot T_i
+v\_Gs = \frac{\partial L}{\partial gs}
 $$
 
-$$
-depth = \sum_{i} \alpha_i \cdot d_i \cdot T_i
-$$
-
-其中$\alpha_i$是透明度，$c_i$是颜色，$d_i$是深度，$T_i = \prod_{j<i}(1-\alpha_j)$是累积透明度。
-
-双裁剪策略通过gsClipIndex和alphaClipIndex进一步优化渲染效率。
+基于前向渲染公式进行反向梯度计算，考虑裁剪后的高斯球ID序列。
 
 ## 函数原型
 
-每个算子分为[两段式接口](../../../docs/zh/context/两段式接口.md)，必须先调用"aclnnCalcRenderFwdDoubleClipGsidsGetWorkspaceSize"接口获取计算所需workspace大小以及包含了算子计算流程的执行器，再调用"aclnnCalcRenderFwdDoubleClipGsids"接口执行计算。
+每个算子分为两段式接口，必须先调用"aclnnCalcRenderBwdVarClipGsidsGetWorkspaceSize"接口获取计算所需workspace大小以及包含了算子计算流程的执行器，再调用"aclnnCalcRenderBwdVarClipGsids"接口执行计算。
 
 ```Cpp
-aclnnStatus aclnnCalcRenderFwdDoubleClipGsidsGetWorkspaceSize(
+aclnnStatus aclnnCalcRenderBwdVarClipGsidsGetWorkspaceSize(
+    const aclTensor *vColor,
+    const aclTensor *vDepth,
+    const aclTensor *lastCumsum,
+    const aclTensor *error,
     const aclTensor *gs,
     const aclTensor *tileCoords,
     const aclTensor *offsets,
-    const aclTensor *gsIds,
-    const aclTensor *color,
-    const aclTensor *depth,
-    const aclTensor *lastCumsum,
-    const aclTensor *error,
-    const aclTensor *gsClipIndex,
+    const aclTensor *gsClipIndexGsIds,
     const aclTensor *alphaClipIndex,
+    const aclTensor *vGs,
     uint64_t        *workspaceSize,
     aclOpExecutor  **executor)
 ```
 
 ```Cpp
-aclnnStatus aclnnCalcRenderFwdDoubleClipGsids(
+aclnnStatus aclnnCalcRenderBwdVarClipGsids(
     void             *workspace,
     uint64_t          workspaceSize,
     aclOpExecutor    *executor,
     const aclrtStream stream)
 ```
 
-## aclnnCalcRenderFwdDoubleClipGsidsGetWorkspaceSize
+## aclnnCalcRenderBwdVarClipGsidsGetWorkspaceSize
 
 - **参数说明：**
-
+  
   <table style="width: 100%">
   <thead>
     <tr>
@@ -79,9 +72,49 @@ aclnnStatus aclnnCalcRenderFwdDoubleClipGsids(
     </tr></thead>
   <tbody>
     <tr>
+      <td>vColor</td>
+      <td>输入</td>
+      <td>颜色的梯度输入。</td>
+      <td>不支持空tensor。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(3, tileNum, nPixel)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>vDepth</td>
+      <td>输入</td>
+      <td>深度的梯度输入。</td>
+      <td>不支持空tensor。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(1, tileNum, nPixel)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>lastCumsum</td>
+      <td>输入</td>
+      <td>前向计算的累积透明度。</td>
+      <td>不支持空tensor。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(tileNum, nPixel)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>error</td>
+      <td>输入</td>
+      <td>前向计算的误差值。</td>
+      <td>不支持空tensor。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(tileNum, nPixel)</td>
+      <td>√</td>
+    </tr>
+    <tr>
       <td>gs</td>
       <td>输入</td>
-      <td>高斯球参数（包含位置、颜色、透明度等）。</td>
+      <td>高斯球参数。</td>
       <td>不支持空tensor。</td>
       <td>FLOAT</td>
       <td>ND</td>
@@ -109,9 +142,9 @@ aclnnStatus aclnnCalcRenderFwdDoubleClipGsids(
       <td>√</td>
     </tr>
     <tr>
-      <td>gsIds</td>
+      <td>gsClipIndexGsIds</td>
       <td>输入</td>
-      <td>高斯球ID列表。</td>
+      <td>裁剪索引与高斯球ID组合。</td>
       <td>不支持空tensor。</td>
       <td>INT64</td>
       <td>ND</td>
@@ -119,63 +152,23 @@ aclnnStatus aclnnCalcRenderFwdDoubleClipGsids(
       <td>√</td>
     </tr>
     <tr>
-      <td>color</td>
-      <td>输出</td>
-      <td>渲染输出颜色。</td>
-      <td>不支持空tensor。</td>
-      <td>FLOAT</td>
-      <td>ND</td>
-      <td>(3, tileNum, nPixel)</td>
-      <td>√</td>
-    </tr>
-    <tr>
-      <td>depth</td>
-      <td>输出</td>
-      <td>渲染输出深度。</td>
-      <td>不支持空tensor。</td>
-      <td>FLOAT</td>
-      <td>ND</td>
-      <td>(1, tileNum, nPixel)</td>
-      <td>√</td>
-    </tr>
-    <tr>
-      <td>lastCumsum</td>
-      <td>输出</td>
-      <td>最后累积透明度值。</td>
-      <td>不支持空tensor。</td>
-      <td>FLOAT</td>
-      <td>ND</td>
-      <td>(tileNum, nPixel)</td>
-      <td>√</td>
-    </tr>
-    <tr>
-      <td>error</td>
-      <td>输出</td>
-      <td>渲染误差值。</td>
-      <td>不支持空tensor。</td>
-      <td>FLOAT</td>
-      <td>ND</td>
-      <td>(tileNum, nPixel)</td>
-      <td>√</td>
-    </tr>
-    <tr>
-      <td>gsClipIndex</td>
-      <td>输出</td>
-      <td>高斯球裁剪索引。</td>
-      <td>不支持空tensor。</td>
-      <td>INT64</td>
-      <td>ND</td>
-      <td>(tileNum)</td>
-      <td>√</td>
-    </tr>
-    <tr>
       <td>alphaClipIndex</td>
-      <td>输出</td>
+      <td>输入</td>
       <td>透明度裁剪索引。</td>
       <td>不支持空tensor。</td>
       <td>UINT8</td>
       <td>ND</td>
-      <td>(totalGauss, 2)</td>
+      <td>(nPixel)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>vGs</td>
+      <td>输出</td>
+      <td>高斯球参数的梯度输出。</td>
+      <td>不支持空tensor。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(nGauss, 10)</td>
       <td>√</td>
     </tr>
     <tr>
@@ -201,11 +194,11 @@ aclnnStatus aclnnCalcRenderFwdDoubleClipGsids(
   </tbody>
   </table>
 - **返回值：**
-
-  aclnnStatus：返回状态码，具体参见[aclnn返回码](../../../docs/zh/context/aclnn返回码.md)。
-
+  
+  aclnnStatus：返回状态码，具体参见[aclnn返回码](https://gitcode.com/cann/ops-nn/blob/master/docs/zh/context/aclnn_return_code.md)。
+  
   第一段接口会完成入参校验，出现以下场景时报错：
-
+  
   <table style="width: 100%">
         <thead>
             <th>返回值</th>
@@ -226,10 +219,10 @@ aclnnStatus aclnnCalcRenderFwdDoubleClipGsids(
         </tbody>
     </table>
 
-## aclnnCalcRenderFwdDoubleClipGsids
+## aclnnCalcRenderBwdVarClipGsids
 
 - **参数说明：**
-
+  
   <table style="width: 100%">
   <thead>
     <tr>
@@ -246,7 +239,7 @@ aclnnStatus aclnnCalcRenderFwdDoubleClipGsids(
     <tr>
       <td>workspaceSize</td>
       <td>输入</td>
-      <td>在Device侧申请的workspace大小，由第一段接口aclnnCalcRenderFwdDoubleClipGsidsGetWorkspaceSize获取。</td>
+      <td>在Device侧申请的workspace大小，由第一段接口aclnnCalcRenderBwdVarClipGsidsGetWorkspaceSize获取。</td>
     </tr>
     <tr>
       <td>executor</td>
@@ -261,23 +254,22 @@ aclnnStatus aclnnCalcRenderFwdDoubleClipGsids(
   </tbody>
   </table>
 - **返回值：**
-
-  aclnnStatus：返回状态码，具体参见[aclnn返回码](../../../docs/zh/context/aclnn返回码.md)。
+  
+  aclnnStatus：返回状态码，具体参见[aclnn返回码](https://gitcode.com/cann/ops-nn/blob/master/docs/zh/context/aclnn_return_code.md)。
 
 ## 约束说明
 
-- gs、tileCoords的数据类型为FLOAT。
-- offsets、gsIds、gsClipIndex的数据类型为INT64。
-- color、depth、lastCumsum、error的数据类型为FLOAT。
+- vColor、vDepth、lastCumsum、error、gs、tileCoords、vGs的数据类型为FLOAT。
+- offsets、gsClipIndexGsIds的数据类型为INT64。
 - alphaClipIndex的数据类型为UINT8。
 
 **维度变量说明：**
 
-- nGauss：高斯球参数数量，表示参与渲染的高斯球参数组数。
+- nPixel：像素数量，表示需要计算梯度的像素点个数。
+- nGauss：高斯球参数数量，表示参与反向传播的高斯球参数组数。
 - tileNum：tile分区数量，表示图像划分的tile区块个数。
-- nPixel：像素数量，表示每个tile内需要渲染的像素点个数。
 - totalGauss：总高斯球数量，表示所有tile中累计的高斯球总数。
 
 ## 调用示例
 
-见tests/kernel_tests/test_calc_render_fwd_double_clip_gsids.cpp
+见tests/kernel_tests/test_calc_render_bwd_var_clip_gsids.cpp

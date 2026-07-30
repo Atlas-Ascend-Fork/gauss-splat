@@ -1,18 +1,17 @@
 # aclnnQuatScalesToCovars
 
-[📄 查看源码](https://gitcode.com/cann/gauss-splat/tree/master/kernels/quat_scales_to_covars)
+[📄 查看源码](https://gitcode.com/cann/gauss-splat/blob/master/kernels/quat_scales_to_covars/op_kernel/quat_scales_to_covars.cpp)
 
 ## 产品支持情况
 
-
 | 产品                                                     | 是否支持 |
 | :------------------------------------------------------- | :------: |
-| <term>Ascend 950PR/Ascend 950DT</term>                   |    ×    |
-| <term>Atlas A3 训练系列产品/Atlas A3 推理系列产品</term> |    √    |
-| <term>Atlas A2 训练系列产品/Atlas A2 推理系列产品</term> |    √    |
-| <term>Atlas 200I/500 A2 推理产品</term>                  |    ×    |
-| <term>Atlas 推理系列产品</term>                          |    ×    |
-| <term>Atlas 训练系列产品</term>                          |    ×    |
+| Ascend 950PR/Ascend 950DT                   |    ×    |
+| Atlas A3 训练系列产品/Atlas A3 推理系列产品 |    √    |
+| Atlas A2 训练系列产品/Atlas A2 推理系列产品 |    √    |
+| Atlas 200I/500 A2 推理产品                  |    ×    |
+| Atlas 推理系列产品                          |    ×    |
+| Atlas 训练系列产品                          |    ×    |
 
 ## 功能说明
 
@@ -37,7 +36,7 @@ $$
 
 ## 函数原型
 
-每个算子分为[两段式接口](../../../docs/zh/context/两段式接口.md)，必须先调用"aclnnQuatScalesToCovarsGetWorkspaceSize"接口获取计算所需workspace大小以及包含了算子计算流程的执行器，再调用"aclnnQuatScalesToCovars"接口执行计算。
+每个算子分为两段式接口，必须先调用"aclnnQuatScalesToCovarsGetWorkspaceSize"接口获取计算所需workspace大小以及包含了算子计算流程的执行器，再调用"aclnnQuatScalesToCovars"接口执行计算。
 
 ```Cpp
 aclnnStatus aclnnQuatScalesToCovarsGetWorkspaceSize(
@@ -59,7 +58,7 @@ aclnnStatus aclnnQuatScalesToCovars(
 ## aclnnQuatScalesToCovarsGetWorkspaceSize
 
 - **参数说明：**
-
+  
   <table style="width: 100%">
   <thead>
     <tr>
@@ -126,11 +125,11 @@ aclnnStatus aclnnQuatScalesToCovars(
   </tbody>
   </table>
 - **返回值：**
-
-  aclnnStatus：返回状态码，具体参见[aclnn返回码](../../../docs/zh/context/aclnn返回码.md)。
-
+  
+  aclnnStatus：返回状态码，具体参见[aclnn返回码](https://gitcode.com/cann/ops-nn/blob/master/docs/zh/context/aclnn_return_code.md)。
+  
   第一段接口会完成入参校验，出现以下场景时报错：
-
+  
   <table style="width: 100%">
         <thead>
             <th>返回值</th>
@@ -154,7 +153,7 @@ aclnnStatus aclnnQuatScalesToCovars(
 ## aclnnQuatScalesToCovars
 
 - **参数说明：**
-
+  
   <table style="width: 100%">
   <thead>
     <tr>
@@ -186,8 +185,8 @@ aclnnStatus aclnnQuatScalesToCovars(
   </tbody>
   </table>
 - **返回值：**
-
-  aclnnStatus：返回状态码，具体参见[aclnn返回码](../../../docs/zh/context/aclnn返回码.md)。
+  
+  aclnnStatus：返回状态码，具体参见[aclnn返回码](https://gitcode.com/cann/ops-nn/blob/master/docs/zh/context/aclnn_return_code.md)。
 
 ## 调用示例
 

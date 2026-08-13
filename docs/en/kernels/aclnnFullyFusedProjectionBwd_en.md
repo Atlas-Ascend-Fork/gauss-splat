@@ -135,7 +135,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>Empty tensors are not supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(camera_num, 4, 4)</td>
+      <td>(batch_size, camera_num, 4, 4)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -145,7 +145,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>Empty tensors are not supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(camera_num, 3, 3)</td>
+      <td>(batch_size, camera_num, 3, 3)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -165,7 +165,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>Empty tensors are not supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, 1, gaussian_num)</td>
+      <td>(batch_size, camera_num, gaussian_num)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -185,7 +185,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>Empty tensors are not supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, 3, gaussian_num)</td>
+      <td>(batch_size, camera_num, 3, gaussian_num)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -195,7 +195,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>Empty tensors are not supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, gaussian_num)</td>
+      <td>(batch_size, camera_num, gaussian_num)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -205,7 +205,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>Empty tensors are not supported.</td>
       <td>UINT8</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, gaussian_num)</td>
+      <td>(batch_size, camera_num, ceil(gaussian_num/8))</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -215,7 +215,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>Optional input, can pass nullptr.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, 1, gaussian_num)</td>
+      <td>(batch_size, camera_num, gaussian_num)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -245,7 +245,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>Empty tensors are not supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, 3, gaussian_num)</td>
+      <td>(batch_size, gaussian_num, 3)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -255,7 +255,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>Empty tensors are not supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, 4, gaussian_num)</td>
+      <td>(batch_size, gaussian_num, 4)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -265,7 +265,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>Empty tensors are not supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, 3, gaussian_num)</td>
+      <td>(batch_size, gaussian_num, 3)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -275,7 +275,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>Empty tensors are not supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, 3, 3, gaussian_num)</td>
+      <td>(batch_size, camera_num, 3, 3)</td>
       <td>Yes</td>
     </tr>
     <tr>

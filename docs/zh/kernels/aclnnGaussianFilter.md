@@ -142,7 +142,7 @@ aclnnStatus aclnnGaussianFilter(
       <td>不支持空tensor。</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, 1, gaussian_num)</td>
+      <td>(batch_size, camera_num, gaussian_num)</td>
       <td>√</td>
     </tr>
     <tr>
@@ -182,7 +182,7 @@ aclnnStatus aclnnGaussianFilter(
       <td>可选输入，可传入nullptr。</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, 1, gaussian_num)</td>
+      <td>(batch_size, camera_num, gaussian_num)</td>
       <td>√</td>
     </tr>
     <tr>
@@ -262,7 +262,7 @@ aclnnStatus aclnnGaussianFilter(
       <td>不支持空tensor。</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, 1, gaussian_num)</td>
+      <td>(batch_size, camera_num, gaussian_num)</td>
       <td>√</td>
     </tr>
     <tr>
@@ -312,7 +312,7 @@ aclnnStatus aclnnGaussianFilter(
       <td>不支持空tensor。</td>
       <td>UINT8</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, gaussian_num)</td>
+      <td>(batch_size, camera_num, ceil(gaussian_num/8))</td>
       <td>√</td>
     </tr>
     <tr>

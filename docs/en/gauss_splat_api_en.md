@@ -38,12 +38,12 @@ Renders 3D Gaussian point clouds to 2D images.
 
 **Return Values**:
 
-- `render_colors` (Tensor): Rendered color image, shape (C, 3, H, W)
-- `render_depth` (Tensor): Rendered depth image, shape (C, 1, H, W)
+- `render_colors` (Tensor): Rendered color image, shape (C, H, W, 3)
+- `render_depth` (Tensor): Rendered depth image, shape (C, H, W, 1)
 - `info` (dict): Metadata dictionary, containing:
   - `gaussian_ids`: Gaussian point IDs (currently None)
-  - `means2d`: 2D projection coordinates
-  - `radii`: Projection radii
+  - `means2d`: 2D projection coordinates, shape (B, C, 2, N)
+  - `radii`: Projection radii, shape (B, C, 2, N)
   - `width`: Image width
   - `height`: Image height
   - `n_cameras`: Number of cameras
@@ -73,7 +73,7 @@ render_colors, render_depth, info = rasterizer.rasterization(
 **Parameters**:
 
 - `means` (Tensor): Gaussian center positions, shape (B, N, 3)
-- `colors` (Tensor): Color values, shape (B, N, 3) or (B, C, N, 3)
+- `colors` (Tensor): Color values, shape (B, 3, N)
 - `covars` (Tensor, optional): Covariance matrix, shape (B, N, 3, 3). Mutually exclusive with quat/scales
 - `quat` (Tensor, optional): Quaternions for rotation, shape (B, N, 4). Mutually exclusive with covars
 - `scales` (Tensor, optional): Scale parameters, shape (B, N, 3). Used together with quat
@@ -90,14 +90,14 @@ render_colors, render_depth, info = rasterizer.rasterization(
 
 **Return Values**:
 
-- `means2d` (Tensor): 2D projection coordinates, shape (B, C, N, 2)
+- `means2d` (Tensor): 2D projection coordinates, shape (B, C, 2, N)
 - `depths` (Tensor): Depth values, shape (B, C, N)
-- `conics` (Tensor): 2D covariance inverse matrix (conic parameters), shape (B, C, N, 3)
+- `conics` (Tensor): 2D covariance inverse matrix (conic parameters), shape (B, C, 3, N)
 - `opacities` (Tensor): Filtered opacities, shape (B, C, N)
-- `radius` (Tensor): Projection radii, shape (B, C, N)
-- `covars2d` (Tensor): 2D covariance matrices, shape (B, C, N, 2, 2)
-- `colors` (Tensor): Filtered colors, shape (B, C, N, 3)
-- `cnt` (Tensor): Number of valid Gaussian points
+- `radius` (Tensor): Projection radii, shape (B, C, 2, N)
+- `covars2d` (Tensor): 2D covariance matrices, shape (B, C, 3, N)
+- `colors` (Tensor): Filtered colors, shape (B, C, 3, N)
+- `cnt` (Tensor): Number of valid Gaussian points, shape (B, C)
 
 **Example**:
 
@@ -133,17 +133,17 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt = \
 - `opacities` (Tensor): Opacities, shape (1, N)
 - `colors` (Tensor): Colors, shape (3, N)
 - `depths` (Tensor, optional): Depth values, shape (1, N). If None, depth is not rendered
-- `tile_coords` (Tensor): Tile coordinates
-- `offsets` (Tensor): Offsets
-- `sorted_gs_ids` (Tensor): Sorted Gaussian point IDs
+- `tile_coords` (Tensor): Tile coordinates, shape (tileNum, 2, nPixel)
+- `offsets` (Tensor): Offsets, shape(vectorCnt + (TileNum * 2))
+- `sorted_gs_ids` (Tensor): Sorted Gaussian point IDs, shape (totalGauss)
 
 **Return Values**:
 
 - If `depths` is provided:
-  - `color` (Tensor): Rendered color image
-  - `depth` (Tensor): Rendered depth image
+  - `color` (Tensor): Rendered color image, shape (3, tileNum, nPixel)
+  - `depth` (Tensor): Rendered depth image, shape (1, tileNum, nPixel)
 - If `depths` is not provided:
-  - `color` (Tensor): Rendered color image
+  - `color` (Tensor): Rendered color image, shape (3, tileNum, nPixel)
 
 **Example**:
 
@@ -178,7 +178,7 @@ render_colors, render_depths = gauss_splat.calc_render(
 
 **Return Values**:
 
-- `output` (Tensor): Computed color values, shape (B, N, 3)
+- `output` (Tensor): Computed color values, shape (B, 3, N)
 
 **Example**:
 
@@ -200,16 +200,16 @@ colors = gauss_splat.spherical_harmonics(
 
 **Parameters**:
 
-- `lb_sched` (Tensor): Load balancing scheduling tensor
-- `gaussian_cnt` (Tensor): Gaussian point count per tile
-- `depths` (Tensor): Depth values
-- `gs_ids` (Tensor): Gaussian point IDs
-- `sorted_offset` (Tensor): Sorting offset
+- `lb_sched` (Tensor): Load balancing scheduling tensor, shape(B, C, schedule_num)
+- `gaussian_cnt` (Tensor): Gaussian point count per tile, shape(B, C, tile_num, 1)
+- `depths` (Tensor): Depth values, shape(B, C, tile_num, N)
+- `gs_ids` (Tensor): Gaussian point IDs, shape(B, C, tile_num, N)
+- `sorted_offset` (Tensor): Sorting offset, shape(B*C)
 - `max_tile_gauss` (int): Maximum number of Gaussian points per tile
 
 **Return Values**:
 
-- `sorted_gs_ids` (Tensor): Sorted Gaussian point IDs
+- `sorted_gs_ids` (Tensor): Sorted Gaussian point IDs, shape(totalGauss)
 
 **Example**:
 
@@ -234,11 +234,11 @@ sorted_gs_ids = gauss_splat.gaussian_sort(
 
 **Parameters**:
 
-- `means2d` (Tensor): 2D projection coordinates, shape (B, C, N, 2)
-- `opacity` (Tensor): Opacities, shape (B, C, N)
-- `conics` (Tensor): Covariance inverse matrix, shape (B, C, N, 3)
-- `covars2d` (Tensor): 2D covariance matrix, shape (B, C, N, 2, 2)
-- `depths` (Tensor): Depth values, shape (B, C, N)
+- `means2d` (Tensor): 2D projection coordinates, shape (B, C, 2, N)
+- `opacity` (Tensor): Opacities, shape (B, C, 1, N)
+- `conics` (Tensor): Covariance inverse matrix, shape(B, C, 3, N)
+- `covars2d` (Tensor): 2D covariance matrix, shape(B, C, 3, N)
+- `depths` (Tensor): Depth values, shape (B, C, 1, N)
 - `cnt` (Tensor): Valid Gaussian point count, shape (B, C)
 - `tile_grid` (Tensor): Tile grid coordinates
 - `image_width` (int): Image width
@@ -247,10 +247,10 @@ sorted_gs_ids = gauss_splat.gaussian_sort(
 
 **Return Values**:
 
-- `tile_sum` (Tensor): Gaussian point sum per tile
-- `tile_offset` (Tensor): Tile offsets
-- `tile_depths` (Tensor): Tile depths
-- `gauss_index` (Tensor): Gaussian point indices
+- `tile_sum` (Tensor): Gaussian point sum per tile, shape (B, C, tile_num, 1)
+- `tile_offset` (Tensor): Tile offsets, shape (B, C, tile_num, 1)
+- `tile_depths` (Tensor): Tile depths, shape (B, C, tile_num, N)
+- `gauss_index` (Tensor): Gaussian point indices, shape (B, C, tile_num, N)
 
 **Example**:
 
@@ -280,16 +280,16 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 
 **Parameters**:
 
-- `means` (Tensor): 3D Gaussian center positions
-- `colors` (Tensor): Color values
-- `det` (Tensor): Covariance determinant
-- `opacities` (Tensor): Opacities
-- `means2d` (Tensor): 2D projection coordinates
-- `depths` (Tensor): Depth values
-- `radius` (Tensor): Projection radii
-- `conics` (Tensor): Covariance inverse matrix
-- `covars2d` (Tensor): 2D covariance matrix
-- `compensations` (Tensor, optional): Compensation factors
+- `means` (Tensor): 3D Gaussian center positions, shape(B, 3, N)
+- `colors` (Tensor): Color values, shape(B, 3, N)
+- `det` (Tensor): Covariance determinant, shape(B, C, N)
+- `opacities` (Tensor): Opacities, shape(B, N)
+- `means2d` (Tensor): 2D projection coordinates, shape(B, C, 2, N)
+- `depths` (Tensor): Depth values, shape(B, C, N)
+- `radius` (Tensor): Projection radii, shape(B, C, 2, N)
+- `conics` (Tensor): Covariance inverse matrix, shape(B, C, 3, N)
+- `covars2d` (Tensor): 2D covariance matrix, shape(B, C, 3, N)
+- `compensations` (Tensor, optional): Compensation factors, shape(B, C, N)
 - `width` (int): Image width
 - `height` (int): Image height
 - `near_plane` (float): Near plane distance
@@ -297,16 +297,16 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 
 **Return Values**:
 
-- `means_culling`: Filtered 3D coordinates
-- `colors_culling`: Filtered colors
-- `means2d_culling`: Filtered 2D coordinates
-- `depths_culling`: Filtered depths
-- `radius_culling`: Filtered radii
-- `covars2d_culling`: Filtered 2D covariances
-- `conics_culling`: Filtered covariance inverse matrices
-- `opacities_culling`: Filtered opacities
-- `proj_filter`: Projection filter
-- `cnt`: Number of valid points
+- `means_culling`: Filtered 3D coordinates, shape(B, C, 3, N)
+- `colors_culling`: Filtered colors, shape(B, C, 3, N)
+- `means2d_culling`: Filtered 2D coordinates, shape(B, C, 2, N)
+- `depths_culling`: Filtered depths, shape(B, C, N)
+- `radius_culling`: Filtered radii, shape(B, C, 2, N)
+- `covars2d_culling`: Filtered 2D covariances, shape(B, C, 3, N)
+- `conics_culling`: Filtered covariance inverse matrices, shape(B, C, 3, N)
+- `opacities_culling`: Filtered opacities, shape(B, C, N)
+- `proj_filter`: Projection filter, shape(B, C, ceil(N/8))
+- `cnt`: Number of valid points, shape(B, C)
 
 ---
 
@@ -318,12 +318,12 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 
 **Parameters**:
 
-- `nums_tensor` (Tensor): Number of Gaussian points per tile
+- `nums_tensor` (Tensor): Number of Gaussian points per tile, shape(B, C, T)
 - `num_bins` (int): Number of bins (number of vector processors)
 
 **Return Values**:
 
-- `lb_sched_tensor` (Tensor): Load balancing scheduling tensor
+- `lb_sched_tensor` (Tensor): Load balancing scheduling tensor, shape(B, C, M)
 
 **Example**:
 
@@ -408,8 +408,8 @@ render_colors, render_depths, info = rasterizer.rasterization(
     camera_model="pinhole"
 )
 
-print(f"Rendered color shape: {render_colors.shape}")  # (1, 3, 1080, 1920)
-print(f"Rendered depth shape: {render_depths.shape}")  # (1, 1, 1080, 1920)
+print(f"Rendered color shape: {render_colors.shape}")  # (1, 1080, 1920, 3)
+print(f"Rendered depth shape: {render_depths.shape}")  # (1, 1080, 1920, 1)
 ```
 
 ---

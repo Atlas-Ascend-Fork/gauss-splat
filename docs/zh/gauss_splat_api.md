@@ -38,12 +38,12 @@
 
 **返回值**:
 
-- `render_colors` (Tensor): 渲染的颜色图像，形状 (C, 3, H, W)
-- `render_depth` (Tensor): 渲染的深度图像，形状 (C, 1, H, W)
+- `render_colors` (Tensor): 渲染的颜色图像，形状 (C, H, W, 3)
+- `render_depth` (Tensor): 渲染的深度图像，形状 (C, H, W, 1)
 - `info` (dict): 元数据字典，包含:
   - `gaussian_ids`: 高斯点ID（当前为None）
-  - `means2d`: 2D投影坐标
-  - `radii`: 投影半径
+  - `means2d`: 2D投影坐标，形状 (B, C, 2, N)
+  - `radii`: 投影半径，形状 (B, C, 2, N)
   - `width`: 图像宽度
   - `height`: 图像高度
   - `n_cameras`: 相机数量
@@ -73,7 +73,7 @@ render_colors, render_depth, info = rasterizer.rasterization(
 **参数**:
 
 - `means` (Tensor): 高斯中心位置，形状 (B, N, 3)
-- `colors` (Tensor): 颜色值，形状 (B, N, 3) 或 (B, C, N, 3)
+- `colors` (Tensor): 颜色值，形状 (B, 3, N)
 - `covars` (Tensor, optional): 协方差矩阵，形状 (B, N, 3, 3)。与quat/scales互斥
 - `quat` (Tensor, optional): 四元数表示旋转，形状 (B, N, 4)。与covars互斥
 - `scales` (Tensor, optional): 缩放参数，形状 (B, N, 3)。与quat一起使用
@@ -90,14 +90,14 @@ render_colors, render_depth, info = rasterizer.rasterization(
 
 **返回值**:
 
-- `means2d` (Tensor): 2D投影坐标，形状 (B, C, N, 2)
+- `means2d` (Tensor): 2D投影坐标，形状 (B, C, 2, N)
 - `depths` (Tensor): 深度值，形状 (B, C, N)
-- `conics` (Tensor): 2D协方差逆矩阵（锥形参数），形状 (B, C, N, 3)
+- `conics` (Tensor): 2D协方差逆矩阵（锥形参数），形状 (B, C, 3, N)
 - `opacities` (Tensor): 过滤后的不透明度，形状 (B, C, N)
-- `radius` (Tensor): 投影半径，形状 (B, C, N)
-- `covars2d` (Tensor): 2D协方差矩阵，形状 (B, C, N, 2, 2)
-- `colors` (Tensor): 过滤后的颜色，形状 (B, C, N, 3)
-- `cnt` (Tensor): 有效高斯点数量
+- `radius` (Tensor): 投影半径，形状 (B, C, 2, N)
+- `covars2d` (Tensor): 2D协方差矩阵，形状 (B, C, 3, N)
+- `colors` (Tensor): 过滤后的颜色，形状 (B, C, 3, N)
+- `cnt` (Tensor): 有效高斯点数量, 形状 (B, C)
 
 **示例**:
 
@@ -133,17 +133,17 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt = \
 - `opacities` (Tensor): 不透明度，形状 (1, N)
 - `colors` (Tensor): 颜色，形状 (3, N)
 - `depths` (Tensor, optional): 深度值，形状 (1, N)。如为None则不渲染深度
-- `tile_coords` (Tensor): 分块坐标
-- `offsets` (Tensor): 偏移量
-- `sorted_gs_ids` (Tensor): 排序后的高斯点ID
+- `tile_coords` (Tensor): 分块坐标，形状 (tileNum, 2, nPixel)
+- `offsets` (Tensor): 偏移量，形状 (vectorCnt + (TileNum * 2))
+- `sorted_gs_ids` (Tensor): 排序后的高斯点ID，形状 (totalGauss)
 
 **返回值**:
 
 - 如果提供`depths`:
-  - `color` (Tensor): 渲染的颜色图像
-  - `depth` (Tensor): 渲染的深度图像
+  - `color` (Tensor): 渲染的颜色图像，形状 (3, tileNum, nPixel)
+  - `depth` (Tensor): 渲染的深度图像，形状 (1, tileNum, nPixel)
 - 如果不提供`depths`:
-  - `color` (Tensor): 渲染的颜色图像
+  - `color` (Tensor): 渲染的颜色图像，形状 (3, tileNum, nPixel)
 
 **示例**:
 
@@ -178,7 +178,7 @@ render_colors, render_depths = gauss_splat.calc_render(
 
 **返回值**:
 
-- `output` (Tensor): 计算得到的颜色值，形状 (B, N, 3)
+- `output` (Tensor): 计算得到的颜色值，形状 (B, 3, N)
 
 **示例**:
 
@@ -200,16 +200,16 @@ colors = gauss_splat.spherical_harmonics(
 
 **参数**:
 
-- `lb_sched` (Tensor): 负载均衡调度张量
-- `gaussian_cnt` (Tensor): 每个tile的高斯点计数
-- `depths` (Tensor): 深度值
-- `gs_ids` (Tensor): 高斯点ID
-- `sorted_offset` (Tensor): 排序偏移量
+- `lb_sched` (Tensor): 负载均衡调度张量，形状 (B, C, schedule_num)
+- `gaussian_cnt` (Tensor): 每个tile的高斯点计数，形状 (B, C, tile_num, 1)
+- `depths` (Tensor): 深度值，形状 (B, C, tile_num, N)
+- `gs_ids` (Tensor): 高斯点ID，形状 (B, C, tile_num, N)
+- `sorted_offset` (Tensor): 排序偏移量，形状 (B*C)
 - `max_tile_gauss` (int): 单个tile最大高斯点数
 
 **返回值**:
 
-- `sorted_gs_ids` (Tensor): 排序后的高斯点ID
+- `sorted_gs_ids` (Tensor): 排序后的高斯点ID，一维展平张量，形状 (totalGauss)
 
 **示例**:
 
@@ -234,11 +234,11 @@ sorted_gs_ids = gauss_splat.gaussian_sort(
 
 **参数**:
 
-- `means2d` (Tensor): 2D投影坐标，形状 (B, C, N, 2)
-- `opacity` (Tensor): 不透明度，形状 (B, C, N)
-- `conics` (Tensor): 协方差逆矩阵，形状 (B, C, N, 3)
-- `covars2d` (Tensor): 2D协方差矩阵，形状 (B, C, N, 2, 2)
-- `depths` (Tensor): 深度值，形状 (B, C, N)
+- `means2d` (Tensor): 2D投影坐标，形状 (B, C, 2, N)
+- `opacity` (Tensor): 不透明度，形状 (B, C, 1, N)
+- `conics` (Tensor): 协方差逆矩阵，形状 (B, C, 3, N)
+- `covars2d` (Tensor): 2D协方差矩阵，形状  (B, C, 3, N)
+- `depths` (Tensor): 深度值，形状 (B, C, 1, N)
 - `cnt` (Tensor): 有效高斯点计数，形状 (B, C)
 - `tile_grid` (Tensor): tile网格坐标
 - `image_width` (int): 图像宽度
@@ -247,10 +247,10 @@ sorted_gs_ids = gauss_splat.gaussian_sort(
 
 **返回值**:
 
-- `tile_sum` (Tensor): 每个tile的高斯点和
-- `tile_offset` (Tensor): tile偏移量
-- `tile_depths` (Tensor): tile深度
-- `gauss_index` (Tensor): 高斯点索引
+- `tile_sum` (Tensor): 每个tile的高斯点和，形状(B, C, tile_num, 1)
+- `tile_offset` (Tensor): tile偏移量，形状(B, C, tile_num, 1)
+- `tile_depths` (Tensor): tile深度，形状(B, C, tile_num, N)
+- `gauss_index` (Tensor): 高斯点索引，形状(B, C, tile_num, N)
 
 **示例**:
 
@@ -280,16 +280,16 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 
 **参数**:
 
-- `means` (Tensor): 3D高斯中心位置
-- `colors` (Tensor): 颜色值
-- `det` (Tensor): 协方差行列式
-- `opacities` (Tensor): 不透明度
-- `means2d` (Tensor): 2D投影坐标
-- `depths` (Tensor): 深度值
-- `radius` (Tensor): 投影半径
-- `conics` (Tensor): 协方差逆矩阵
-- `covars2d` (Tensor): 2D协方差矩阵
-- `compensations` (Tensor, optional): 补偿因子
+- `means` (Tensor): 3D高斯中心位置，形状 (B, 3, N)
+- `colors` (Tensor): 颜色值，形状 (B, 3, N)
+- `det` (Tensor): 协方差行列式，形状 (B, C, N)
+- `opacities` (Tensor): 不透明度，形状 (B, N)
+- `means2d` (Tensor): 2D投影坐标，形状 (B, C, 2, N)
+- `depths` (Tensor): 深度值，形状 (B, C, N)
+- `radius` (Tensor): 投影半径，形状 (B, C, 2, N)
+- `conics` (Tensor): 协方差逆矩阵，形状 (B, C, 3, N)
+- `covars2d` (Tensor): 2D协方差矩阵，形状 (B, C, 3, N)
+- `compensations` (Tensor, optional): 补偿因子，形状 (B, C, N)
 - `width` (int): 图像宽度
 - `height` (int): 图像高度
 - `near_plane` (float): 近平面距离
@@ -297,16 +297,16 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 
 **返回值**:
 
-- `means_culling`: 过滤后的3D坐标
-- `colors_culling`: 过滤后的颜色
-- `means2d_culling`: 过滤后的2D坐标
-- `depths_culling`: 过滤后的深度
-- `radius_culling`: 过滤后的半径
-- `covars2d_culling`: 过滤后的2D协方差
-- `conics_culling`: 过滤后的协方差逆矩阵
-- `opacities_culling`: 过滤后的不透明度
-- `proj_filter`: 投影过滤器
-- `cnt`: 有效点数量
+- `means_culling`: 过滤后的3D坐标，形状 (B, C, 3, N)
+- `colors_culling`: 过滤后的颜色，形状 (B, C, 3, N)
+- `means2d_culling`: 过滤后的2D坐标，形状 (B, C, 2, N)
+- `depths_culling`: 过滤后的深度，形状 (B, C, N)
+- `radius_culling`: 过滤后的半径，形状 (B, C, 2, N)
+- `covars2d_culling`: 过滤后的2D协方差，形状 (B, C, 3, N)
+- `conics_culling`: 过滤后的协方差逆矩阵，形状 (B, C, 3, N)
+- `opacities_culling`: 过滤后的不透明度，形状 (B, C, N)
+- `proj_filter`: 投影过滤器，形状 (B, C, ceil(N/8))
+- `cnt`: 有效点数量，形状 (B, C)
 
 ---
 
@@ -318,12 +318,12 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 
 **参数**:
 
-- `nums_tensor` (Tensor): 每个tile的高斯点数量
+- `nums_tensor` (Tensor): 每个tile的高斯点数量，形状 (B, C, T)
 - `num_bins` (int): 分箱数量（向量处理器数量）
 
 **返回值**:
 
-- `lb_sched_tensor` (Tensor): 负载均衡调度张量
+- `lb_sched_tensor` (Tensor): 负载均衡调度张量，形状 (B, C, M)
 
 **示例**:
 
@@ -408,8 +408,8 @@ render_colors, render_depths, info = rasterizer.rasterization(
     camera_model="pinhole"
 )
 
-print(f"渲染颜色形状: {render_colors.shape}")  # (1, 3, 1080, 1920)
-print(f"渲染深度形状: {render_depths.shape}")  # (1, 1, 1080, 1920)
+print(f"渲染颜色形状: {render_colors.shape}")  # (1, 1080, 1920, 3)
+print(f"渲染深度形状: {render_depths.shape}")  # (1, 1080, 1920, 1)
 ```
 
 ---

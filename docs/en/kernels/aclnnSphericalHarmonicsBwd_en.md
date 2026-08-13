@@ -101,7 +101,7 @@ aclnnStatus aclnnSphericalHarmonicsBwd(
       <td>degree</td>
       <td>Input</td>
       <td>Spherical harmonics degree used.</td>
-      <td>Supports 0 to 3.</td>
+      <td>Supports 0 to 4.</td>
       <td>INT64</td>
       <td>-</td>
       <td>-</td>
@@ -170,7 +170,7 @@ aclnnStatus aclnnSphericalHarmonicsBwd(
             <tr>
                 <td>ACLNN_ERR_PARAM_INVALID</td>
                 <td>161002</td>
-                <td>The data types and formats of dirs, coeffs, vColors, vDirs, and vCoeffs are not within the supported range, or degree is not within the range of 0 to 3.</td>
+                <td>The data types and formats of dirs, coeffs, vColors, vDirs, and vCoeffs are not within the supported range, or degree is not within the range of 0 to 4.</td>
             </tr>
         </tbody>
     </table>

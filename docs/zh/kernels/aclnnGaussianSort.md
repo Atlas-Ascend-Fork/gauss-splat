@@ -115,7 +115,7 @@ aclnnStatus aclnnGaussianSort(
       <td>不支持空tensor。</td>
       <td>INT64</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, ...)</td>
+      <td>(batch_size * camera_num)</td>
       <td>√</td>
     </tr>
     <tr>
@@ -135,7 +135,7 @@ aclnnStatus aclnnGaussianSort(
       <td>不支持空tensor。</td>
       <td>INT32</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, ...)</td>
+      <td>(totalGauss)</td>
       <td>√</td>
     </tr>
     <tr>

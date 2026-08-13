@@ -101,7 +101,7 @@ aclnnStatus aclnnSphericalHarmonicsBwd(
       <td>degree</td>
       <td>输入</td>
       <td>使用的球谐阶数。</td>
-      <td>支持0~3。</td>
+      <td>支持0~4。</td>
       <td>INT64</td>
       <td>-</td>
       <td>-</td>
@@ -170,7 +170,7 @@ aclnnStatus aclnnSphericalHarmonicsBwd(
             <tr>
                 <td>ACLNN_ERR_PARAM_INVALID</td>
                 <td>161002</td>
-                <td>dirs、coeffs、vColors、vDirs、vCoeffs的数据类型和数据格式不在支持的范围内，或degree不在0~3范围内。</td>
+                <td>dirs、coeffs、vColors、vDirs、vCoeffs的数据类型和数据格式不在支持的范围内，或degree不在0~4范围内。</td>
             </tr>
         </tbody>
     </table>

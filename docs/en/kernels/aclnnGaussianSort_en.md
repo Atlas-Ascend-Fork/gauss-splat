@@ -115,7 +115,7 @@ aclnnStatus aclnnGaussianSort(
       <td>Empty tensors are not supported.</td>
       <td>INT64</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, ...)</td>
+      <td>(batch_size * camera_num)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -135,7 +135,7 @@ aclnnStatus aclnnGaussianSort(
       <td>Empty tensors are not supported.</td>
       <td>INT32</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, ...)</td>
+      <td>(totalGauss)</td>
       <td>Yes</td>
     </tr>
     <tr>

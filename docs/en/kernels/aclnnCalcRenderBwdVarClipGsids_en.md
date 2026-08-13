@@ -148,7 +148,7 @@ aclnnStatus aclnnCalcRenderBwdVarClipGsids(
       <td>Empty tensors are not supported.</td>
       <td>INT64</td>
       <td>ND</td>
-      <td>(totalGauss)</td>
+      <td>(tileNum + totalGauss)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -158,7 +158,7 @@ aclnnStatus aclnnCalcRenderBwdVarClipGsids(
       <td>Empty tensors are not supported.</td>
       <td>UINT8</td>
       <td>ND</td>
-      <td>(nPixel)</td>
+      <td>(totalGauss, 2)</td>
       <td>Yes</td>
     </tr>
     <tr>

@@ -93,7 +93,7 @@ class ProjectionThreeDimsGaussianFused(Function):
         ctx.width = width
         ctx.height = height
         return means2d_culling, depths_culling, conics_culling, opacities_culling,\
-            radius_culling, covars2d_culling, colors_culling, cnt
+            radius_culling, covars2d_culling, colors_culling, cnt, proj_filter
 
     @staticmethod
     # pylint: disable=too-many-arguments,huawei-too-many-arguments,too-many-return-values
@@ -103,7 +103,7 @@ class ProjectionThreeDimsGaussianFused(Function):
         means, conics, viewmats, quats, scales, ks, proj_filter, compensations = ctx.saved_tensors
         width = ctx.width
         height = ctx.height
-        v_means2d, v_depths, v_conics, v_opacities_culling, v_radii, v_covar2d, v_colors_culling, v_cnt = v_args
+        v_means2d, v_depths, v_conics, v_opacities_culling, v_radii, v_covar2d, v_colors_culling, v_cnt, _v_proj_filter = v_args
         v_pw, v_quats, v_scales, v_r, v_colors, v_opacities = fully_fused_projection_bwd(
                 means,
                 quats,

@@ -97,9 +97,23 @@ class Config:
 
     lpips_net: Literal["vgg", "alex"] = "alex"
     
+
+    # === Densification (gsplat DefaultStrategy) ===
+    densify: bool = False
+    prune_opa: float = 0.005
+    grow_grad2d: float = 0.0002
+    refine_start_iter: int = 500
+    refine_stop_iter: int = 15000
+    refine_every: int = 100
+    reset_every: int = 3000
+
     def adjust_steps(self, factor: float):
         self.eval_steps = [int(i * factor) for i in self.eval_steps]
         self.save_steps = [int(i * factor) for i in self.save_steps]
         self.ply_steps = [int(i * factor) for i in self.ply_steps]
         self.max_steps = int(self.max_steps * factor)
         self.sh_degree_interval = int(self.sh_degree_interval * factor)
+        self.refine_start_iter = int(self.refine_start_iter * factor)
+        self.refine_stop_iter = int(self.refine_stop_iter * factor)
+        self.refine_every = int(self.refine_every * factor)
+        self.reset_every = int(self.reset_every * factor)

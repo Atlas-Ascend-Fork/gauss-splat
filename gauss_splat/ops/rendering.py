@@ -165,7 +165,7 @@ class Rasterizer:
         colors = spherical_harmonics(sh_degree, rays_d.reshape(B, N, 3), shs[0, :, :k, :].reshape(B, N, k, 3))
         colors = (colors + 0.5).clip(min=0.0)
 
-        means2d, depths, conics, opacities, radius, covars2d, colors, cnt = projection_three_dims_gaussian_fused(
+        means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter = projection_three_dims_gaussian_fused(
             means.reshape(B, N, 3),
             colors,
             None,
@@ -267,5 +267,7 @@ class Rasterizer:
             "width": width,
             "height": height,
             "n_cameras": C,
+            "proj_filter": proj_filter,
+            "n_gaussians": N,
         }
         return render_colors, render_depths, meta

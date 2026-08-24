@@ -108,3 +108,14 @@ def save_ply(splats: torch.nn.ParameterDict, dir: str, colors: torch.Tensor = No
             for data in [scales, quats]:
                 for j in range(data.shape[1]):
                     f.write(struct.pack("<f", data[i, j]))
+
+
+def normalized_quat_to_rotmat(quat):
+    """Quaternion (w,x,y,z, normalized) -> 3x3 rotation matrix. Pure-python NPU-friendly."""
+    w, x, y, z = quat.unbind(-1)
+    R = torch.stack([
+        1 - 2*(y*y + z*z), 2*(x*y - w*z),     2*(x*z + w*y),
+        2*(x*y + w*z),     1 - 2*(x*x + z*z), 2*(y*z - w*x),
+        2*(x*z - w*y),     2*(y*z + w*x),     1 - 2*(x*x + y*y),
+    ], dim=-1)
+    return R.reshape(*quat.shape[:-1], 3, 3)

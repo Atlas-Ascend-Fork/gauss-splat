@@ -26,6 +26,21 @@ from rasterization.config import Config
 
 from gauss_splat import Rasterizer as _GSRasterizer
 
+# === NPU densification support ===
+from gsplat.strategy import DefaultStrategy
+
+
+def _to_CN2(t):
+    """Convert means2d gradient / radii to [C, N, 2] format."""
+    while t.ndim > 3 and t.shape[0] == 1:
+        t = t.squeeze(0)
+    if t.ndim == 3 and t.shape[1] in (2, 3) and t.shape[1] < t.shape[2]:
+        t = t.permute(0, 2, 1).contiguous()
+    elif t.ndim == 2:
+        t = t.unsqueeze(0)
+    return t
+
+
 class Rasterizer:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
@@ -119,6 +134,25 @@ class Runner:
             world_size=world_size,
         )
         print("Model initialized. Number of GS:", len(self.splats["means"]))
+        if getattr(cfg, "densify", False):
+            self.strategy = DefaultStrategy(
+                prune_opa=cfg.prune_opa,
+                grow_grad2d=cfg.grow_grad2d,
+                refine_start_iter=cfg.refine_start_iter,
+                refine_stop_iter=cfg.refine_stop_iter,
+                refine_every=cfg.refine_every,
+                reset_every=cfg.reset_every,
+                verbose=(world_rank == 0),
+            )
+            self.strategy.check_sanity(self.splats, self.optimizers)
+            self.strategy_state = self.strategy.initialize_state(scene_scale=self.scene_scale)
+            if world_rank == 0:
+                print(f"[Densify] DefaultStrategy enabled "
+                      f"(refine [{cfg.refine_start_iter}-{cfg.refine_stop_iter}] every {cfg.refine_every}, "
+                      f"reset every {cfg.reset_every}, grow_grad2d={cfg.grow_grad2d})")
+        else:
+            self.strategy = None
+            self.strategy_state = None
 
         # Losses & Metrics.
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
@@ -241,6 +275,12 @@ class Runner:
                     + cfg.scale_reg * torch.abs(torch.exp(self.splats["scales"])).mean()
                 )
 
+            _orig_m2d = None
+            if self.strategy is not None:
+                _orig_m2d = info["means2d"]
+                if _orig_m2d.requires_grad:
+                    _orig_m2d.retain_grad()
+
             loss.backward()
 
             desc = f"loss={loss.item():.3f}| " f"sh degree={sh_degree_to_use}| "
@@ -298,6 +338,18 @@ class Runner:
                 optimizer.zero_grad(set_to_none=True)
             for scheduler in schedulers:
                 scheduler.step()
+
+            if self.strategy is not None and _orig_m2d is not None and _orig_m2d.grad is not None:
+                with torch.no_grad():
+                    g = _to_CN2(_orig_m2d.grad)
+                    radii_cn2 = _to_CN2(info["radii"])
+                    proxy_m2d = torch.empty_like(g, requires_grad=False)
+                    proxy_m2d.grad = g
+                    proxy_info = dict(info)
+                    proxy_info["means2d"] = proxy_m2d
+                    proxy_info["radii"] = radii_cn2
+                self.strategy.step_post_backward(self.splats, self.optimizers,
+                                                 self.strategy_state, step, proxy_info)
 
             # eval the full set
             if step in [i - 1 for i in cfg.eval_steps]:

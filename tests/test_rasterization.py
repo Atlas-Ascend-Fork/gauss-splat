@@ -93,7 +93,7 @@ def _golden_rasterization(splats, cam, size, tile_size, active_sh_degree, camera
     colors = (colors + 0.5).clip(min=0.0)
 
     from gauss_splat import projection_three_dims_gaussian_fused
-    means2d, depths, conics, opacities_proj, radius, covars2d, colors_proj, cnt = \
+    means2d, depths, conics, opacities_proj, radius, covars2d, colors_proj, cnt, _proj_filter = \
         projection_three_dims_gaussian_fused(
             means.reshape(B, N, 3), colors, None,
             quats.reshape(B, N, 4), scales.reshape(B, N, 3), opacities.reshape(B, N),

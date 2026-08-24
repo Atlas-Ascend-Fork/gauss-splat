@@ -562,7 +562,7 @@ class TestProjection3DGSForward(TestCase):
         viewmats = inputs.viewmats.npu()
         ks = inputs.ks.npu()
         means2d_culling, depths_culling, conics_culling, opacities_culling, \
-        radius_culling, covars2d_culling, colors_culling, cnt = \
+        radius_culling, covars2d_culling, colors_culling, cnt, _proj_filter = \
             projection_three_dims_gaussian_fused(means, colors, covars, \
             None, None, opacities, viewmats, ks, width, height, eps2d, \
             near_plane, far_plane, calc_compensations, camera_model)

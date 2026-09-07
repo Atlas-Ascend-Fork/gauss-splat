@@ -52,6 +52,15 @@ pip install dist/*.whl --force-reinstall
 pip install . --no-build-isolation
 ```
 
+安装完成后，请将快速开始代码保存到项目源码目录之外，并从源码目录之外运行。例如，将脚本保存为与`gauss-splat`目录同级的`quick_start.py`后执行：
+
+```bash
+cd ..
+python quick_start.py
+```
+
+请勿在项目根目录下直接运行该脚本。否则Python会优先导入源码目录中的`gauss_splat`包，而不是已安装的包含`gsplat_c`扩展的包，进而导致`ModuleNotFoundError: No module named 'gauss_splat.gsplat_c'`。
+
 ## 🚀快速开始
 
 ### 完整渲染流程（使用Rasterizer）
@@ -93,8 +102,8 @@ render_colors, render_depths, info = rasterizer.rasterization(
     camera_model="pinhole"
 )
 
-print(f"渲染颜色形状: {render_colors.shape}")  # (1, 3, 1080, 1920)
-print(f"渲染深度形状: {render_depths.shape}")  # (1, 1, 1080, 1920)
+print(f"渲染颜色形状: {render_colors.shape}")  # (1, 1080, 1920, 3)
+print(f"渲染深度形状: {render_depths.shape}")  # (1, 1080, 1920, 1)
 ```
 
 ### 其他

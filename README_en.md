@@ -53,6 +53,15 @@ pip install dist/*.whl --force-reinstall
 pip install . --no-build-isolation
 ```
 
+After installation, save the Quick Start code outside the project source directory and run it from outside that directory. For example, save the script as `quick_start.py` next to the `gauss-splat` directory, then run:
+
+```bash
+cd ..
+python quick_start.py
+```
+
+Do not run the script directly from the project root. Otherwise, Python imports the source-tree `gauss_splat` package before the installed package that contains the `gsplat_c` extension, resulting in `ModuleNotFoundError: No module named 'gauss_splat.gsplat_c'`.
+
 ## Quick Start
 
 ### Complete Rendering Pipeline (Using Rasterizer)
@@ -94,8 +103,8 @@ render_colors, render_depths, info = rasterizer.rasterization(
     camera_model="pinhole"
 )
 
-print(f"Rendered color shape: {render_colors.shape}")  # (1, 3, 1080, 1920)
-print(f"Rendered depth shape: {render_depths.shape}")  # (1, 1, 1080, 1920)
+print(f"Rendered color shape: {render_colors.shape}")  # (1, 1080, 1920, 3)
+print(f"Rendered depth shape: {render_depths.shape}")  # (1, 1080, 1920, 1)
 ```
 
 ### Others

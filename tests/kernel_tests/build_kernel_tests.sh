@@ -3,19 +3,41 @@
 set +e
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)
-_PYTHON_SITE=$($(dirname $(which python))/../bin/python -c "import gauss_splat, os; print(os.path.dirname(os.path.abspath(gauss_splat.__file__)))" 2>/dev/null)
+ARCH=$(uname -m)
+case "${ARCH}" in
+    x86_64|aarch64)
+        ;;
+    arm64)
+        ARCH=aarch64
+        ;;
+    *)
+        echo "Unsupported architecture: ${ARCH}" >&2
+        exit 1
+        ;;
+esac
+CANN_ARCH_DIR=${ARCH}-linux
+
+_PYTHON_SITE=$(cd /tmp && python -c "import gauss_splat, os; print(os.path.dirname(os.path.abspath(gauss_splat.__file__)))" 2>/dev/null)
 if [ -n "$_PYTHON_SITE" ]; then
     BUILD_DIR=${_PYTHON_SITE}/packages/vendors/customize
 else
-    BUILD_DIR=${PROJECT_ROOT}/build/lib.linux-x86_64-cpython-39/gauss_splat/packages/vendors/customize
+    PYTHON_BUILD_TAG=$(python -c 'import sysconfig, sys; print(f"{sysconfig.get_platform()}-{sys.implementation.cache_tag}")' 2>/dev/null)
+    if [ -z "${PYTHON_BUILD_TAG}" ]; then
+        echo "Unable to determine the Python build directory." >&2
+        exit 1
+    fi
+    BUILD_DIR=${PROJECT_ROOT}/build/lib.${PYTHON_BUILD_TAG}/gauss_splat/packages/vendors/customize
 fi
 CANN_PATH=$ASCEND_TOOLKIT_HOME
 
 GS_PACKAGES=${BUILD_DIR}
 OPAPI_INC=${GS_PACKAGES}/op_api/include
 OPAPI_LIB=${GS_PACKAGES}/op_api/lib
-OPTILING_LIB=${GS_PACKAGES}/op_impl/ai_core/tbe/op_tiling/lib/linux/x86_64
-OPPROTO_LIB=${GS_PACKAGES}/op_proto/lib/linux/x86_64
+OPTILING_LIB=${GS_PACKAGES}/op_impl/ai_core/tbe/op_tiling/lib/linux/${ARCH}
+OPPROTO_LIB=${GS_PACKAGES}/op_proto/lib/linux/${ARCH}
+CANN_PLATFORM_LIB=${CANN_PATH}/${CANN_ARCH_DIR}/lib64
+CANN_OPTILING_LIB=${CANN_PATH}/opp/built-in/op_impl/ai_core/tbe/op_tiling/lib/linux/${ARCH}
+CANN_OPAPI_LIB=${CANN_PATH}/opp/built-in/op_impl/ai_core/tbe/op_api/lib/linux/${ARCH}
 
 mkdir -p ${CANN_PATH}/include/aclnnop 2>/dev/null
 
@@ -32,9 +54,9 @@ CXXFLAGS="-std=c++11 -g -O0 -D_GLIBCXX_USE_CXX11_ABI=0"
 INCLUDES="-I${CANN_PATH}/include -I${OPAPI_INC}"
 
 LIB_DIRS="-L${CANN_PATH}/lib64 \
-    -L${CANN_PATH}/x86_64-linux/lib64 \
-    -L${CANN_PATH}/opp/built-in/op_impl/ai_core/tbe/op_tiling/lib/linux/x86_64 \
-    -L${CANN_PATH}/opp/built-in/op_impl/ai_core/tbe/op_api/lib/linux/x86_64 \
+    -L${CANN_PLATFORM_LIB} \
+    -L${CANN_OPTILING_LIB} \
+    -L${CANN_OPAPI_LIB} \
     -L${OPAPI_LIB} \
     -L${OPTILING_LIB} \
     -L${OPPROTO_LIB}"

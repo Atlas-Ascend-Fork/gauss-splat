@@ -22,7 +22,7 @@ dataset_names = Literal[
 
 # dataset urls
 urls = {
-    "mipnerf360": "http://storage.googleapis.com/gresearch/refraw360/360_v2.zip",
+    "mipnerf360": "https://storage.googleapis.com/gresearch/refraw360/360_v2.zip",
     "mipnerf360_extra": "https://storage.googleapis.com/gresearch/refraw360/360_extra_scenes.zip",
     "bilarf_data": "https://huggingface.co/datasets/Yuehao/bilarf_data/resolve/main/bilarf_data.zip",
     "zipnerf": [
@@ -80,6 +80,7 @@ def download_and_extract(url: str, download_path: Path, extract_path: Path) -> N
     # download
     download_command = [
         "curl",
+        "--fail",
         "-L",
         "-o",
         str(download_path),
@@ -89,7 +90,7 @@ def download_and_extract(url: str, download_path: Path, extract_path: Path) -> N
         subprocess.run(download_command, check=True)
         print("File file downloaded succesfully.")
     except subprocess.CalledProcessError as e:
-        print(f"Error downloading file: {e}")
+        raise RuntimeError(f"Error downloading file: {e}") from e
 
     # if .zip
     if Path(url).suffix == ".zip":

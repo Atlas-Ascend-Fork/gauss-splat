@@ -29,6 +29,10 @@ else
     BUILD_DIR=${PROJECT_ROOT}/build/lib.${PYTHON_BUILD_TAG}/gauss_splat/packages/vendors/customize
 fi
 CANN_PATH=$ASCEND_TOOLKIT_HOME
+if [ -z "${CANN_PATH}" ] || [ ! -d "${CANN_PATH}/include" ]; then
+    echo "Source the CANN set_env.sh before building kernel tests." >&2
+    exit 1
+fi
 
 GS_PACKAGES=${BUILD_DIR}
 OPAPI_INC=${GS_PACKAGES}/op_api/include
@@ -47,7 +51,7 @@ for f in ${OPAPI_INC}/aclnn_*.h; do
 done
 
 WORKDIR=${SCRIPT_DIR}/build_out
-mkdir -p ${WORKDIR}
+mkdir -p "${WORKDIR}" || exit 1
 
 CXX=g++
 CXXFLAGS="-std=c++11 -g -O0 -D_GLIBCXX_USE_CXX11_ABI=0"
@@ -72,14 +76,20 @@ echo "CANN_PATH: ${CANN_PATH}"
 echo ""
 
 BUILD_LOG=${WORKDIR}/build.log
-> ${BUILD_LOG}
+> "${BUILD_LOG}" || exit 1
+failed=0
+built=0
 
-for test_src in ${SCRIPT_DIR}/test_*.cpp; do
-    test_name=$(basename ${test_src} .cpp)
+for test_src in "${SCRIPT_DIR}"/test_*.cpp; do
+    [ -f "${test_src}" ] || continue
+    built=$((built + 1))
+    test_name=$(basename "${test_src}" .cpp)
     echo "Building ${test_name}..."
-    ${CXX} ${CXXFLAGS} ${INCLUDES} ${test_src} -o ${WORKDIR}/${test_name} ${LIB_DIRS} ${LIBS} 2>>${BUILD_LOG}
+    ${CXX} ${CXXFLAGS} ${INCLUDES} "${test_src}" -o "${WORKDIR}/${test_name}" ${LIB_DIRS} ${LIBS} >>"${BUILD_LOG}" 2>&1
     if [ $? -ne 0 ]; then
         echo "  [${test_name}] COMPILE FAILED"
+        failed=$((failed + 1))
+        rm -f "${WORKDIR}/${test_name}"
     else
         echo "  [${test_name}] COMPILE OK"
     fi
@@ -89,4 +99,5 @@ echo ""
 echo "=== Build completed ==="
 echo "Binaries in: ${WORKDIR}/"
 echo "Build log: ${BUILD_LOG}"
-
+echo "Tests: ${built}, failed: ${failed}"
+[ "${built}" -gt 0 ] && [ "${failed}" -eq 0 ]

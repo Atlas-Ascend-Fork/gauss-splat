@@ -107,9 +107,43 @@ print(f"Rendered color shape: {render_colors.shape}")  # (1, 1080, 1920, 3)
 print(f"Rendered depth shape: {render_depths.shape}")  # (1, 1080, 1920, 1)
 ```
 
-### Others
+### Tests
 
-Refer to the test code in the tests directory.
+NPU tests require Linux, Atlas A2/A3, the matching CANN, PyTorch and torch_npu versions listed above, the ACL Python interface, and a built and installed project wheel. Activate that Python environment and source the CANN environment first. Tests use `npu:0`.
+
+Start in the repository root. Run Python tests outside the repository to avoid shadowing the installed `gauss_splat.gsplat_c` extension. Do not add the repository root to `PYTHONPATH`.
+
+```bash
+REPO="$(pwd)"
+source "${ASCEND_TOOLKIT_HOME}/set_env.sh"  # Use the actual installation path if unset
+python -m pip install pytest
+cd /tmp
+python -c "import acl, torch, torch_npu, gauss_splat.gsplat_c; print(torch.npu.is_available())"
+
+# Forward and backward rendering accuracy tests
+python -m pytest -v --tb=long "$REPO/tests/test_calc_render_fwd.py" "$REPO/tests/test_calc_render_bwd.py"
+# All Python tests
+python -m pytest -v --tb=long "$REPO/tests"
+# Alternatively, run an individual test script
+python "$REPO/tests/test_calc_render_fwd.py" -v
+
+# C++ operator invocation tests, not a replacement for Python accuracy tests
+bash "$REPO/tests/kernel_tests/build_kernel_tests.sh" && bash "$REPO/tests/kernel_tests/run_kernel_tests.sh"
+```
+
+Build logs are written to `tests/kernel_tests/build_out/build.log`, the run summary to `run_results.txt` in the same directory, and each test's stdout and stderr to `*_run.log`. Compilation failures, missing executables, runtime failures, and no tests produce a nonzero script exit status.
+
+CPU regression tests for the reference and diagnostics require only PyTorch and NumPy, without CANN or an NPU:
+
+```bash
+python -m unittest discover -s "$REPO/tests" -p test_render_test_utils.py -v
+# Mocked script regression tests require only Python and Bash
+python -m unittest discover -s "$REPO/tests" -p test_kernel_test_scripts.py -v
+```
+
+Rendering tests use seed `1234`, positive-definite covariances, and independent CPU reference inputs. Backward tests also check all seven gradient fields. Comparisons preserve the installed `torch_npu.testing.TestCase.assertRtolEqual` defaults without relaxing tolerances. Failures report the output field, case, shape, dtype, device, comparator defaults, error statistics, and worst location; nonfinite values fail separately. The reference follows the current kernel's transmittance check before complete groups of four Gaussians, with no additional check for the remaining tail.
+
+For remaining failures, retain the full log and record the hardware model and CANN, torch, and torch_npu versions. An accuracy assertion alone does not identify a hardware or kernel defect.
 
 ## Python API
 

@@ -106,9 +106,43 @@ print(f"渲染颜色形状: {render_colors.shape}")  # (1, 1080, 1920, 3)
 print(f"渲染深度形状: {render_depths.shape}")  # (1, 1080, 1920, 1)
 ```
 
-### 其他
+### 测试
 
-参考tests目录下的测试代码。
+NPU 测试需要 Linux、Atlas A2/A3、上述配套版本的 CANN、PyTorch、torch_npu 和 ACL Python 接口，并已完成项目 wheel 的编译安装。先激活安装项目的 Python 环境并加载 CANN 环境变量。测试默认使用 `npu:0`。
+
+在仓库根目录执行以下命令。切换到仓库外运行 Python 测试，避免源码目录遮蔽已安装的 `gauss_splat.gsplat_c` 扩展；也请勿将仓库根目录加入 `PYTHONPATH`。
+
+```bash
+REPO="$(pwd)"
+source "${ASCEND_TOOLKIT_HOME}/set_env.sh"  # 未设置该变量时，使用实际安装路径
+python -m pip install pytest
+cd /tmp
+python -c "import acl, torch, torch_npu, gauss_splat.gsplat_c; print(torch.npu.is_available())"
+
+# 渲染前向和反向精度回归
+python -m pytest -v --tb=long "$REPO/tests/test_calc_render_fwd.py" "$REPO/tests/test_calc_render_bwd.py"
+# 全部 Python 测试
+python -m pytest -v --tb=long "$REPO/tests"
+# 也可单独运行测试脚本
+python "$REPO/tests/test_calc_render_fwd.py" -v
+
+# C++ 算子调用测试，不能替代 Python 精度回归
+bash "$REPO/tests/kernel_tests/build_kernel_tests.sh" && bash "$REPO/tests/kernel_tests/run_kernel_tests.sh"
+```
+
+C++ 构建日志位于 `tests/kernel_tests/build_out/build.log`，运行汇总位于同目录的 `run_results.txt`，各用例的标准输出和错误保存在 `*_run.log`。编译失败、可执行文件缺失、运行失败或没有测试时，脚本返回非零退出码。
+
+参考实现和诊断工具的 CPU 回归仅需 PyTorch 和 NumPy，不需要 CANN 或 NPU：
+
+```bash
+python -m unittest discover -s "$REPO/tests" -p test_render_test_utils.py -v
+# 测试脚本的模拟回归，仅需 Python 和 Bash
+python -m unittest discover -s "$REPO/tests" -p test_kernel_test_scripts.py -v
+```
+
+渲染测试使用固定种子 `1234`、正定协方差和独立的 CPU 参考输入；反向测试同时验证七类梯度。比较保留当前安装的 `torch_npu.testing.TestCase.assertRtolEqual` 默认规则，不放宽容差。失败信息包含输出字段、用例、shape、dtype、设备、比较器默认参数、误差统计和最差位置；非有限值单独报错。参考实现按当前内核在完整四高斯组前检查透射率，剩余不足四个时不再检查。
+
+若仍失败，请保留完整日志并记录硬件型号及 CANN、torch、torch_npu 版本；不能仅凭精度断言失败判断为硬件或内核缺陷。
 
 ## 📖Python API
 

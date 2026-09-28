@@ -29,6 +29,10 @@ else
     BUILD_DIR=${PROJECT_ROOT}/build/lib.${PYTHON_BUILD_TAG}/gauss_splat/packages/vendors/customize
 fi
 CANN_PATH=$ASCEND_TOOLKIT_HOME
+if [ -z "${CANN_PATH}" ] || [ ! -d "${CANN_PATH}/include" ]; then
+    echo "Source the CANN set_env.sh before running kernel tests." >&2
+    exit 1
+fi
 
 GS_PACKAGES=${BUILD_DIR}
 OPAPI_LIB=${GS_PACKAGES}/op_api/lib
@@ -42,32 +46,42 @@ export ASCEND_CUSTOM_OPP_PATH=${GS_PACKAGES}
 export LD_LIBRARY_PATH=${CANN_PATH}/lib64:${CANN_PLATFORM_LIB}:${CANN_OPTILING_LIB}:${CANN_OPAPI_LIB}:${OPAPI_LIB}:${OPTILING_LIB}:${OPPROTO_LIB}:$LD_LIBRARY_PATH
 
 WORKDIR=${SCRIPT_DIR}/build_out
-mkdir -p ${WORKDIR}
+mkdir -p "${WORKDIR}" || exit 1
 
 RESULTS_FILE=${WORKDIR}/run_results.txt
-echo "=== Kernel Test Results $(date) ===" > ${RESULTS_FILE}
-echo "GS_PACKAGES: ${GS_PACKAGES}" >> ${RESULTS_FILE}
-echo "" >> ${RESULTS_FILE}
+echo "=== Kernel Test Results $(date) ===" > "${RESULTS_FILE}" || exit 1
+echo "GS_PACKAGES: ${GS_PACKAGES}" >> "${RESULTS_FILE}"
+echo "" >> "${RESULTS_FILE}"
 
-for binary in ${WORKDIR}/test_*; do
-    [ ! -f ${binary} ] && continue
-    [[ "${binary}" == *.log ]] && continue
-    [[ "${binary}" == *.txt ]] && continue
-    test_name=$(basename ${binary})
+failed=0
+total=0
+for test_src in "${SCRIPT_DIR}"/test_*.cpp; do
+    [ -f "${test_src}" ] || continue
+    total=$((total + 1))
+    test_name=$(basename "${test_src}" .cpp)
+    binary="${WORKDIR}/${test_name}"
+    if [ ! -x "${binary}" ]; then
+        echo "[${test_name}] MISSING EXECUTABLE" | tee -a "${RESULTS_FILE}"
+        failed=$((failed + 1))
+        continue
+    fi
     echo "Running ${test_name}..."
-    cd /tmp && ${binary} 2>${WORKDIR}/${test_name}_run.log
+    (cd /tmp && "${binary}") >"${WORKDIR}/${test_name}_run.log" 2>&1
     exit_code=$?
-    output=$(cat ${WORKDIR}/${test_name}_run.log 2>/dev/null)
+    [ "${exit_code}" -eq 0 ] || failed=$((failed + 1))
+    output=$(cat "${WORKDIR}/${test_name}_run.log" 2>/dev/null)
     echo "[${test_name}] EXIT CODE: ${exit_code}"
     if [ -n "${output}" ]; then
         echo "  ${output}"
     fi
-    echo "[${test_name}] EXIT CODE: ${exit_code}" >> ${RESULTS_FILE}
-    echo "${output}" >> ${RESULTS_FILE}
-    echo "" >> ${RESULTS_FILE}
+    echo "[${test_name}] EXIT CODE: ${exit_code}" >> "${RESULTS_FILE}"
+    echo "${output}" >> "${RESULTS_FILE}"
+    echo "" >> "${RESULTS_FILE}"
 done
 
 echo ""
 echo "====================================="
 echo "=== All tests completed ==="
-cat ${RESULTS_FILE}
+cat "${RESULTS_FILE}"
+echo "Tests: ${total}, failed: ${failed}"
+[ "${total}" -gt 0 ] && [ "${failed}" -eq 0 ]

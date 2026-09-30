@@ -32,11 +32,11 @@ constexpr uint32_t TILE_MAX_GAUSSIAN_INDEX = 0;
 constexpr uint32_t SIZE_OF_FLOAT = 4;
 constexpr uint32_t ALIGN_NUM = 32;
 constexpr uint32_t SORT_TENSOR_NUM = 8;
-constexpr uint32_t WS_TENSOR_NUM = 2;
-}  // namespace
+constexpr uint32_t WS_TENSOR_NUM = 4; // ping-pong workspace: 2 slots × 2 buffers
+} // namespace
 
 namespace optiling {
-static ge::graphStatus TilingForGaussianSort(gert::TilingContext* context)
+static ge::graphStatus TilingForGaussianSort(gert::TilingContext *context)
 {
     GaussianSortTilingData tiling;
     if (context == nullptr) {
@@ -72,10 +72,14 @@ static ge::graphStatus TilingForGaussianSort(gert::TilingContext* context)
         return ge::GRAPH_FAILED;
     }
 
-    uint32_t tileMaxGaussian = *(attrsPtr->GetAttrPointer<uint32_t>(TILE_MAX_GAUSSIAN_INDEX));
-    uint32_t maxMaskNum = (tileMaxGaussian % ALIGN_NUM == 0)
-                              ? tileMaxGaussian
-                              : ((tileMaxGaussian + ALIGN_NUM - 1) / ALIGN_NUM) * ALIGN_NUM;
+    const uint32_t *tileMaxGaussianPtr = attrsPtr->GetAttrPointer<uint32_t>(TILE_MAX_GAUSSIAN_INDEX);
+    if (tileMaxGaussianPtr == nullptr) {
+        return ge::GRAPH_FAILED;
+    }
+    uint32_t tileMaxGaussian = *tileMaxGaussianPtr;
+    uint32_t maxMaskNum = (tileMaxGaussian % ALIGN_NUM == 0) ?
+                              tileMaxGaussian :
+                              ((tileMaxGaussian + ALIGN_NUM - 1) / ALIGN_NUM) * ALIGN_NUM;
 
     auto platform = context->GetPlatformInfo();
     if (platform == nullptr) {
@@ -89,7 +93,6 @@ static ge::graphStatus TilingForGaussianSort(gert::TilingContext* context)
     uint32_t blockDim = (tileNum > vectorNum) ? vectorNum : tileNum;
     uint64_t ubSize;
     platformInfo.GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubSize);
-    // sort阶段，核内大小数排序UB支持最大数计算
     uint32_t maxSortNum = ubSize / (SORT_TENSOR_NUM * SIZE_OF_FLOAT);
 
     tiling.set_batchSize(batchSize);
@@ -104,33 +107,33 @@ static ge::graphStatus TilingForGaussianSort(gert::TilingContext* context)
     context->GetRawTilingData()->SetDataSize(tiling.GetDataSize());
     context->SetBlockDim(blockDim);
 
-    // workspace 空间申请，引入 B，C 维度，外加负载均衡策略，无法精细化处理，故选择全局tile中最大高斯球数作为空间申请
-    size_t userWorkspaceSize = maxMaskNum * SIZE_OF_FLOAT * WS_TENSOR_NUM * blockDim;
+    // workspace: maxMaskNum × 4 floats × blockDim (ping-pong per AIV)
+    size_t userWorkspaceSize = static_cast<size_t>(maxMaskNum) * SIZE_OF_FLOAT * WS_TENSOR_NUM * blockDim;
     size_t systemWorkspaceSize = platformInfo.GetLibApiWorkSpaceSize();
-    size_t* currentWorkspace = context->GetWorkspaceSizes(1);
+    size_t *currentWorkspace = context->GetWorkspaceSizes(1);
     if (currentWorkspace != nullptr) {
         currentWorkspace[0] = systemWorkspaceSize + userWorkspaceSize;
     }
     return ge::GRAPH_SUCCESS;
 }
-}  // namespace optiling
+} // namespace optiling
 
 namespace ge {
-static ge::graphStatus InferShape(gert::InferShapeContext* context)
+static ge::graphStatus InferShape(gert::InferShapeContext *context)
 {
     return GRAPH_SUCCESS;
 }
 
-static ge::graphStatus InferDataType(gert::InferDataTypeContext* context)
+static ge::graphStatus InferDataType(gert::InferDataTypeContext *context)
 {
     return ge::GRAPH_SUCCESS;
 }
-}  // namespace ge
+} // namespace ge
 
 namespace ops {
 class GaussianSort : public OpDef {
 public:
-    explicit GaussianSort(const char* name) : OpDef(name)
+    explicit GaussianSort(const char *name) : OpDef(name)
     {
         this->Input("lb_sched")
             .ParamType(REQUIRED)
@@ -162,7 +165,7 @@ public:
             .DataType({ge::DT_INT32})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
-        this->Attr("max_tile_gauss").Int();
+        this->Attr("max_tile_gauss").AttrType(REQUIRED).Int();
 
         this->SetInferShape(ge::InferShape).SetInferDataType(ge::InferDataType);
         this->AICore().SetTiling(optiling::TilingForGaussianSort);
@@ -172,4 +175,4 @@ public:
 };
 
 OP_ADD(GaussianSort);
-}  // namespace ops
+} // namespace ops

@@ -9,6 +9,8 @@
 
 from collections import namedtuple
 import gc
+import os
+import unittest
 
 import torch
 import torch_npu
@@ -117,6 +119,96 @@ class TestGaussianSort(TestCase):
                 del inputs, cpu_results, npu_results
                 gc.collect()
                 torch.npu.empty_cache()
+
+    @unittest.skipUnless(
+        os.environ.get("RUN_LARGE_SCALE") == "1",
+        "Large-scale sort benchmark (slow). Set RUN_LARGE_SCALE=1 to enable.",
+    )
+    def test_gaussian_sort_large_scale(self):
+        """Benchmark 4-way tree-mergesort at realistic tile sizes (10K–1M).
+
+        K≥171 cases (G≥1M) showcase merge phase optimization where the
+        tree-mergesort complexity advantage over bubble merge is measurable.
+        """
+        import time
+        for gauss_num in [12345, 56890, 102456, 287654, 1048576]:
+            with self.subTest(gaussian_num=gauss_num):
+                inputs = self._gen_large_scale_inputs(gauss_num)
+
+                cpu_start = time.perf_counter()
+                cpu_results = self.cpu_to_exec(inputs)
+                cpu_ms = (time.perf_counter() - cpu_start) * 1000
+
+                npu_ms = self._bench_npu(inputs)
+
+                npu_results = self._npu_exec_from_cpu_inputs(inputs)
+                self._check_large_scale_correctness(inputs, npu_results, gauss_num)
+
+                speedup = cpu_ms / npu_ms if npu_ms > 0 else float('inf')
+                print(f"[perf] G={gauss_num}: CPU {cpu_ms:.3f} ms | NPU {npu_ms:.3f} ms | speedup {speedup:.1f}x")
+
+                if gauss_num <= 150000:
+                    self.assertRtolEqual(
+                        cpu_results.sorted_gs_ids.numpy(),
+                        npu_results.sorted_gs_ids.cpu().numpy(),
+                    )
+
+                del inputs, cpu_results, npu_results
+                gc.collect()
+                torch.npu.empty_cache()
+
+    def _gen_large_scale_inputs(self, gauss_num):
+        batch_size, camera_num, tile_num = 1, 1, 1
+        tile_sums = torch.full((batch_size, camera_num, tile_num), gauss_num, dtype=torch.int64)
+        sorted_offset = torch.tensor([gauss_num], dtype=torch.int64)
+        gauss_ids = torch.arange(gauss_num, dtype=torch.float32).view(batch_size, camera_num, tile_num, gauss_num)
+        depths = torch.rand(batch_size, camera_num, tile_num, gauss_num)
+        vector_num = acl.get_device_capability(0, 1)[0]
+        num_bins = min(vector_num, tile_num)
+        lb_scheds = get_render_schedule_cpp(tile_sums, num_bins)
+        return Inputs(lb_scheds, tile_sums, depths, gauss_ids, sorted_offset, int(gauss_num))
+
+    def _bench_npu(self, inputs):
+        npu_inputs = Inputs(
+            inputs.lb_scheds.npu(),
+            inputs.tile_sums.to(torch.int32).npu(),
+            inputs.tile_depths.npu(),
+            inputs.tile_gaussian_ids.npu(),
+            inputs.sorted_offset.npu(),
+            inputs.max_tile_gauss,
+        )
+        torch.npu.synchronize()
+        start_event = torch.npu.Event(enable_timing=True)
+        end_event = torch.npu.Event(enable_timing=True)
+        start_event.record()
+        self.npu_to_exec(npu_inputs)
+        end_event.record()
+        torch.npu.synchronize()
+        return start_event.elapsed_time(end_event)
+
+    def _npu_exec_from_cpu_inputs(self, inputs):
+        npu_inputs = Inputs(
+            inputs.lb_scheds.npu(),
+            inputs.tile_sums.to(torch.int32).npu(),
+            inputs.tile_depths.npu(),
+            inputs.tile_gaussian_ids.npu(),
+            inputs.sorted_offset.npu(),
+            inputs.max_tile_gauss,
+        )
+        return self.npu_to_exec(npu_inputs)
+
+    def _check_large_scale_correctness(self, inputs, npu_results, gauss_num):
+        sorted_ids = npu_results.sorted_gs_ids.cpu()
+        expected_len = int(inputs.sorted_offset[-1].item())
+        self.assertEqual(sorted_ids.shape[0], expected_len)
+        self.assertEqual(sorted_ids.min().item(), 0)
+        self.assertEqual(sorted_ids.max().item(), gauss_num - 1)
+        self.assertEqual(torch.unique(sorted_ids).numel(), gauss_num)
+        sorted_depths = inputs.tile_depths[0, 0, 0, sorted_ids.long()]
+        self.assertTrue(
+            (sorted_depths.diff() >= 0).all(),
+            "Sort order check failed: depths not monotonically non-decreasing",
+        )
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
- 
+
 /*!
  * \file gaussian_sort_common.h
  * \brief gaussian sort op kernel common
@@ -26,12 +26,15 @@ constexpr uint32_t ONE_REPEAT_CONCAT_NUM = 16;
 constexpr uint32_t QUEUE_DEPTHS_NUM = 1;
 constexpr uint32_t BUFFER_NUM = 1;
 constexpr uint32_t KVFACTOR = 2;
-constexpr uint32_t MRGSORT_WS_TENSOR_NUM = 2;
+constexpr uint32_t MRGSORT_WS_TENSOR_NUM = 4; // ping-pong: 2 slots × 2 buffers
 constexpr uint32_t UINT8_BIT_NUM = 8;
-constexpr uint32_t MRGSORT_OUT_MULT_NUM = 2;
 constexpr uint32_t REPEAT_STRIDE_SIZE = 8;
 constexpr float MAX_FP32 = 3.4e38;
-// 向上取整
+
+// 4-way streaming tree-mergesort constants
+constexpr uint32_t MERGE_K = 4;              // input lists per MrgSort call (AscendC max)
+constexpr uint32_t MERGE_CHUNK = 1536;       // per-list UB chunk size (mult of 32)
+constexpr uint32_t MERGE_DB_K_THRESHOLD = 8; // enable double-buffer when K ≥ this
 template <typename T>
 __aicore__ inline T Ceil(T a, T b)
 {
@@ -40,7 +43,6 @@ __aicore__ inline T Ceil(T a, T b)
     }
     return (a + b - 1) / b;
 }
-// 32B对齐
 template <typename T>
 __aicore__ inline T Align(T elementNum, T bytes)
 {
@@ -50,7 +52,6 @@ __aicore__ inline T Align(T elementNum, T bytes)
     return (elementNum * bytes + BLOCK_BYTES - 1) / BLOCK_BYTES * BLOCK_BYTES / bytes;
 }
 
-// 不同流水事件接口
 template <HardEvent event>
 __aicore__ inline void SetWaitFlag(HardEvent evt)
 {
@@ -58,6 +59,6 @@ __aicore__ inline void SetWaitFlag(HardEvent evt)
     SetFlag<event>(eventId);
     WaitFlag<event>(eventId);
 }
-}  // namespace GaussianSort
+} // namespace GaussianSortCommon
 
 #endif

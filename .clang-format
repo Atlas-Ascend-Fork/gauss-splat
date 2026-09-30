@@ -10,6 +10,14 @@
 
 Language:        Cpp
 AccessModifierOffset: -4
+AttributeMacros:
+  - __aicore__
+  - __gm__
+  - __global__
+  - KERNEL_TASK_TYPE_DEFAULT
+StatementMacros:
+  - GET_TILING_DATA
+  - KERNEL_TASK_TYPE_DEFAULT
 AlignAfterOpenBracket: Align
 AlignConsecutiveBitFields: true
 AlignEscapedNewlines: Right

@@ -98,11 +98,12 @@ render_colors, render_depth, info = rasterizer.rasterization(
 - `covars2d` (Tensor): 2D covariance matrices, shape (B, C, 3, N)
 - `colors` (Tensor): Filtered colors, shape (B, C, 3, N)
 - `cnt` (Tensor): Number of valid Gaussian points, shape (B, C)
+- `proj_filter` (Tensor): Projection filter, shape (B, C, ceil(N/8))
 
 **Example**:
 
 ```python
-means2d, depths, conics, opacities, radius, covars2d, colors, cnt = \
+means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter = \
     gauss_splat.projection_three_dims_gaussian_fused(
         means,  # means
         colors,  # colors

@@ -98,11 +98,12 @@ render_colors, render_depth, info = rasterizer.rasterization(
 - `covars2d` (Tensor): 2D协方差矩阵，形状 (B, C, 3, N)
 - `colors` (Tensor): 过滤后的颜色，形状 (B, C, 3, N)
 - `cnt` (Tensor): 有效高斯点数量, 形状 (B, C)
+- `proj_filter` (Tensor): 投影过滤器，形状 (B, C, ceil(N/8))
 
 **示例**:
 
 ```python
-means2d, depths, conics, opacities, radius, covars2d, colors, cnt = \
+means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter = \
     gauss_splat.projection_three_dims_gaussian_fused(
         means,  # means
         colors,  # colors

@@ -318,7 +318,7 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 
 **Parameters**:
 
-- `nums_tensor` (Tensor): Number of Gaussian points per tile, shape(B, C, T)
+- `nums_tensor` (Tensor): Number of Gaussian points per tile, shape (B, C, T). For batched inputs with `B*C > 1`, it must be an `int64` CPU tensor. For 1D inputs or `B*C == 1`, the implementation accepts the input device and returns the schedule on that device.
 - `num_bins` (int): Number of bins (number of vector processors)
 
 **Return Values**:
@@ -341,7 +341,7 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 
 ### Tensor Device Requirements
 
-All input tensors must be on the NPU device and support automatic differentiation.
+Except for the documented `get_render_schedule_cpp` batch case, input tensors must be on the NPU device and support automatic differentiation. For a batched `get_render_schedule_cpp` input with `B*C > 1`, `nums_tensor` must be an `int64` CPU tensor.
 
 ### Data Format
 

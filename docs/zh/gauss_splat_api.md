@@ -318,7 +318,7 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 
 **参数**:
 
-- `nums_tensor` (Tensor): 每个tile的高斯点数量，形状 (B, C, T)
+- `nums_tensor` (Tensor): 每个tile的高斯点数量，形状 (B, C, T)。对于 `B*C>1` 的批量输入，必须是 CPU 上的 `int64` 张量；对于 1D 输入或 `B*C==1`，实现接受输入所在设备，并在同一设备返回调度结果。
 - `num_bins` (int): 分箱数量（向量处理器数量）
 
 **返回值**:
@@ -341,7 +341,7 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 
 ### 张量设备要求
 
-所有输入张量必须在NPU设备上，支持自动求导。
+除文档明确说明的 `get_render_schedule_cpp` 批量路径外，输入张量必须在NPU设备上，支持自动求导。对于 `B*C>1` 的批量 `get_render_schedule_cpp` 输入，`nums_tensor` 必须是 CPU 上的 `int64` 张量。
 
 ### 数据格式
 

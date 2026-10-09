@@ -129,15 +129,17 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter =
 **Parameters**:
 
 - `means` (Tensor): 2D Gaussian center coordinates, shape (2, N)
-- `conic0s` (Tensor): Covariance inverse matrix element 0, shape (1, N)
-- `conic1s` (Tensor): Covariance inverse matrix element 1, shape (1, N)
-- `conic2s` (Tensor): Covariance inverse matrix element 2, shape (1, N)
-- `opacities` (Tensor): Opacities, shape (1, N)
+- `conic0s` (Tensor): Covariance inverse matrix element 0, shape (N,)
+- `conic1s` (Tensor): Covariance inverse matrix element 1, shape (N,)
+- `conic2s` (Tensor): Covariance inverse matrix element 2, shape (N,)
+- `opacities` (Tensor): Opacities, shape (N,)
 - `colors` (Tensor): Colors, shape (3, N)
 - `depths` (Tensor, optional): Depth values, shape (1, N). If None, depth is not rendered
 - `tile_coords` (Tensor): Tile coordinates, shape (tileNum, 2, nPixel)
 - `offsets` (Tensor): Offsets, shape(vectorCnt + (TileNum * 2))
 - `sorted_gs_ids` (Tensor): Sorted Gaussian point IDs, shape (totalGauss)
+
+These four parameters are one-dimensional vectors for a single view. CalcRender.forward adds the row dimension with unsqueeze(0) before concatenating with means/colors; do not add it in the caller.
 
 **Return Values**:
 

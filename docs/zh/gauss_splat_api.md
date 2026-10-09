@@ -129,15 +129,17 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter =
 **参数**:
 
 - `means` (Tensor): 2D高斯中心坐标，形状 (2, N)
-- `conic0s` (Tensor): 协方差逆矩阵元素0，形状 (1, N)
-- `conic1s` (Tensor): 协方差逆矩阵元素1，形状 (1, N)
-- `conic2s` (Tensor): 协方差逆矩阵元素2，形状 (1, N)
-- `opacities` (Tensor): 不透明度，形状 (1, N)
+- `conic0s` (Tensor): 协方差逆矩阵元素0，形状 (N,)
+- `conic1s` (Tensor): 协方差逆矩阵元素1，形状 (N,)
+- `conic2s` (Tensor): 协方差逆矩阵元素2，形状 (N,)
+- `opacities` (Tensor): 不透明度，形状 (N,)
 - `colors` (Tensor): 颜色，形状 (3, N)
 - `depths` (Tensor, optional): 深度值，形状 (1, N)。如为None则不渲染深度
 - `tile_coords` (Tensor): 分块坐标，形状 (tileNum, 2, nPixel)
 - `offsets` (Tensor): 偏移量，形状 (vectorCnt + (TileNum * 2))
 - `sorted_gs_ids` (Tensor): 排序后的高斯点ID，形状 (totalGauss)
+
+这四个参数是单视图的一维向量；CalcRender.forward 会对它们 unsqueeze(0) 后与二维 means/colors 拼接，调用方不要提前添加行维度。
 
 **返回值**:
 

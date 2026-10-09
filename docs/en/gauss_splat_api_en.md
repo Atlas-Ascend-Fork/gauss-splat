@@ -104,15 +104,16 @@ render_colors, render_depth, info = rasterizer.rasterization(
 ```python
 means2d, depths, conics, opacities, radius, covars2d, colors, cnt = \
     gauss_splat.projection_three_dims_gaussian_fused(
-        means=means,
-        colors=colors,
-        quat=quats,
-        scales=scales,
-        opacities=opacities,
-        viewmats=viewmats,
-        ks=Ks,
-        width=1920,
-        height=1080
+        means,  # means
+        colors,  # colors
+        None,  # covars
+        quats,  # quat
+        scales,  # scales
+        opacities,  # opacities
+        viewmats,  # viewmats
+        Ks,  # ks
+        1920,  # width
+        1080,  # height
     )
 ```
 
@@ -149,17 +150,17 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt = \
 
 ```python
 render_colors, render_depths = gauss_splat.calc_render(
-    means=means2d,
-    conic0s=conics[:, 0],
-    conic1s=conics[:, 1],
-    conic2s=conics[:, 2],
-    opacities=opacities,
-    colors=colors,
-    depths=depths,
-    tile_coords=pix_coords,
-    offsets=lb_sched,
-    sorted_gs_ids=sorted_gs_id
-)
+                                   means2d,  # means
+                                   conics[:, 0],  # conic0s
+                                   conics[:, 1],  # conic1s
+                                   conics[:, 2],  # conic2s
+                                   opacities,  # opacities
+                                   colors,  # colors
+                                   depths,  # depths
+                                   pix_coords,  # tile_coords
+                                   lb_sched,  # offsets
+                                   sorted_gs_id,  # sorted_gs_ids
+                               )
 ```
 
 ---
@@ -184,10 +185,10 @@ render_colors, render_depths = gauss_splat.calc_render(
 
 ```python
 colors = gauss_splat.spherical_harmonics(
-    degrees_to_use=3,
-    dirs=view_directions,  # (1, N, 3)
-    coeffs=sh_coefficients  # (1, N, 16, 3)
-)
+             3,  # degrees_to_use
+             view_directions,  # dirs
+             sh_coefficients,  # coeffs
+         )
 ```
 
 ---
@@ -215,13 +216,13 @@ colors = gauss_splat.spherical_harmonics(
 
 ```python
 sorted_gs_ids = gauss_splat.gaussian_sort(
-    lb_sched=lb_sched_tensor,
-    gaussian_cnt=tile_sums,
-    depths=tile_depths,
-    gs_ids=tile_gauss_ids,
-    sorted_offset=sorted_offset,
-    max_tile_gauss=max_tile_gauss
-)
+                    lb_sched_tensor,  # lb_sched
+                    tile_sums,  # gaussian_cnt
+                    tile_depths,  # depths
+                    tile_gauss_ids,  # gs_ids
+                    sorted_offset,  # sorted_offset
+                    max_tile_gauss,  # max_tile_gauss
+                )
 ```
 
 ---

@@ -51,7 +51,7 @@ class CalcRender(torch.autograd.Function):
         if len(v_args) == 2:
             v_color, v_depth = v_args
         elif len(v_args) == 1:
-            v_color = v_args
+            v_color = v_args[0]
             v_depth = torch.zeros_like(v_color[0:1])
         else:
             raise Exception("invalid arguments")

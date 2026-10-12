@@ -110,11 +110,11 @@ print(f"渲染深度形状: {render_depths.shape}")  # (1, 1080, 1920, 1)
 
 NPU 测试需要 Linux、Atlas A2/A3、上述配套版本的 CANN、PyTorch、torch_npu 和 ACL Python 接口，并已完成项目 wheel 的编译安装。先激活安装项目的 Python 环境并加载 CANN 环境变量。测试默认使用 `npu:0`。
 
-在仓库根目录执行以下命令。切换到仓库外运行 Python 测试，避免源码目录遮蔽已安装的 `gauss_splat.gsplat_c` 扩展；也请勿将仓库根目录加入 `PYTHONPATH`。
+在仓库根目录执行以下命令。`CAN_INSTALL_PATH` 为 CANN 安装根目录，与上文安装命令中的路径一致。切换到仓库外运行 Python 测试，避免源码目录遮蔽已安装的 `gauss_splat.gsplat_c` 扩展；也请勿将仓库根目录加入 `PYTHONPATH`。
 
 ```bash
 REPO="$(pwd)"
-source "${ASCEND_TOOLKIT_HOME}/set_env.sh"  # 未设置该变量时，使用实际安装路径
+source "${CAN_INSTALL_PATH}/ascend-toolkit/set_env.sh"
 python -m pip install pytest
 cd /tmp
 python -c "import acl, torch, torch_npu, gauss_splat.gsplat_c; print(torch.npu.is_available())"
@@ -124,7 +124,9 @@ python -m pytest -v --tb=long "$REPO/tests/test_calc_render_fwd.py" "$REPO/tests
 # 全部 Python 测试
 python -m pytest -v --tb=long "$REPO/tests"
 # 也可单独运行测试脚本
-python "$REPO/tests/test_calc_render_fwd.py" -v
+python "$REPO/tests/test_calc_render_fwd.py"
+# 指定单个 UT 用例
+python -m pytest "$REPO/tests/test_spherical_harmonics.py::TestSphericalHarmonicsForward::test_spherical_harmonics_forward"
 
 # C++ 算子调用测试，不能替代 Python 精度回归
 bash "$REPO/tests/kernel_tests/build_kernel_tests.sh" && bash "$REPO/tests/kernel_tests/run_kernel_tests.sh"
@@ -132,9 +134,10 @@ bash "$REPO/tests/kernel_tests/build_kernel_tests.sh" && bash "$REPO/tests/kerne
 
 C++ 构建日志位于 `tests/kernel_tests/build_out/build.log`，运行汇总位于同目录的 `run_results.txt`，各用例的标准输出和错误保存在 `*_run.log`。编译失败、可执行文件缺失、运行失败或没有测试时，脚本返回非零退出码。
 
-参考实现和诊断工具的 CPU 回归仅需 PyTorch 和 NumPy，不需要 CANN 或 NPU：
+参考实现和诊断工具的 CPU 回归仅需 PyTorch 和 NumPy，不需要 CANN 或 NPU。在新的终端中从仓库根目录执行：
 
 ```bash
+REPO="$(pwd)"
 python -m unittest discover -s "$REPO/tests" -p test_render_test_utils.py -v
 # 测试脚本的模拟回归，仅需 Python 和 Bash
 python -m unittest discover -s "$REPO/tests" -p test_kernel_test_scripts.py -v
@@ -214,7 +217,8 @@ gauss-splat/
 ## 💬更多信息
 
 - [算子API文档](docs/zh/kernels/)：底层ACLNN算子详细说明
-- [算子测试](tests/kernel_tests/)：C++测试代码与执行指南
+- [测试执行说明](tests/README.md)：Python UT、无 NPU 用例与 C++ 算子测试的具体命令
+- [C++ 算子测试代码](tests/kernel_tests/)：构建与运行脚本及测试用例
 - [贡献指南](CONTRIBUTING.md)：如何参与项目开发
 - [安全声明](SECURITY.md)：安全使用指南
 - [许可证](LICENSE)：CANN Open Software License Agreement Version 2.0

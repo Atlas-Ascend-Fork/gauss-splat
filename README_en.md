@@ -111,11 +111,11 @@ print(f"Rendered depth shape: {render_depths.shape}")  # (1, 1080, 1920, 1)
 
 NPU tests require Linux, Atlas A2/A3, the matching CANN, PyTorch and torch_npu versions listed above, the ACL Python interface, and a built and installed project wheel. Activate that Python environment and source the CANN environment first. Tests use `npu:0`.
 
-Start in the repository root. Run Python tests outside the repository to avoid shadowing the installed `gauss_splat.gsplat_c` extension. Do not add the repository root to `PYTHONPATH`.
+Start in the repository root. `CAN_INSTALL_PATH` is the CANN installation root used in the installation commands above. Run Python tests outside the repository to avoid shadowing the installed `gauss_splat.gsplat_c` extension. Do not add the repository root to `PYTHONPATH`.
 
 ```bash
 REPO="$(pwd)"
-source "${ASCEND_TOOLKIT_HOME}/set_env.sh"  # Use the actual installation path if unset
+source "${CAN_INSTALL_PATH}/ascend-toolkit/set_env.sh"
 python -m pip install pytest
 cd /tmp
 python -c "import acl, torch, torch_npu, gauss_splat.gsplat_c; print(torch.npu.is_available())"
@@ -125,7 +125,9 @@ python -m pytest -v --tb=long "$REPO/tests/test_calc_render_fwd.py" "$REPO/tests
 # All Python tests
 python -m pytest -v --tb=long "$REPO/tests"
 # Alternatively, run an individual test script
-python "$REPO/tests/test_calc_render_fwd.py" -v
+python "$REPO/tests/test_calc_render_fwd.py"
+# Run one unit test case
+python -m pytest "$REPO/tests/test_spherical_harmonics.py::TestSphericalHarmonicsForward::test_spherical_harmonics_forward"
 
 # C++ operator invocation tests, not a replacement for Python accuracy tests
 bash "$REPO/tests/kernel_tests/build_kernel_tests.sh" && bash "$REPO/tests/kernel_tests/run_kernel_tests.sh"
@@ -133,9 +135,10 @@ bash "$REPO/tests/kernel_tests/build_kernel_tests.sh" && bash "$REPO/tests/kerne
 
 Build logs are written to `tests/kernel_tests/build_out/build.log`, the run summary to `run_results.txt` in the same directory, and each test's stdout and stderr to `*_run.log`. Compilation failures, missing executables, runtime failures, and no tests produce a nonzero script exit status.
 
-CPU regression tests for the reference and diagnostics require only PyTorch and NumPy, without CANN or an NPU:
+CPU regression tests for the reference and diagnostics require only PyTorch and NumPy, without CANN or an NPU. Run these commands from the repository root in a new shell:
 
 ```bash
+REPO="$(pwd)"
 python -m unittest discover -s "$REPO/tests" -p test_render_test_utils.py -v
 # Mocked script regression tests require only Python and Bash
 python -m unittest discover -s "$REPO/tests" -p test_kernel_test_scripts.py -v
@@ -215,7 +218,8 @@ gauss-splat/
 ## More Information
 
 - [Operator API Documentation](docs/en/kernels/): Detailed description of underlying ACLNN operators
-- [Operator Tests](tests/kernel_tests/): C++ test code and execution guide
+- [Test Instructions](tests/README_en.md): Commands for Python unit, CPU/host, and C++ operator tests
+- [C++ Operator Test Code](tests/kernel_tests/): Build and run scripts and test cases
 - [Contribution Guide](CONTRIBUTING.md): How to participate in project development
 - [Security Statement](SECURITY.md): Security usage guide
 - [License](LICENSE): CANN Open Software License Agreement Version 2.0

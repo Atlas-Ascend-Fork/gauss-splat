@@ -15,11 +15,11 @@ def similarity_from_cameras(c2w, strict_scaling=False, center_method="focus"):
     :return T (4,4) , scale (float)
     """
     t = c2w[:, :3, 3]
-    R = c2w[:, :3, :3]
+    rotations = c2w[:, :3, :3]
 
     # (1) Rotate the world so that z+ is the up axis
     # we estimate the up axis by averaging the camera up axes
-    ups = np.sum(R * np.array([0, -1.0, 0]), axis=-1)
+    ups = np.sum(rotations * np.array([0, -1.0, 0]), axis=-1)
     world_up = np.mean(ups, axis=0)
     up_norm = np.linalg.norm(world_up)
     if not np.isfinite(up_norm) or up_norm <= np.finfo(float).eps:
@@ -37,15 +37,15 @@ def similarity_from_cameras(c2w, strict_scaling=False, center_method="focus"):
         ]
     )
     if c > -1:
-        R_align = np.eye(3) + skew + (skew @ skew) * 1 / (1 + c)
+        rotation_align = np.eye(3) + skew + (skew @ skew) * 1 / (1 + c)
     else:
         # In the unlikely case the original data has y+ up axis,
         # rotate 180-deg about x axis
-        R_align = np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        rotation_align = np.diag([1.0, -1.0, -1.0])
 
-    R = R_align @ R
-    fwds = np.sum(R * np.array([0, 0.0, 1.0]), axis=-1)
-    t = (R_align @ t[..., None])[..., 0]
+    rotations = rotation_align @ rotations
+    fwds = np.sum(rotations * np.array([0, 0.0, 1.0]), axis=-1)
+    t = (rotation_align @ t[..., None])[..., 0]
 
     # (2) Recenter the scene.
     if center_method == "focus":
@@ -60,7 +60,7 @@ def similarity_from_cameras(c2w, strict_scaling=False, center_method="focus"):
 
     transform = np.eye(4)
     transform[:3, 3] = translate
-    transform[:3, :3] = R_align
+    transform[:3, :3] = rotation_align
 
     # (3) Rescale the scene using camera distances
     scale_fn = np.max if strict_scaling else np.median

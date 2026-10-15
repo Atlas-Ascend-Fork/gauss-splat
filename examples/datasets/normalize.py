@@ -21,7 +21,10 @@ def similarity_from_cameras(c2w, strict_scaling=False, center_method="focus"):
     # we estimate the up axis by averaging the camera up axes
     ups = np.sum(R * np.array([0, -1.0, 0]), axis=-1)
     world_up = np.mean(ups, axis=0)
-    world_up /= np.linalg.norm(world_up)
+    up_norm = np.linalg.norm(world_up)
+    if not np.isfinite(up_norm) or up_norm <= np.finfo(float).eps:
+        raise ValueError("Camera up directions do not define a finite orientation.")
+    world_up /= up_norm
 
     up_camspace = np.array([0.0, -1.0, 0.0])
     c = (up_camspace * world_up).sum()
@@ -61,7 +64,10 @@ def similarity_from_cameras(c2w, strict_scaling=False, center_method="focus"):
 
     # (3) Rescale the scene using camera distances
     scale_fn = np.max if strict_scaling else np.median
-    scale = 1.0 / scale_fn(np.linalg.norm(t + translate, axis=-1))
+    extent = scale_fn(np.linalg.norm(t + translate, axis=-1))
+    if not np.isfinite(extent) or extent <= np.finfo(float).eps:
+        raise ValueError("Camera positions do not define a finite nonzero scene extent.")
+    scale = 1.0 / extent
     transform[:3, :] *= scale
 
     return transform

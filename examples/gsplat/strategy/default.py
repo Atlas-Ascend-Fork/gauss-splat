@@ -300,9 +300,9 @@ class DefaultStrategy(Strategy):
             0, gs_ids, torch.ones_like(gs_ids, dtype=torch.float32)
         )
         # always track per-GS max screen radius (normalized) for screen-space pruning
-        state["radii"][gs_ids] = torch.maximum(
-            state["radii"][gs_ids],
-            radii / float(max(info["width"], info["height"])),
+        state["radii"].scatter_reduce_(
+            0, gs_ids, radii.to(state["radii"].dtype) / float(max(info["width"], info["height"])),
+            reduce="amax", include_self=True,
         )
 
     @torch.no_grad()

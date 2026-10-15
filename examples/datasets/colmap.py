@@ -418,7 +418,7 @@ class Dataset:
             # projected points to image plane to get depths
             worldtocams = np.linalg.inv(camtoworlds)
             image_name = self.parser.image_names[index]
-            point_indices = self.parser.point_indices[image_name]
+            point_indices = self.parser.point_indices.get(image_name, np.empty(0, dtype=np.int32))
             points_world = self.parser.points[point_indices]
             points_cam = (worldtocams[:3, :3] @ points_world.T + worldtocams[:3, 3:4]).T
             points_proj = (K @ points_cam.T).T

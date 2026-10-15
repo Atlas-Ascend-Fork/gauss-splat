@@ -377,6 +377,8 @@ class Dataset:
     def __len__(self):
         return len(self.indices)
 
+
+
     def __getitem__(self, item: int) -> Dict[str, Any]:
         index = self.indices[item]
         image = imageio.imread(self.parser.image_paths[index])[..., :3]
@@ -397,13 +399,7 @@ class Dataset:
             image = image[y : y + h, x : x + w]
 
         if self.patch_size is not None:
-            # Random crop.
-            h, w = image.shape[:2]
-            x = np.random.randint(0, max(w - self.patch_size, 1))
-            y = np.random.randint(0, max(h - self.patch_size, 1))
-            image = image[y : y + self.patch_size, x : x + self.patch_size]
-            K[0, 2] -= x
-            K[1, 2] -= y
+            image, mask = self._crop_patch(image, mask, K)
 
         data = {
             "K": torch.from_numpy(K).float(),
@@ -438,6 +434,21 @@ class Dataset:
             data["depths"] = torch.from_numpy(depths).float()
 
         return data
+
+
+    def _crop_patch(self, image, mask, camera_matrix):
+        # Random crop.
+        h, w = image.shape[:2]
+        x = np.random.randint(0, max(w - self.patch_size + 1, 1))
+        y = np.random.randint(0, max(h - self.patch_size + 1, 1))
+        image = image[y: y + self.patch_size, x: x + self.patch_size]
+        if mask is not None:
+            mask = mask[y: y + self.patch_size, x: x + self.patch_size]
+        camera_matrix[0, 2] -= x
+        camera_matrix[1, 2] -= y
+        return image, mask
+
+
 
 
 if __name__ == "__main__":

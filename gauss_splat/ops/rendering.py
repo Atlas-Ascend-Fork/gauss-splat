@@ -8,7 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import Dict, NamedTuple, Optional, Tuple
 
 import torch
 from torch import Tensor
@@ -21,6 +21,181 @@ from .flash_gaussian_build_mask import flash_gaussian_build_mask
 from .gaussian_sort import gaussian_sort
 from .calc_render import calc_render
 from .get_render_schedule import get_render_schedule_cpp
+
+
+class _ProjectionInputs(NamedTuple):
+    means: Tensor
+    quats: Tensor
+    scales: Tensor
+    opacities: Tensor
+    viewmats: Tensor
+    intrinsics: Tensor
+    width: int
+    height: int
+
+
+class _ProjectionOutputs(NamedTuple):
+    means2d: Tensor
+    depths: Tensor
+    conics: Tensor
+    opacities: Tensor
+    radius: Tensor
+    covars2d: Tensor
+    colors: Tensor
+    cnt: Tensor
+    proj_filter: Tensor
+
+
+class _RenderSchedule(NamedTuple):
+    sorted_offset: Tensor
+    lb_sched_tensor: Tensor
+    sorted_gs_ids: Tensor
+
+
+class _RenderView(NamedTuple):
+    batch_id: int
+    camera_index: int
+    size: Tuple
+
+
+def _compute_sh_colors(
+    means: Tensor,
+    camtoworlds: Tensor,
+    shs: Tensor,
+    sh_degree: int,
+) -> Tuple[Tensor, bool]:
+    camera_count = camtoworlds.shape[0]
+    camera_dependent_sh = camera_count > 1 and sh_degree > 0
+    sh_camera_count = camera_count if camera_dependent_sh else 1
+    rays_o = camtoworlds[:sh_camera_count, :3, 3]
+    rays_d = means.unsqueeze(0) - rays_o.unsqueeze(1)
+    rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+    coefficient_count = (sh_degree + 1) ** 2
+    colors = spherical_harmonics(
+        sh_degree,
+        rays_d.reshape(sh_camera_count, means.shape[0], 3),
+        shs[:sh_camera_count, :, :coefficient_count, :].reshape(
+            sh_camera_count, means.shape[0], coefficient_count, 3
+        ),
+    )
+    return (colors + 0.5).clip(min=0.0), camera_dependent_sh
+
+
+def _project_sh_colors(
+    inputs: _ProjectionInputs,
+    colors: Tensor,
+    camera_dependent_sh: bool,
+) -> Tuple[Tensor, ...]:
+    if not camera_dependent_sh:
+        return projection_three_dims_gaussian_fused(
+            inputs.means,
+            colors[:1],
+            None,
+            inputs.quats,
+            inputs.scales,
+            inputs.opacities,
+            inputs.viewmats,
+            inputs.intrinsics,
+            inputs.width,
+            inputs.height,
+            0.3,
+            0.2,
+        )
+
+    camera_results = []
+    for camera_index in range(inputs.viewmats.shape[1]):
+        camera_results.append(
+            projection_three_dims_gaussian_fused(
+                inputs.means,
+                colors.narrow(0, camera_index, 1),
+                None,
+                inputs.quats,
+                inputs.scales,
+                inputs.opacities,
+                inputs.viewmats.narrow(1, camera_index, 1),
+                inputs.intrinsics.narrow(1, camera_index, 1),
+                inputs.width,
+                inputs.height,
+                0.3,
+                0.2,
+            )
+        )
+    return tuple(
+        torch.cat([result[index] for result in camera_results], dim=1)
+        for index in range(len(camera_results[0]))
+    )
+
+
+def _project_rasterization(
+    gs: Tuple,
+    camera: Tuple,
+    size: Tuple,
+    sh_degree: Optional[int],
+) -> _ProjectionOutputs:
+    means, quats, scales, opacities, colors = gs
+    viewmats, intrinsics, camera_model, render_mode = camera
+    gaussian_count = means.shape[0]
+    camera_count = viewmats.shape[0]
+    _validate_inputs(gs, camera, sh_degree, gaussian_count, camera_count)
+    width, height = size
+    camtoworlds = torch.inverse(viewmats)
+    shs = colors.expand(camera_count, -1, -1, -1) if colors.dim() == 3 else colors
+    colors, camera_dependent_sh = _compute_sh_colors(
+        means, camtoworlds, shs, sh_degree
+    )
+    projection_inputs = _ProjectionInputs(
+        means.reshape(1, gaussian_count, 3),
+        quats.reshape(1, gaussian_count, 4),
+        scales.reshape(1, gaussian_count, 3),
+        opacities.reshape(1, gaussian_count),
+        viewmats.reshape(1, camera_count, 4, 4).contiguous(),
+        intrinsics.reshape(1, camera_count, 3, 3),
+        width,
+        height,
+    )
+    return _ProjectionOutputs(
+        *_project_sh_colors(projection_inputs, colors, camera_dependent_sh)
+    )
+
+
+def _build_render_schedule(
+    projection: _ProjectionOutputs,
+    tile_grid: Tensor,
+    size: Tuple,
+    tile_size: int,
+) -> _RenderSchedule:
+    width, height = size
+    with torch.no_grad():
+        tile_sums, tile_offsets, tile_depths, tile_gauss_ids = (
+            flash_gaussian_build_mask(
+                projection.means2d,
+                projection.opacities.unsqueeze(2),
+                projection.conics,
+                projection.covars2d,
+                projection.depths.unsqueeze(2),
+                projection.cnt.unsqueeze(2),
+                tile_grid.float(),
+                width,
+                height,
+                tile_size,
+            )
+        )
+        sorted_cnts = tile_offsets.squeeze(-1)[:, :, -1]
+        sorted_offset = torch.cumsum(sorted_cnts.flatten(), dim=0)
+        tile_sums_cpu = tile_sums.squeeze(-1).cpu().to(torch.int64)
+        vector_num = acl.get_device_capability(0, 1)[0]
+        lb_sched_tensor_cpu = get_render_schedule_cpp(tile_sums_cpu, vector_num)
+        lb_sched_tensor = lb_sched_tensor_cpu.npu()
+        max_tile_gauss = torch.amax(tile_sums).item()
+        sorted_gs_ids = gaussian_sort(
+            lb_sched_tensor,
+            tile_sums,
+            tile_depths,
+            tile_gauss_ids,
+            sorted_offset,
+            max_tile_gauss,
+        )
+    return _RenderSchedule(sorted_offset, lb_sched_tensor, sorted_gs_ids)
 
 
 def assert_check(condition, message):
@@ -36,13 +211,16 @@ def _validate_inputs(
     C: int
 ) -> None:
     means, quats, scales, opacities, colors = gs
-    viewmats, Ks, camera_model, render_mode = camera
+    viewmats, intrinsics, camera_model, render_mode = camera
     assert_check(means.shape == (N, 3), f"Invalid shape for means: {means.shape}")
     assert_check(quats.shape == (N, 4), f"Invalid shape for quats: {quats.shape}")
     assert_check(scales.shape == (N, 3), f"Invalid shape for scales: {scales.shape}")
     assert_check(opacities.shape == (N,), f"Invalid shape for opacities: {opacities.shape}")
     assert_check(viewmats.shape == (C, 4, 4), f"Invalid shape for viewmats: {viewmats.shape}")
-    assert_check(Ks.shape == (C, 3, 3), f"Invalid shape for Ks: {Ks.shape}")
+    assert_check(
+        intrinsics.shape == (C, 3, 3),
+        f"Invalid shape for intrinsics: {intrinsics.shape}",
+    )
     assert_check(camera_model in ["pinhole", "ortho", "fisheye"], f"Invalid camera_model: {camera_model}")
     assert_check(render_mode in ["RGB", "D", "ED", "RGB+D", "RGB+ED"], f"Invalid render_mode: {render_mode}")
 
@@ -135,6 +313,78 @@ class Rasterizer:
         )
         return render_colors, render_depth, info
 
+    def _render_camera(
+        self,
+        projection: _ProjectionOutputs,
+        schedule: _RenderSchedule,
+        view: _RenderView,
+    ) -> Tuple[Tensor, Tensor]:
+        width, height = view.size
+        camera_count = projection.means2d.shape[1]
+        gs_tuple = (
+            projection.means2d,
+            projection.colors,
+            projection.opacities,
+            projection.conics,
+        )
+        cf_gs, pix_coords = self.get_render_input(
+            gs_tuple, projection.depths, view.camera_index
+        )
+        (
+            cf_means2,
+            cf_colors3,
+            cf_opacity,
+            inv_x_0,
+            inv_x_1,
+            inv_x_2,
+            cf_depths,
+        ) = cf_gs
+        view_idx = view.batch_id * camera_count + view.camera_index
+        start_index = (
+            schedule.sorted_offset[view_idx - 1] if view_idx > 0 else 0
+        )
+        end_index = schedule.sorted_offset[view_idx]
+        sorted_gs_id = schedule.sorted_gs_ids[start_index:end_index]
+        lb_sched = schedule.lb_sched_tensor[
+            view.batch_id, view.camera_index, :
+        ]
+        render_colors, render_depths = calc_render(
+            cf_means2,
+            inv_x_0,
+            inv_x_1,
+            inv_x_2,
+            cf_opacity,
+            cf_colors3,
+            cf_depths,
+            pix_coords,
+            lb_sched,
+            sorted_gs_id,
+        )
+        render_colors = self.tile2image(render_colors.permute(1, 2, 0), height, width)
+        render_depths = self.tile2image(render_depths.permute(1, 2, 0), height, width)
+        return render_colors.permute(1, 2, 0), render_depths.permute(1, 2, 0)
+
+    def _render_outputs(
+        self,
+        projection: _ProjectionOutputs,
+        schedule: _RenderSchedule,
+        size: Tuple,
+    ) -> Tuple[Tensor, Tensor]:
+        width, height = size
+        batch_count, camera_count = projection.means2d.shape[:2]
+        render_colors = []
+        render_depths = []
+        for batch_id in range(batch_count):
+            for camera_index in range(camera_count):
+                cf_render_colors, cf_render_depths = self._render_camera(
+                    projection,
+                    schedule,
+                    _RenderView(batch_id, camera_index, size),
+                )
+                render_colors.append(cf_render_colors)
+                render_depths.append(cf_render_depths)
+        return torch.stack(render_colors), torch.stack(render_depths)
+
     def _rasterization(
         self,
         gs,
@@ -143,131 +393,22 @@ class Rasterizer:
         sh_degree: Optional[int] = None,
         tile_size: int = 32,
     ) -> Tuple[Tensor, Tensor, Dict]:
-        means, quats, scales, opacities, colors = gs
-        viewmats, Ks, camera_model, render_mode = camera
-
-        N = means.shape[0]
-        C = viewmats.shape[0]
-        B = 1
-        _validate_inputs(gs, camera, sh_degree, N, C)
-        width, height = size
-
-        camtoworlds = torch.inverse(viewmats)
-        if colors.dim() == 3:
-            shs = colors.expand(C, -1, -1, -1)
-        else:
-            shs = colors
-
-        rays_o = camtoworlds[0, :3, 3]
-        rays_d = means - rays_o
-        rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
-        k = (sh_degree + 1) ** 2
-        colors = spherical_harmonics(sh_degree, rays_d.reshape(B, N, 3), shs[0, :, :k, :].reshape(B, N, k, 3))
-        colors = (colors + 0.5).clip(min=0.0)
-
-        means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter = projection_three_dims_gaussian_fused(
-            means.reshape(B, N, 3),
-            colors,
-            None,
-            quats.reshape(B, N, 4),
-            scales.reshape(B, N, 3),
-            opacities.reshape(B, N),
-            viewmats.reshape(B, C, 4, 4).contiguous(),
-            Ks.reshape(B, C, 3, 3),
-            width,
-            height,
-            0.3,
-            0.2
+        projection = _project_rasterization(gs, camera, size, sh_degree)
+        schedule = _build_render_schedule(
+            projection, self.tile_grid, size, tile_size
         )
-
-        with torch.no_grad():
-            tile_sums, tile_offsets, tile_depths, tile_gauss_ids = (
-                flash_gaussian_build_mask(
-                    means2d,
-                    opacities.unsqueeze(2),
-                    conics,
-                    covars2d,
-                    depths.unsqueeze(2),
-                    cnt.unsqueeze(2),
-                    self.tile_grid.float(),
-                    width,
-                    height,
-                    tile_size,
-                )
-            )
-            sorted_cnts = tile_offsets.squeeze(-1)[:, :, -1]
-            sorted_cnts_flatten = sorted_cnts.flatten()
-            sorted_offset = torch.cumsum(sorted_cnts_flatten, dim=0)
-            tile_sums_3d = tile_sums.squeeze(-1)
-            tile_sums_cpu = tile_sums_3d.cpu().to(torch.int64)
-
-            vector_num = acl.get_device_capability(0, 1)[0]
-            lb_sched_tensor_cpu = get_render_schedule_cpp(tile_sums_cpu, vector_num)
-            lb_sched_tensor = lb_sched_tensor_cpu.npu()
-            max_tile_gauss = torch.amax(tile_sums).item()
-
-            sorted_gs_ids = gaussian_sort(
-                lb_sched_tensor,
-                tile_sums,
-                tile_depths,
-                tile_gauss_ids,
-                sorted_offset,
-                max_tile_gauss,
-            )
-
-        render_colors = []
-        render_depths = []
-        for _batch_id in range(0, B):
-            for _cam_view in range(0, C):
-                gs_tuple = means2d, colors, opacities, conics
-                cf_gs, pix_coords = self.get_render_input(gs_tuple, depths, _cam_view)
-                (
-                    cf_means2,
-                    cf_colors3,
-                    cf_opacity,
-                    inv_x_0,
-                    inv_x_1,
-                    inv_x_2,
-                    cf_depths,
-                ) = cf_gs
-                view_idx = _batch_id * C + _cam_view
-                start_index = sorted_offset[view_idx - 1] if view_idx > 0 else 0
-                end_index = sorted_offset[view_idx]
-                sorted_gs_id = sorted_gs_ids[start_index:end_index]
-                lb_sched = lb_sched_tensor[_batch_id, _cam_view, :]
-
-                cf_render_colors, cf_render_depths = calc_render(
-                    cf_means2,
-                    inv_x_0,
-                    inv_x_1,
-                    inv_x_2,
-                    cf_opacity,
-                    cf_colors3,
-                    cf_depths,
-                    pix_coords,
-                    lb_sched,
-                    sorted_gs_id,
-                )
-                cf_render_colors = self.tile2image(
-                    cf_render_colors.permute(1, 2, 0), height, width
-                )
-                cf_render_depths = self.tile2image(
-                    cf_render_depths.permute(1, 2, 0), height, width
-                )
-
-                render_colors.append(cf_render_colors.permute(1, 2, 0))
-                render_depths.append(cf_render_depths.permute(1, 2, 0))
-        render_colors = torch.stack(render_colors)
-        render_depths = torch.stack(render_depths)
+        render_colors, render_depths = self._render_outputs(projection, schedule, size)
+        means, *_ = gs
+        width, height = size
 
         meta = {
             "gaussian_ids": None,
-            "means2d": means2d,
-            "radii": radius,
+            "means2d": projection.means2d,
+            "radii": projection.radius,
             "width": width,
             "height": height,
-            "n_cameras": C,
-            "proj_filter": proj_filter,
-            "n_gaussians": N,
+            "n_cameras": camera[0].shape[0],
+            "proj_filter": projection.proj_filter,
+            "n_gaussians": means.shape[0],
         }
         return render_colors, render_depths, meta

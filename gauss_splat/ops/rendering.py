@@ -245,6 +245,7 @@ class Rasterizer:
         self.tile_grid = None
         self.tilenum_height = None
         self.tilenum_width = None
+        self._geometry_key = None
 
     def tile2image(self, rendered_image, height, width):
         ts = self.tile_size
@@ -283,17 +284,19 @@ class Rasterizer:
         camera_model: str = "pinhole",
     ) -> Tuple[Tensor, Tensor, Dict]:
         width, height = size
-        if self.tile_grid is None:
+        device = splats["means"].device
+        geometry_key = (width, height, tile_size, device)
+        if self._geometry_key != geometry_key:
             self.tile_size = tile_size
             self.tilenum_height = math.ceil(height / tile_size)
             self.tilenum_width = math.ceil(width / tile_size)
             self.padded_height = self.tilenum_height * tile_size
             self.padded_width = self.tilenum_width * tile_size
-            device = splats["means"].device
             self.tile_grid = torch.stack(torch.meshgrid(torch.arange(0, self.padded_height, tile_size),
                 torch.arange(0, self.padded_width, tile_size), indexing='ij'), dim=-1).view(-1, 2).to(device)
             self.pix_coord = torch.stack(torch.meshgrid(torch.arange(self.padded_width),
                 torch.arange(self.padded_height), indexing='xy'), dim=-1).to(device)
+            self._geometry_key = geometry_key
 
         means = splats["means"]
         quats = splats["quats"]

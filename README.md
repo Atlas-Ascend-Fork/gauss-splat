@@ -27,8 +27,13 @@ gauss-splat是基于[CANN](https://hiascend.com/software/cann)的3D Gaussian Spl
 
 CANN环境准备
 
-1. 本样例的执行依赖CANN开发套件包（cann-toolkit）与CANN二进制算子包（cann-kernels），使用CANN软件版本为CANN 8.5。 请从[CANN软件包下载地址](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.5.0)下载 `Ascend-cann-toolkit_${version}_linux-${arch}.run`与 `Ascend-cann-${chip_type}-ops_${version}_linux-${arch}.run`软件包，并参考[CANN安装文档](https://www.hiascend.com/document/detail/zh/canncommercial/850/softwareinst/instg/instg_0000.html?Mode=PmIns&InstallType=local&OS=Ubuntu)进行安装。
-2. 本样例依赖的**torch与torch_npu版本为2.7.1和v7.3.0**，请从[Ascend Extension for PyTorch插件](https://www.hiascend.com/document/detail/zh/Pytorch/730/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md)下载并安装torch与torch_npu安装包。
+> **说明**：仅编译本项目不运行（编译态）时，只需安装CANN toolkit包；运行本项目（运行态）时，需安装NPU驱动、CANN toolkit包与CANN ops包。
+
+1. **安装NPU驱动（运行态依赖）**：使用`npu-smi info`检查是否有NPU相关信息，若没有或无法明确识别芯片型号，请参考《[CANN快速安装](https://www.hiascend.com/cann/download)》完成驱动安装。
+2. **安装CANN软件包**：本样例的执行依赖CANN开发套件包（cann-toolkit）与CANN二进制算子包（cann-kernels），使用CANN软件版本为CANN 8.5。请参考《[CANN快速安装](https://www.hiascend.com/cann/download)》，选择`稳定版本`，并根据产品系列、CPU架构、操作系统等下载对应软件包（`Ascend-cann-toolkit_${version}_linux-${arch}.run`与`Ascend-cann-${chip_type}-ops_${version}_linux-${arch}.run`），最后参考页面提供的命令完成安装。
+
+   > **说明**：`npu-smi info`输出可能无法直接体现910C芯片型号。910C所属产品系列为Atlas A3训练推理系列产品，对应的CANN Ops安装包SoC代号为`a3`，即`Ascend-cann-a3-ops_${version}_linux-${arch}.run`。
+3. 本样例依赖的**torch与torch_npu版本为2.7.1和v7.3.0**，请从[Ascend Extension for PyTorch插件](https://www.hiascend.com/document/detail/zh/Pytorch/730/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md)下载并安装torch与torch_npu安装包。
 
 ## ⬇️安装
 

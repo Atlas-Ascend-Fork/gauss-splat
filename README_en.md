@@ -27,8 +27,13 @@ The source code of this project is released along with CANN software versions. F
 
 CANN Environment Preparation
 
-1. The execution of this sample depends on the CANN toolkit (cann-toolkit) and CANN binary operator package (cann-kernels). The CANN software version used is CANN 8.5. Download `Ascend-cann-toolkit_${version}_linux-${arch}.run` and `Ascend-cann-${chip_type}-ops_${version}_linux-${arch}.run` packages from the [CANN software package download address](https://www.hiascend.com/developer/download/community/result?module=cann&cann=8.5.0), and refer to the [CANN installation documentation](https://www.hiascend.com/document/detail/zh/canncommercial/850/softwareinst/instg/instg_0000.html?Mode=PmIns&InstallType=local&OS=Ubuntu) for installation.
-2. The torch and torch_npu versions required by this sample are **2.7.1 and v7.3.0**. Download and install the torch and torch_npu packages from [Ascend Extension for PyTorch plugin](https://www.hiascend.com/document/detail/zh/Pytorch/730/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md).
+> **Note**: When only compiling this project without running it (compile-time state), you only need to install the CANN toolkit package. When running this project (run-time state), you need to install the NPU driver, CANN toolkit package, and CANN ops package.
+
+1. **Install the NPU driver (run-time dependency)**: Run `npu-smi info` to check whether NPU information is displayed. If there is no NPU information or the chip model cannot be clearly identified, refer to [CANN Quick Installation](https://www.hiascend.com/cann/download) to install the driver.
+2. **Install CANN software packages**: The execution of this sample depends on the CANN toolkit (cann-toolkit) and CANN binary operator package (cann-kernels). The CANN software version used is CANN 8.5. Refer to [CANN Quick Installation](https://www.hiascend.com/cann/download), select the **stable version**, and download the corresponding packages based on the product series, CPU architecture, and OS (`Ascend-cann-toolkit_${version}_linux-${arch}.run` and `Ascend-cann-${chip_type}-ops_${version}_linux-${arch}.run`). Then follow the commands provided on the page to complete the installation.
+
+   > **Note**: The `npu-smi info` output may not directly indicate the 910C chip model. The 910C chip belongs to the Atlas A3 training/inference series products, and its corresponding SoC code in the CANN ops package is `a3`, that is, `Ascend-cann-a3-ops_${version}_linux-${arch}.run`.
+3. The torch and torch_npu versions required by this sample are **2.7.1 and v7.3.0**. Download and install the torch and torch_npu packages from [Ascend Extension for PyTorch plugin](https://www.hiascend.com/document/detail/zh/Pytorch/730/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md).
 
 ## Installation
 

@@ -21,7 +21,7 @@ gauss-splat是基于[CANN](https://hiascend.com/software/cann)的3D Gaussian Spl
 | :-------- | :------------------------------------------------ |
 | 硬件      | Atlas A2训练推理系列产品/Atlas A3训练推理系列产品 |
 | CANN版本  | 8.5.0及以上（详见tag）                                       |
-| Python    | >=3.7                                           |
+| Python    | >=3.8                                           |
 | PyTorch   | 配套CANN版本，>=2.7.1                               |
 | torch_npu | 配套torch版本 ，>=7.3.0                             |
 
@@ -38,12 +38,14 @@ CANN环境准备
 ## ⬇️安装
 
 ```bash
-``编译安装
+### 编译安装
 conda create -n 3dgs python=3.9
 conda activate 3dgs
 
 git clone -b ${tag_version} https://gitcode.com/cann/gauss-splat.git
 cd gauss-splat
+# CAN_INSTALL_PATH为CANN安装根目录（默认/usr/local/Ascend），替换为实际路径
+# source后导出的ASCEND_TOOLKIT_HOME即${CAN_INSTALL_PATH}/ascend-toolkit/latest，tests/kernel_tests脚本依赖该变量
 source ${CAN_INSTALL_PATH}/ascend-toolkit/set_env.sh
 
 pip install numpy==1.23 decorator sympy scipy attrs cloudpickle psutil synr==0.5.0 tornado cmake pyyaml expecttest protobuf

@@ -44,6 +44,8 @@ conda activate 3dgs
 
 git clone -b ${tag_version} https://gitcode.com/cann/gauss-splat.git
 cd gauss-splat
+# CAN_INSTALL_PATH is the CANN installation root (default /usr/local/Ascend), replace it with the actual path
+# After sourcing, the exported ASCEND_TOOLKIT_HOME equals ${CAN_INSTALL_PATH}/ascend-toolkit/latest; tests/kernel_tests scripts depend on it
 source ${CAN_INSTALL_PATH}/ascend-toolkit/set_env.sh
 
 pip install numpy==1.23 decorator sympy scipy attrs cloudpickle psutil synr==0.5.0 tornado cmake pyyaml expecttest protobuf

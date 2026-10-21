@@ -165,7 +165,7 @@ public:
             .DataType({ge::DT_UINT8})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
-        this->Input("compesations")
+        this->Input("compensations")
             .ParamType(OPTIONAL)
             .DataType({ge::DT_FLOAT})
             .Format({ge::FORMAT_ND})

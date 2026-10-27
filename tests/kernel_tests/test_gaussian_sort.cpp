@@ -41,8 +41,11 @@ int InitializeTensors(TensorResources& resources) {
     int64_t cameraNum = 1;
     int64_t tileNum = 16;
     int64_t gaussNum = 256;
-    int64_t scheduleNum = 10;
-    
+    int64_t cntPerTile = 10;
+    // schedule layout: [num_bins bin end offsets][tileNum scheduled tile ids][tileNum cumulative offsets]
+    int64_t numBins = tileNum;
+    int64_t scheduleNum = numBins + 2 * tileNum;
+
     std::vector<int64_t> lbSchedShape = {batchSize, cameraNum, scheduleNum};
     std::vector<int64_t> gaussianCntShape = {batchSize, cameraNum, tileNum};
     std::vector<int64_t> gsIdsShape = {batchSize, cameraNum, tileNum, gaussNum};
@@ -51,7 +54,12 @@ int InitializeTensors(TensorResources& resources) {
     std::vector<int64_t> sortedGsIdsShape = {tileNum*gaussNum};
 
     std::vector<int64_t> lbSchedHostData(GetShapeSize(lbSchedShape), 0);
-    std::vector<int32_t> gaussianCntHostData(GetShapeSize(gaussianCntShape), 10);
+    for (int64_t i = 0; i < numBins; i++) {
+        lbSchedHostData[i] = i + 1;                              // bin end offsets: one tile per bin
+        lbSchedHostData[numBins + i] = i;                       // scheduled tile ids
+        lbSchedHostData[numBins + tileNum + i] = (i + 1) * cntPerTile; // cumulative gauss counts
+    }
+    std::vector<int32_t> gaussianCntHostData(GetShapeSize(gaussianCntShape), static_cast<int32_t>(cntPerTile));
     std::vector<float> gsIdsHostData(GetShapeSize(gsIdsShape), 0.0f);
     std::vector<float> depthsHostData(GetShapeSize(depthsShape), 1.0f);
     std::vector<int64_t> sortedOffsetHostData(GetShapeSize(sortedOffsetShape), 0);

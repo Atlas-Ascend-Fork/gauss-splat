@@ -39,6 +39,10 @@ struct TensorResources {
     void* v_RDeviceAddr = nullptr;
     void* v_colorsDeviceAddr = nullptr;
     void* v_opacitiesDeviceAddr = nullptr;
+    void* v_viewmatsDeviceAddr = nullptr;
+    void* v_ksDeviceAddr = nullptr;
+    void* dL_dviDeviceAddr = nullptr;
+    void* dL_dsigmaDeviceAddr = nullptr;
 
     aclTensor* meansTensor = nullptr;
     aclTensor* quatsTensor = nullptr;
@@ -58,6 +62,10 @@ struct TensorResources {
     aclTensor* v_RTensor = nullptr;
     aclTensor* v_colorsTensor = nullptr;
     aclTensor* v_opacitiesTensor = nullptr;
+    aclTensor* v_viewmatsTensor = nullptr;
+    aclTensor* v_ksTensor = nullptr;
+    aclTensor* dL_dviTensor = nullptr;
+    aclTensor* dL_dsigmaTensor = nullptr;
 };
 
 int InitializeTensors(TensorResources& resources) {
@@ -83,6 +91,10 @@ int InitializeTensors(TensorResources& resources) {
     std::vector<int64_t> v_RShape = {batchSize, 3, 3, gaussNum};
     std::vector<int64_t> v_colorsShape = {batchSize, 3, gaussNum};
     std::vector<int64_t> v_opacitiesShape = {batchSize, gaussNum};
+    std::vector<int64_t> v_viewmatsShape = {batchSize, cameraNum, 16};
+    std::vector<int64_t> v_ksShape = {batchSize, cameraNum, 9};
+    std::vector<int64_t> dL_dviShape = {batchSize * cameraNum, gaussNum};
+    std::vector<int64_t> dL_dsigmaShape = {batchSize * cameraNum, gaussNum};
 
     std::vector<float> meansHostData(GetShapeSize(meansShape), 0.0f);
     std::vector<float> quatsHostData(GetShapeSize(quatsShape), 0.707f);
@@ -102,6 +114,10 @@ int InitializeTensors(TensorResources& resources) {
     std::vector<float> v_RHostData(GetShapeSize(v_RShape), 0.0f);
     std::vector<float> v_colorsHostData(GetShapeSize(v_colorsShape), 0.0f);
     std::vector<float> v_opacitiesHostData(GetShapeSize(v_opacitiesShape), 0.0f);
+    std::vector<float> v_viewmatsHostData(GetShapeSize(v_viewmatsShape), 0.0f);
+    std::vector<float> v_ksHostData(GetShapeSize(v_ksShape), 0.0f);
+    std::vector<float> dL_dviHostData(GetShapeSize(dL_dviShape), 0.0f);
+    std::vector<float> dL_dsigmaHostData(GetShapeSize(dL_dsigmaShape), 0.0f);
 
     int ret = CreateAclTensor(meansHostData, meansShape, &resources.meansDeviceAddr,
                               aclDataType::ACL_FLOAT, &resources.meansTensor);
@@ -175,6 +191,22 @@ int InitializeTensors(TensorResources& resources) {
                           aclDataType::ACL_FLOAT, &resources.v_opacitiesTensor);
     if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
 
+    ret = CreateAclTensor(v_viewmatsHostData, v_viewmatsShape, &resources.v_viewmatsDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.v_viewmatsTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(v_ksHostData, v_ksShape, &resources.v_ksDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.v_ksTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(dL_dviHostData, dL_dviShape, &resources.dL_dviDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.dL_dviTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(dL_dsigmaHostData, dL_dsigmaShape, &resources.dL_dsigmaDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.dL_dsigmaTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
     return ACL_SUCCESS;
 }
 
@@ -189,9 +221,13 @@ int ExecuteFullyFusedProjectionBwd(TensorResources& resources, aclrtStream strea
         resources.conicsTensor, resources.viewmatsTensor, resources.ksTensor,
         resources.v_means2dTensor, resources.v_depthsTensor, resources.v_conicsTensor,
         resources.v_colors_cullingTensor, resources.v_opacities_cullingTensor,
-        resources.filterTensor, nullptr, width, height,
+        resources.filterTensor,
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        width, height, 0 /* maxCompactCount */, 0 /* supportFeatures */,
         resources.v_pWTensor, resources.v_quatsTensor, resources.v_scalesTensor,
         resources.v_RTensor, resources.v_colorsTensor, resources.v_opacitiesTensor,
+        resources.v_viewmatsTensor, resources.v_ksTensor,
+        resources.dL_dviTensor, resources.dL_dsigmaTensor,
         workspaceSize, &executor);
 
     if (!CHECK_RET(ret == ACL_SUCCESS)) {
@@ -233,6 +269,10 @@ void CleanupResources(TensorResources& resources, void* workspaceAddr,
     if (resources.v_RTensor) aclDestroyTensor(resources.v_RTensor);
     if (resources.v_colorsTensor) aclDestroyTensor(resources.v_colorsTensor);
     if (resources.v_opacitiesTensor) aclDestroyTensor(resources.v_opacitiesTensor);
+    if (resources.v_viewmatsTensor) aclDestroyTensor(resources.v_viewmatsTensor);
+    if (resources.v_ksTensor) aclDestroyTensor(resources.v_ksTensor);
+    if (resources.dL_dviTensor) aclDestroyTensor(resources.dL_dviTensor);
+    if (resources.dL_dsigmaTensor) aclDestroyTensor(resources.dL_dsigmaTensor);
 
     if (resources.meansDeviceAddr) aclrtFree(resources.meansDeviceAddr);
     if (resources.quatsDeviceAddr) aclrtFree(resources.quatsDeviceAddr);
@@ -252,6 +292,10 @@ void CleanupResources(TensorResources& resources, void* workspaceAddr,
     if (resources.v_RDeviceAddr) aclrtFree(resources.v_RDeviceAddr);
     if (resources.v_colorsDeviceAddr) aclrtFree(resources.v_colorsDeviceAddr);
     if (resources.v_opacitiesDeviceAddr) aclrtFree(resources.v_opacitiesDeviceAddr);
+    if (resources.v_viewmatsDeviceAddr) aclrtFree(resources.v_viewmatsDeviceAddr);
+    if (resources.v_ksDeviceAddr) aclrtFree(resources.v_ksDeviceAddr);
+    if (resources.dL_dviDeviceAddr) aclrtFree(resources.dL_dviDeviceAddr);
+    if (resources.dL_dsigmaDeviceAddr) aclrtFree(resources.dL_dsigmaDeviceAddr);
 
     if (workspaceAddr) aclrtFree(workspaceAddr);
     if (stream) aclrtDestroyStream(stream);

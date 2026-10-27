@@ -36,6 +36,7 @@ from torch import Tensor
 from torch_npu.testing.testcase import TestCase, run_tests
 
 from gauss_splat import projection_three_dims_gaussian_fused
+from gauss_splat.ops.rast_ctx import RastCtx
 
 torch.npu.set_device('npu:0')
 torch.set_printoptions(sci_mode=False)
@@ -556,16 +557,23 @@ class TestProjection3DGSForward(TestCase):
     # pylint: disable=too-many-arguments,huawei-too-many-arguments,too-many-return-values
     def npu_to_exec(self, inputs, width, height, eps2d, near_plane, far_plane, calc_compensations, camera_model):
         means = inputs.means.npu()
-        colors = inputs.colors.npu()
+        colors = inputs.colors.transpose(1, 2).contiguous().npu()
         covars = inputs.covars.npu()
         opacities = inputs.opacities.npu()
         viewmats = inputs.viewmats.npu()
         ks = inputs.ks.npu()
+        b, n = means.shape[:2]
+        c = viewmats.shape[1]
+        rast_ctx = RastCtx()
+        rast_ctx.proj_backward_culling = False
         means2d_culling, depths_culling, conics_culling, opacities_culling, \
-        radius_culling, covars2d_culling, colors_culling, cnt, _proj_filter = \
-            projection_three_dims_gaussian_fused(means, colors, covars, \
-            None, None, opacities, viewmats, ks, width, height, eps2d, \
-            near_plane, far_plane, calc_compensations, camera_model)
+        radius_culling, covars2d_culling, colors_culling, cnt, _proj_filter, _vi_culling = \
+            projection_three_dims_gaussian_fused(
+                means, colors, covars, None, None, opacities, viewmats, ks,
+                torch.ones((b, c, n), device=means.device),
+                torch.ones((1,), device=means.device), rast_ctx,
+                width, height, eps2d, near_plane, far_plane,
+                calc_compensations, camera_model)
         return ExecResults(
             means2d_culling=means2d_culling.detach().float(),
             depths_culling=depths_culling.detach().float(),
@@ -578,8 +586,18 @@ class TestProjection3DGSForward(TestCase):
 
     def test_projection_3dgs_forward(self):
         for cpu_results, npu_results in self.test_results:
-            self.assertRtolEqual(cpu_results.means2d_culling.cpu().numpy(), npu_results.means2d_culling.cpu().numpy())
-            self.assertRtolEqual(cpu_results.depths_culling.cpu().numpy(), npu_results.depths_culling.cpu().numpy())
+            cnt = cpu_results.cnt.cpu().numpy()
+            for field in ("means2d_culling", "depths_culling"):
+                cpu_value = getattr(cpu_results, field).cpu().numpy()
+                npu_value = getattr(npu_results, field).cpu().numpy()
+                # Compact buffers only define entries [0, cnt); the tail is
+                # unspecified by the operator contract, so ignore it.
+                n = cpu_value.shape[-1]
+                keep = np.arange(n)[None, None, :] < cnt[..., None]
+                if cpu_value.ndim == 4:
+                    keep = keep[:, :, None, :]
+                self.assertRtolEqual(np.where(keep, cpu_value, 0).astype(np.float32),
+                                     np.where(keep, npu_value, 0).astype(np.float32))
 
 if __name__ == "__main__":
     run_tests()

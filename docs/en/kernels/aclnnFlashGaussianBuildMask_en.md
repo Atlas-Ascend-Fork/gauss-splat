@@ -1,12 +1,12 @@
 # aclnnFlashGaussianBuildMask
 
-[View Source Code](https://gitcode.com/cann/gauss-splat/blob/master/kernels/flash_gaussian_build_mask/op_kernel/flash_gaussian_build_mask.cpp)
+[View Source Code (arch22)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/flash_gaussian_build_mask/op_kernel/arch22/flash_gaussian_build_mask.cpp) | [View Source Code (arch35)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/flash_gaussian_build_mask/op_kernel/arch35/flash_gaussian_build_mask.cpp)
 
 ## Product Support
 
 | Product                                                     | Supported |
 | :------------------------------------------------------- | :------: |
-| Ascend 950PR/Ascend 950DT                   |    No    |
+| Ascend 950PR/Ascend 950DT                   |    Yes    |
 | Atlas A3 training series products/Atlas A3 inference series products |    Yes    |
 | Atlas A2 training series products/Atlas A2 inference series products |    Yes    |
 | Atlas 200I/500 A2 inference products                  |    No    |
@@ -15,18 +15,24 @@
 
 ## Function Description
 
-- Interface function: `flash_gaussian_build_mask` builds the mask information required for Flash rendering to optimize rendering efficiency.
+- Interface function: `flash_gaussian_build_mask` performs three-level filtering and ordered compaction on the Gaussian spheres under each (batch, camera) view by tile assignment, building the tile masks required by Flash rendering (the count, index list, and depth list of valid Gaussian spheres in each tile), to optimize the parallel computing efficiency of subsequent rendering.
 - Computation formula:
 
-Builds tile masks based on Gaussian sphere position, opacity, and other parameters:
+For each (batch, camera, tile):
 
 $$
-tile\_sum = \sum_{gaussians\_in\_tile} valid\_mask
+tile\_sum[b,c,t] = \sum_{g} valid\_mask[b,c,t,g]
 $$
 
 $$
-tile\_depths = \sum_{gaussians\_in\_tile} depth \cdot valid\_mask
+gauss\_index[b,c,t,0:tile\_sum] = \{\, g \mid valid\_mask[b,c,t,g] = 1 \,\}
 $$
+
+$$
+tile\_depths[b,c,t,0:tile\_sum] = depths[b,c,g] \big|_{g \in gauss\_index[b,c,t]}
+$$
+
+where $valid\_mask$ is determined by three-level filtering: first pre-filter by the tile's Y-axis range, then coarse-filter by the bounding box, and finally fine-filter by center/tile intersection and ellipse intersection.
 
 The mask construction process optimizes the parallel computing efficiency of subsequent rendering.
 
@@ -44,8 +50,8 @@ aclnnStatus aclnnFlashGaussianBuildMaskGetWorkspaceSize(
     const aclTensor *cnt,
     const aclTensor *tileGrid,
     const aclTensor *gatherMask,
-    float            imageWidth,
-    float            imageHeight,
+    double           imageWidth,
+    double           imageHeight,
     int64_t          tileSize,
     const aclTensor *tileSum,
     const aclTensor *tileDepths,
@@ -83,7 +89,7 @@ aclnnStatus aclnnFlashGaussianBuildMask(
       <td>means2d</td>
       <td>Input</td>
       <td>Projected 2D position coordinates.</td>
-      <td>Empty tensors are not supported.</td>
+      <td>Optional input; empty tensors are supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, 2, gaussian_num)</td>
@@ -93,7 +99,7 @@ aclnnStatus aclnnFlashGaussianBuildMask(
       <td>opacity</td>
       <td>Input</td>
       <td>Gaussian sphere opacity.</td>
-      <td>Empty tensors are not supported.</td>
+      <td>Optional input; empty tensors are supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, 1, gaussian_num)</td>
@@ -103,7 +109,7 @@ aclnnStatus aclnnFlashGaussianBuildMask(
       <td>conics</td>
       <td>Input</td>
       <td>Conic parameters.</td>
-      <td>Empty tensors are not supported.</td>
+      <td>Optional input; empty tensors are supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, 3, gaussian_num)</td>
@@ -113,7 +119,7 @@ aclnnStatus aclnnFlashGaussianBuildMask(
       <td>covars2d</td>
       <td>Input</td>
       <td>2D covariance matrix.</td>
-      <td>Empty tensors are not supported.</td>
+      <td>Optional input; empty tensors are supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, 3, gaussian_num)</td>
@@ -123,7 +129,7 @@ aclnnStatus aclnnFlashGaussianBuildMask(
       <td>depths</td>
       <td>Input</td>
       <td>Gaussian sphere depth.</td>
-      <td>Empty tensors are not supported.</td>
+      <td>Optional input; empty tensors are supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, 1, gaussian_num)</td>
@@ -132,18 +138,18 @@ aclnnStatus aclnnFlashGaussianBuildMask(
     <tr>
       <td>cnt</td>
       <td>Input</td>
-      <td>Gaussian sphere count per tile.</td>
-      <td>Empty tensors are not supported.</td>
+      <td>Valid Gaussian sphere count in each view.</td>
+      <td>Optional input; empty tensors are supported; each element must satisfy 0 ≤ cnt ≤ gaussian_num.</td>
       <td>INT32</td>
       <td>ND</td>
-      <td>(batch_size, camera_num)</td>
+      <td>(batch_size, camera_num) or (batch_size, camera_num, 1)</td>
       <td>Yes</td>
     </tr>
     <tr>
       <td>tileGrid</td>
       <td>Input</td>
       <td>Tile grid information.</td>
-      <td>Empty tensors are not supported.</td>
+      <td>Optional input; empty tensors are supported; numTile = ceil(image_height / tile_size) * ceil(image_width / tile_size).</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(numTile, 2)</td>
@@ -152,18 +158,18 @@ aclnnStatus aclnnFlashGaussianBuildMask(
     <tr>
       <td>gatherMask</td>
       <td>Input</td>
-      <td>Gather mask information.</td>
-      <td>Empty tensors are not supported.</td>
+      <td>Inter-core/inter-stage Gather staging buffer; not involved in output computation.</td>
+      <td>Optional input; empty tensors are supported; block_num is the platform-adapted workspace row count (typically 48 for the A2 series and 56/64 for the A5 series), with one row per core.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(48, 20, gaussian_num)</td>
+      <td>(block_num, 20, gaussian_num)</td>
       <td>Yes</td>
     </tr>
     <tr>
       <td>imageWidth</td>
       <td>Input</td>
       <td>Image width.</td>
-      <td>Floating-point number.</td>
+      <td>Floating-point number, range [1.0, 4294967295.0].</td>
       <td>FLOAT</td>
       <td>-</td>
       <td>-</td>
@@ -173,7 +179,7 @@ aclnnStatus aclnnFlashGaussianBuildMask(
       <td>imageHeight</td>
       <td>Input</td>
       <td>Image height.</td>
-      <td>Floating-point number.</td>
+      <td>Floating-point number, range [1.0, 4294967295.0].</td>
       <td>FLOAT</td>
       <td>-</td>
       <td>-</td>
@@ -183,7 +189,7 @@ aclnnStatus aclnnFlashGaussianBuildMask(
       <td>tileSize</td>
       <td>Input</td>
       <td>Tile size.</td>
-      <td>Positive integer, typically 16.</td>
+      <td>Positive integer, tile partition granularity; must satisfy numTile = ceil(image_height / tile_size) * ceil(image_width / tile_size) with tileGrid.</td>
       <td>INT64</td>
       <td>-</td>
       <td>-</td>
@@ -192,8 +198,8 @@ aclnnStatus aclnnFlashGaussianBuildMask(
     <tr>
       <td>tileSum</td>
       <td>Output</td>
-      <td>Total Gaussian sphere count per tile.</td>
-      <td>Empty tensors are not supported.</td>
+      <td>Total number of valid Gaussian spheres in each tile.</td>
+      <td>Required output; empty tensors are supported (empty when any of batch_size/camera_num/gaussian_num is 0).</td>
       <td>INT32</td>
       <td>ND</td>
       <td>(batch_size, camera_num, numTile, 1)</td>
@@ -202,8 +208,8 @@ aclnnStatus aclnnFlashGaussianBuildMask(
     <tr>
       <td>tileDepths</td>
       <td>Output</td>
-      <td>Depth information per tile.</td>
-      <td>Empty tensors are not supported.</td>
+      <td>Ordered list of Gaussian sphere depths in each tile.</td>
+      <td>Required output; empty tensors are supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, numTile, gaussian_num)</td>
@@ -212,8 +218,8 @@ aclnnStatus aclnnFlashGaussianBuildMask(
     <tr>
       <td>gaussIndex</td>
       <td>Output</td>
-      <td>Gaussian sphere index information.</td>
-      <td>Empty tensors are not supported.</td>
+      <td>Ordered list of Gaussian sphere indices in each tile.</td>
+      <td>Required output; empty tensors are supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, numTile, gaussian_num)</td>
@@ -262,7 +268,7 @@ aclnnStatus aclnnFlashGaussianBuildMask(
             <tr>
                 <td>ACLNN_ERR_PARAM_INVALID</td>
                 <td>161002</td>
-                <td>The data type and format of the input/output tensor are not within the supported range, or the parameter values are invalid.</td>
+                <td>The data type, format, or shape of the input/output tensor is not within the supported range, or the parameter/attribute values are invalid (for example, a cnt element is outside [0, gaussian_num]).</td>
             </tr>
         </tbody>
     </table>
@@ -307,8 +313,14 @@ aclnnStatus aclnnFlashGaussianBuildMask(
 
 ## Constraints
 
-- The data types of means2d, opacity, conics, covars2d, depths, tileGrid, gatherMask, tileDepths, and gaussIndex are FLOAT.
-- The data types of cnt and tileSum are INT32.
+- Data types: means2d, opacity, conics, covars2d, depths, tileGrid, gatherMask, tileDepths, and gaussIndex are FLOAT; cnt and tileSum are INT32. All are in ND format.
+- All 8 inputs are optional and support empty tensors: when any of batch_size, camera_num, or gaussian_num is 0, the empty branch is taken, only tileSum is zero-filled, and tileDepths/gaussIndex are 0-element empty lists with no write-back.
+- cnt supports rank-2 (batch_size, camera_num) or rank-3 (batch_size, camera_num, 1); each element must satisfy 0 ≤ cnt[b,c] ≤ gaussian_num, otherwise the first-stage interface returns 161002.
+- The channel dimensions of means2d, opacity, conics, covars2d, and depths are 2, 1, 3, 3, and 1 respectively, and their batch_size, camera_num, and gaussian_num must be consistent with cnt and gatherMask.
+- tileGrid has shape (numTile, 2), where numTile must satisfy numTile = ceil(image_height / tile_size) * ceil(image_width / tile_size), in the range [1, 65536].
+- gatherMask has shape (block_num, 20, gaussian_num), where block_num is the platform-adapted workspace row count on the caller side (typically 48 for the A2 series and 56/64 for the A5 series).
+- Attribute constraints: image_width and image_height are in the range [1.0, 4294967295.0]; tile_size is a positive integer.
+- gaussian_num is in the range [0, 2^24 - 1].
 - tileSize is typically 16, used for tile partition computation.
 
 **Dimension Variable Description:**
@@ -316,7 +328,8 @@ aclnnStatus aclnnFlashGaussianBuildMask(
 - batch_size: Batch size, indicating the number of data batches processed at once.
 - gaussian_num: Number of Gaussian spheres, indicating the number of 3D Gaussian spheres in each batch.
 - camera_num: Number of cameras, indicating the number of cameras participating in the computation.
-- numTile: Number of tiles, indicating the total number of tile blocks the image is divided into.
+- numTile: Number of tiles, equal to ceil(image_height / tile_size) * ceil(image_width / tile_size).
+- block_num: First dimension (row count) of gatherMask (the gather workspace row count), platform-adapted.
 
 ## Calling Example
 

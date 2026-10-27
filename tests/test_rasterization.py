@@ -15,7 +15,7 @@ import torch
 import torch_npu
 from torch_npu.testing.testcase import TestCase, run_tests
 
-from gauss_splat import Rasterizer
+from gauss_splat import Rasterizer, gsplat_c
 
 torch.npu.set_device('npu:0')
 torch.manual_seed(42)
@@ -93,12 +93,14 @@ def _golden_rasterization(splats, cam, size, tile_size, active_sh_degree, camera
     colors = (colors + 0.5).clip(min=0.0)
 
     from gauss_splat import projection_three_dims_gaussian_fused
-    means2d, depths, conics, opacities_proj, radius, covars2d, colors_proj, cnt, _proj_filter = \
+    vi = torch.ones((B, C, N), device=means.device)
+    sigma = torch.ones((1,), device=means.device)
+    means2d, depths, conics, opacities_proj, radius, covars2d, colors_proj, cnt, _proj_filter, _vi_culling = \
         projection_three_dims_gaussian_fused(
             means.reshape(B, N, 3), colors, None,
             quats.reshape(B, N, 4), scales.reshape(B, N, 3), opacities.reshape(B, N),
             viewmats.reshape(B, C, 4, 4).contiguous(), Ks.reshape(B, C, 3, 3),
-            width, height, 0.3, 0.2)
+            vi, sigma, None, width, height, 0.3, 0.01)
 
     padded_h = math.ceil(height / tile_size) * tile_size
     padded_w = math.ceil(width / tile_size) * tile_size
@@ -133,7 +135,7 @@ def _golden_rasterization(splats, cam, size, tile_size, active_sh_degree, camera
         max_tile_gauss = torch.amax(tile_sums_g).item()
 
         sorted_gs_ids = gaussian_sort(
-            lb_sched_tensor, tile_sums_g, tile_depths_g, gauss_index_g,
+            lb_sched_tensor, tile_sums_3d.to(torch.int32), tile_depths_g, gauss_index_g,
             sorted_offset, max_tile_gauss)
 
     render_colors_list = []
@@ -145,7 +147,8 @@ def _golden_rasterization(splats, cam, size, tile_size, active_sh_degree, camera
         inv_x_0 = conics[0, _cam_view, 0, :]
         inv_x_1 = conics[0, _cam_view, 1, :]
         inv_x_2 = conics[0, _cam_view, 2, :]
-        cf_depth_r = depths[0, _cam_view].unsqueeze(0)
+        # render metric uses inverse depth (1/z); tile sort below uses direct z
+        cf_depth_r = (1.0 / depths[0, _cam_view].clamp(min=1e-6)).unsqueeze(0)
         lb_sched = lb_sched_tensor[0, _cam_view, :]
 
         view_idx = _cam_view
@@ -161,6 +164,8 @@ def _golden_rasterization(splats, cam, size, tile_size, active_sh_degree, camera
         nw = padded_w // ts
         rc = cf_render_colors.permute(1, 2, 0).reshape(nh, nw, ts, ts, -1) \
              .transpose(1, 2).reshape(nh * ts, nw * ts, -1).permute(2, 0, 1)[:, :height, :width]
+        if cf_render_depths.dim() == 2:
+            cf_render_depths = cf_render_depths.unsqueeze(-1)
         rd = cf_render_depths.permute(1, 2, 0).reshape(nh, nw, ts, ts, -1) \
              .transpose(1, 2).reshape(nh * ts, nw * ts, -1).permute(2, 0, 1)[:, :height, :width]
 
@@ -258,6 +263,14 @@ class TestRasterizerRasterization(TestCase):
                 self.assertEqual(meta["n_cameras"], 1)
                 self.assertIn("means2d", meta)
                 self.assertIn("radii", meta)
+                if getattr(gsplat_c, "use_arch35", False):
+                    self.assertIsNotNone(meta["gaussian_ids"])
+                    ids = meta["gaussian_ids"]
+                    self.assertLessEqual(ids.numel(), tc["n_gs"])
+                    if ids.numel():
+                        self.assertGreaterEqual(ids.min().item(), 0)
+                        self.assertLess(ids.max().item(), tc["n_gs"])
+                        self.assertEqual(torch.unique(ids).numel(), ids.numel())
                 del splats, cam, meta
                 gc.collect()
                 torch.npu.empty_cache()
@@ -285,6 +298,7 @@ class TestRasterizerStateCaching(TestCase):
         self.assertIsNotNone(rasterizer.pix_coord)
         self.assertEqual(rasterizer.padded_width, 32)
         self.assertEqual(rasterizer.padded_height, 32)
+        self.assertEqual(rasterizer._geometry_key, (width, height, tile_size, splats["means"].device))
 
         cached_tile_grid = rasterizer.tile_grid
         cached_pix_coord = rasterizer.pix_coord
@@ -294,8 +308,8 @@ class TestRasterizerStateCaching(TestCase):
             cam=cam, size=(width, height), tile_size=tile_size,
             active_sh_degree=sh_degree, splats=splats2, camera_model="pinhole",
         )
-        self.assertTrue(torch.equal(rasterizer.tile_grid, cached_tile_grid))
-        self.assertTrue(torch.equal(rasterizer.pix_coord, cached_pix_coord))
+        self.assertIs(rasterizer.tile_grid, cached_tile_grid)
+        self.assertIs(rasterizer.pix_coord, cached_pix_coord)
 
     def test_fresh_rasterizer_no_cache(self):
         rasterizer = Rasterizer()
@@ -303,6 +317,7 @@ class TestRasterizerStateCaching(TestCase):
         self.assertIsNone(rasterizer.pix_coord)
         self.assertIsNone(rasterizer.padded_width)
         self.assertIsNone(rasterizer.padded_height)
+        self.assertIsNone(rasterizer._geometry_key)
 
 
 class TestRasterizerNonAlignedSize(TestCase):
@@ -459,10 +474,67 @@ class TestRasterizerMultiCamera(TestCase):
         gc.collect()
         torch.npu.empty_cache()
 
+    def test_multi_camera_gradients_match_individual_views(self):
+        means = torch.tensor([[-0.1, 0.0, 2.0], [0.1, 0.0, 2.0]],
+                             dtype=torch.float32, device='npu', requires_grad=True)
+        shN = torch.tensor([[[0.2, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]]],
+                           dtype=torch.float32, device='npu').expand(2, -1, -1).clone().requires_grad_()
+        splats = {
+            "means": means,
+            "quats": torch.tensor([[1.0, 0.0, 0.0, 0.0]], device='npu').expand(2, -1).clone().requires_grad_(),
+            "scales": torch.tensor([[-2.0, -2.2, -1.9]], device='npu').expand(2, -1).clone().requires_grad_(),
+            "opacities": torch.full((2,), 1.0, device='npu', requires_grad=True),
+            "sh0": torch.full((2, 1, 3), 0.2, device='npu', requires_grad=True),
+            "shN": shN,
+        }
+        camtoworlds = torch.eye(4, device='npu').unsqueeze(0).repeat(2, 1, 1)
+        camtoworlds[1, 0, 3] = 0.3
+        Ks = torch.tensor([[[50.0, 0.0, 16.0], [0.0, 50.0, 16.0], [0.0, 0.0, 1.0]]],
+                          device='npu').repeat(2, 1, 1)
+        grad_inputs = tuple(splats[key] for key in ("means", "quats", "scales", "opacities", "sh0", "shN"))
+
+        def render(camera_matrices, intrinsics):
+            return Rasterizer().rasterization(
+                cam=(camera_matrices, intrinsics, "RGB"),
+                size=(32, 32), tile_size=32, active_sh_degree=1,
+                splats=splats, camera_model="pinhole")
+
+        batch_colors, batch_depths, batch_info = render(camtoworlds, Ks)
+        batch_loss = batch_colors.sum() + 0.01 * batch_depths.sum()
+        batch_loss = batch_loss + 1e-4 * batch_info["means2d"].sum()
+        batch_grads = torch.autograd.grad(batch_loss, grad_inputs)
+
+        single_results = [render(camtoworlds[i:i + 1], Ks[i:i + 1]) for i in range(2)]
+        single_loss = sum(colors.sum() + 0.01 * depths.sum() + 1e-4 * info["means2d"].sum()
+                          for colors, depths, info in single_results)
+        single_grads = torch.autograd.grad(single_loss, grad_inputs)
+
+        self.assertGreater(batch_colors.detach().abs().sum().item(), 0)
+        self.assertGreater(sum(grad.detach().abs().sum().item() for grad in batch_grads), 0)
+        for camera_index, (colors, depths, _) in enumerate(single_results):
+            torch.testing.assert_close(batch_colors[camera_index], colors[0], rtol=1e-2, atol=1e-3)
+            torch.testing.assert_close(batch_depths[camera_index], depths[0], rtol=1e-2, atol=1e-3)
+        for batch_grad, single_grad in zip(batch_grads, single_grads):
+            torch.testing.assert_close(batch_grad, single_grad, rtol=1e-2, atol=1e-3)
+
 class TestRasterizerMinimalGaussians(TestCase):
 
     def setUp(self):
         torch.manual_seed(7)
+
+    def test_visible_gaussian_ids(self):
+        if not getattr(gsplat_c, "use_arch35", False):
+            self.skipTest("A5 dense_indices output is required")
+        splats = _gen_splats(3, 0)
+        splats["means"] = torch.tensor([[0.0, 0.0, 3.0], [0.0, 0.0, -3.0],
+                                         [0.1, 0.0, 3.0]], device='npu')
+        camtoworlds = torch.eye(4, device='npu').unsqueeze(0)
+        ks = torch.tensor([[[50.0, 0.0, 16.0], [0.0, 50.0, 16.0],
+                            [0.0, 0.0, 1.0]]], device='npu')
+        _, _, meta = Rasterizer().rasterization(
+            cam=(camtoworlds, ks, "RGB"), size=(32, 32), tile_size=32,
+            active_sh_degree=0, splats=splats)
+        self.assertEqual(meta["gaussian_ids"].tolist(), [0, 2])
 
     def test_single_gaussian(self):
         rasterizer = Rasterizer()

@@ -16,6 +16,10 @@ from setuptools.command.develop import develop
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 VERSION = "1.0.0"
+detect_use_arch35 = os.environ.get("USE_ARCH35", "false").lower() == "true"
+ascend_compute_unit = os.environ.get(
+    "ASCEND_COMPUTE_UNIT", "ascend950" if detect_use_arch35 else "ascend910b;ascend910_93"
+)
 
 print("setup.py is being executed.Command being executed: ", sys.argv)
 
@@ -71,6 +75,7 @@ class CPPLibBuild(build_clib):
         if not os.path.exists(gauss_splat_dir):
             os.makedirs(gauss_splat_dir)
 
+        use_arch35 = "ON" if detect_use_arch35 else "OFF"
         cmake_args = [
             "--preset=default",
             f"-DCMAKE_BUILD_TYPE={'Debug' if self.debug else 'Release'}",
@@ -78,6 +83,8 @@ class CPPLibBuild(build_clib):
             self.build_temp,
             f"-Dgauss_splat_PATH={gauss_splat_dir}",
             f"-DKERNEL_NAME={self.kernel_name if self.kernel_name else '*'}",
+            f"-DUSE_ARCH35={use_arch35}",
+            f"-DASCEND_COMPUTE_UNIT={ascend_compute_unit}",
         ]
         build_args = ["--build", self.build_temp, f"-j{multiprocessing.cpu_count()}"]
 
@@ -112,6 +119,7 @@ class ExtBuild(build_ext):
             if val:
                 ext_cxx_flags.append(f"-D_PYBIND11_{name}={val}")
 
+        use_arch35 = "ON" if detect_use_arch35 else "OFF"
         cmake_args = [
             "--preset=default",
             f"-DCMAKE_BUILD_TYPE={'Debug' if self.debug else 'Release'}",
@@ -120,6 +128,8 @@ class ExtBuild(build_ext):
             f"-Dgauss_splat_PATH={gauss_splat_dir}",
             f"-DEXT_CXX_FLAGS={' '.join(ext_cxx_flags)}",
             f"-DPython3_EXECUTABLE={sys.executable}",
+            f"-DUSE_ARCH35={use_arch35}",
+            f"-DASCEND_COMPUTE_UNIT={ascend_compute_unit}",
         ]
         if LooseVersion(torch.__version__) < LooseVersion("2.1.0"):
             cmake_args.append("-DCOMPILE_WITH_XLA:BOOL=ON")
@@ -190,6 +200,7 @@ if not os.getenv("BUILD_WITHOUT_SHA"):
 setup(
     name="gauss_splat",
     version=VERSION,
+    python_requires=">=3.9",
     description="A Library of acceleration for autonomous driving systems on Ascend-NPU.",
     keywords="gauss_splat",
     ext_modules=[Extension("gauss_splat", sources=[])],

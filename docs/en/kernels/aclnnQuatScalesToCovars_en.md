@@ -1,12 +1,12 @@
 # aclnnQuatScalesToCovars
 
-[View Source Code](https://gitcode.com/cann/gauss-splat/blob/master/kernels/quat_scales_to_covars/op_kernel/quat_scales_to_covars.cpp)
+[View Source Code (arch22)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/quat_scales_to_covars/op_kernel/arch22/quat_scales_to_covars.cpp) | [View Source Code (arch35)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/quat_scales_to_covars/op_kernel/arch35/quat_scales_to_covars.cpp)
 
 ## Product Support
 
 | Product                                                     | Supported |
 | :------------------------------------------------------- | :------: |
-| Ascend 950PR/Ascend 950DT                   |    No    |
+| Ascend 950PR/Ascend 950DT                   |    Yes    |
 | Atlas A3 training series products/Atlas A3 inference series products |    Yes    |
 | Atlas A2 training series products/Atlas A2 inference series products |    Yes    |
 | Atlas 200I/500 A2 inference products                  |    No    |
@@ -76,7 +76,7 @@ aclnnStatus aclnnQuatScalesToCovars(
       <td>quat</td>
       <td>Input</td>
       <td>Quaternion, representing the rotation of the Gaussian sphere.</td>
-      <td>Empty tensors are not supported. Quaternions should be normalized.</td>
+      <td>Empty tensors are not supported. Components are ordered as $(w, x, y, z)$ (real part first); the kernel normalizes the quaternion internally, so the caller does not need to pre-normalize it.</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, 4, gaussian_num)</td>
@@ -187,6 +187,19 @@ aclnnStatus aclnnQuatScalesToCovars(
 - **Return Value:**
   
   aclnnStatus: Returns a status code. For details, refer to [aclnn Return Codes](https://gitcode.com/cann/ops-nn/blob/master/docs/zh/context/aclnn_return_code.md).
+
+## Constraints
+
+- Data types: `quat`, `scales`, and `covars` are FLOAT; the data format is ND for all.
+- Empty tensors are not supported for `quat`, `scales`, or `covars`; non-contiguous tensors are supported.
+- The batch_size and gaussian_num of `quat` and `scales` must match; the shape of the output `covars` is inferred from `quat` and is (batch_size, 3, 3, gaussian_num).
+- The component order of `quat` is $(w, x, y, z)$ (real part first); the kernel normalizes the quaternion internally, so the caller does not need to pre-normalize it.
+- Both Atlas A2/A3 and A5 (Ascend 950) support this operator; `gaussian_num` is split across AIV cores after being aligned to 8 elements.
+
+**Dimension Variable Description:**
+
+- batch_size: Batch size, indicating the number of data batches processed at a time.
+- gaussian_num: Number of Gaussian spheres, indicating the number of 3D Gaussian spheres in each batch.
 
 ## Calling Example
 

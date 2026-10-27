@@ -1,25 +1,54 @@
 file(GLOB ASCEND_CSRC_SRC ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+
+# A5只编译SIMT渲染实现(CalcRenderSimt.cpp)，非A5只编译clip_gsids渲染实现(CalcRender.cpp)。
+if(USE_ARCH35 OR "ascend950" IN_LIST ASCEND_COMPUTE_UNIT)
+  set(GSPLAT_ARCH_A5 ON)
+  list(REMOVE_ITEM ASCEND_CSRC_SRC ${CMAKE_CURRENT_SOURCE_DIR}/CalcRender.cpp)
+else()
+  set(GSPLAT_ARCH_A5 OFF)
+  list(REMOVE_ITEM ASCEND_CSRC_SRC ${CMAKE_CURRENT_SOURCE_DIR}/CalcRenderSimt.cpp)
+endif()
+
 if(BUILD_STAGE EQUAL 2)
   set(Python3_USE_STATIC_LIBS FALSE)
   find_package(Python3 COMPONENTS Interpreter Development)
 
+  # torch_npu may print driver log-init messages to stdout on import; keep
+  # only output lines that are existing directories so the paths stay clean.
   execute_process(
     COMMAND ${Python3_EXECUTABLE} -c
             "import os; import torch; print(os.path.dirname(torch.__file__))"
     OUTPUT_STRIP_TRAILING_WHITESPACE
-    OUTPUT_VARIABLE TORCH_PATH)
+    OUTPUT_VARIABLE TORCH_PATH_RAW)
+  string(REGEX REPLACE "\n" ";" TORCH_PATH_LINES "${TORCH_PATH_RAW}")
+  foreach(_line ${TORCH_PATH_LINES})
+    if(EXISTS "${_line}")
+      set(TORCH_PATH "${_line}")
+      break()
+    endif()
+  endforeach()
   execute_process(
     COMMAND
       ${Python3_EXECUTABLE} -c
       "import os; import site; print(site.getsitepackages()[0] + '/torch_npu')"
     OUTPUT_STRIP_TRAILING_WHITESPACE
-    OUTPUT_VARIABLE TORCH_NPU_PATH)
+    OUTPUT_VARIABLE TORCH_NPU_PATH_RAW)
+  string(REGEX REPLACE "\n" ";" TORCH_NPU_PATH_LINES "${TORCH_NPU_PATH_RAW}")
+  foreach(_line ${TORCH_NPU_PATH_LINES})
+    if(EXISTS "${_line}")
+      set(TORCH_NPU_PATH "${_line}")
+      break()
+    endif()
+  endforeach()
   message("TORCH_PATH is ${TORCH_PATH}")
   message("TORCH_NPU_PATH is ${TORCH_NPU_PATH}")
 
   set(EXT_CXX_FLAGS "${EXT_CXX_FLAGS}")
   separate_arguments(EXT_CXX_FLAGS)
   add_library(gsplat_c SHARED ${ASCEND_CSRC_SRC})
+  if(GSPLAT_ARCH_A5)
+    target_compile_definitions(gsplat_c PRIVATE ASCEND_COMPUTE_UNI_A5)
+  endif()
   set_target_properties(
     gsplat_c
     PROPERTIES OUTPUT_NAME "${gauss_splat_PATH}/gsplat_c.${Python3_SOABI}"

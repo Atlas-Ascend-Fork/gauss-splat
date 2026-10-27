@@ -2,12 +2,13 @@
 
 ## Latest News
 
+- [2026/10] Added support for Ascend 950PR/Ascend 950DT products, along with SIMT rendering, FusedSSIM, and other operators.
 - [2026/07] The gauss-splat project is initially launched, with open-source operators supporting Atlas A2/A3 series products.
-- [2026/07] Supports 10 core 3D Gaussian Splatting operators, including spherical harmonics, covariance computation, projection, sorting, and filtering.
+- [2026/07] Supports core 3D Gaussian Splatting operators, including spherical harmonics, covariance computation, projection, sorting, and filtering.
 
 ## Overview
 
-gauss-splat is a 3D Gaussian Splatting rendering acceleration library based on [CANN](https://hiascend.com/software/cann). It provides high-performance PyTorch extension interfaces that cover the entire 3DGS training and inference workflow. This library accelerates core computations through Ascend C operators, achieving significant performance improvements on Atlas A2/A3 products.
+gauss-splat is a 3D Gaussian Splatting rendering acceleration library based on [CANN](https://hiascend.com/software/cann). It provides high-performance PyTorch extension interfaces that cover the entire 3DGS training and inference workflow. This library accelerates core computations through Ascend C operators, achieving significant performance improvements on Atlas A2/A3 and Ascend 950PR/950DT products.
 
 ## Version Compatibility
 
@@ -19,21 +20,21 @@ The source code of this project is released along with CANN software versions. F
 
 | Item      | Requirement                                              |
 | :-------- | :------------------------------------------------ |
-| Hardware      | Atlas A2 training/inference series products/Atlas A3 training/inference series products |
-| CANN version  | 8.5.0 or later (see tag)                                       |
-| Python    | >=3.7                                           |
+| Hardware      | Atlas A2 training/inference series products/Atlas A3 training/inference series products/Ascend 950PR/Ascend 950DT |
+| CANN version  | 9.0.0 or later                                       |
+| Python    | >=3.9                                           |
 | PyTorch   | Compatible with CANN version, >=2.7.1                               |
-| torch_npu | Compatible with torch version, >=7.3.0                             |
+| torch_npu | Compatible with torch version, >=v26.0.0                             |
 
 CANN Environment Preparation
 
 > **Note**: When only compiling this project without running it (compile-time state), you only need to install the CANN toolkit package. When running this project (run-time state), you need to install the NPU driver, CANN toolkit package, and CANN ops package.
 
 1. **Install the NPU driver (run-time dependency)**: Run `npu-smi info` to check whether NPU information is displayed. If there is no NPU information or the chip model cannot be clearly identified, refer to [CANN Quick Installation](https://www.hiascend.com/cann/download) to install the driver.
-2. **Install CANN software packages**: The execution of this sample depends on the CANN toolkit (cann-toolkit) and CANN binary operator package (cann-kernels). The CANN software version used is CANN 8.5. Refer to [CANN Quick Installation](https://www.hiascend.com/cann/download), select the **stable version**, and download the corresponding packages based on the product series, CPU architecture, and OS (`Ascend-cann-toolkit_${version}_linux-${arch}.run` and `Ascend-cann-${chip_type}-ops_${version}_linux-${arch}.run`). Then follow the commands provided on the page to complete the installation.
+2. **Install CANN software packages**: The execution of this sample depends on the CANN toolkit (cann-toolkit) and CANN binary operator package (cann-kernels). The CANN software version used is CANN 9.0.0. Refer to [CANN Quick Installation](https://www.hiascend.com/cann/download), select the **stable version**, and download the corresponding packages based on the product series, CPU architecture, and OS (`Ascend-cann-toolkit_${version}_linux-${arch}.run` and `Ascend-cann-${chip_type}-ops_${version}_linux-${arch}.run`). Then follow the commands provided on the page to complete the installation.
 
    > **Note**: The `npu-smi info` output may not directly indicate the 910C chip model. The 910C chip belongs to the Atlas A3 training/inference series products, and its corresponding SoC code in the CANN ops package is `a3`, that is, `Ascend-cann-a3-ops_${version}_linux-${arch}.run`.
-3. The torch and torch_npu versions required by this sample are **2.7.1 and v7.3.0**. Download and install the torch and torch_npu packages from [Ascend Extension for PyTorch plugin](https://www.hiascend.com/document/detail/zh/Pytorch/730/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md).
+3. The torch and torch_npu versions required by this sample are **2.7.1 and v26.0.0**. Download and install the torch and torch_npu packages from [Ascend Extension for PyTorch plugin](https://www.hiascend.com/document/detail/zh/Pytorch/2600/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md).
 
 ## Installation
 
@@ -44,21 +45,22 @@ conda activate 3dgs
 
 git clone -b ${tag_version} https://gitcode.com/cann/gauss-splat.git
 cd gauss-splat
-# CAN_INSTALL_PATH is the CANN installation root (default /usr/local/Ascend), replace it with the actual path
-# After sourcing, the exported ASCEND_TOOLKIT_HOME equals ${CAN_INSTALL_PATH}/ascend-toolkit/latest; tests/kernel_tests scripts depend on it
 source ${CAN_INSTALL_PATH}/ascend-toolkit/set_env.sh
 
 pip install numpy==1.23 decorator sympy scipy attrs cloudpickle psutil synr==0.5.0 tornado cmake pyyaml expecttest protobuf
 
 # Method 1:
 bash build.sh --python=3.9
-# The `--python` parameter specifies the Python version used for compilation, supporting version 3.8 and later.
+# The `--python` parameter specifies the Python version used for compilation, supporting version 3.9 and later.
+
 # After successful compilation, `build` and `dist` folders are generated in the current directory, and the generated whl package is in the `dist` directory.
 pip install dist/*.whl --force-reinstall
 
 # Method 2:
 pip install . --no-build-isolation
 ```
+
+For Atlas A5, build in a matching A5 CANN environment with `bash build.sh --python=3.9 --a5`. See the [A5 training example](examples/arch35/README.md).
 
 After installation, save the Quick Start code outside the project source directory and run it from outside that directory. For example, save the script as `quick_start.py` next to the `gauss-splat` directory, then run:
 
@@ -114,46 +116,10 @@ print(f"Rendered color shape: {render_colors.shape}")  # (1, 1080, 1920, 3)
 print(f"Rendered depth shape: {render_depths.shape}")  # (1, 1080, 1920, 1)
 ```
 
-### Tests
+### Others
 
-NPU tests require Linux, Atlas A2/A3, the matching CANN, PyTorch and torch_npu versions listed above, the ACL Python interface, and a built and installed project wheel. Activate that Python environment and source the CANN environment first. Tests use `npu:0`.
-
-Start in the repository root. `CAN_INSTALL_PATH` is the CANN installation root used in the installation commands above. Run Python tests outside the repository to avoid shadowing the installed `gauss_splat.gsplat_c` extension. Do not add the repository root to `PYTHONPATH`.
-
-```bash
-REPO="$(pwd)"
-source "${CAN_INSTALL_PATH}/ascend-toolkit/set_env.sh"
-python -m pip install pytest
-cd /tmp
-python -c "import acl, torch, torch_npu, gauss_splat.gsplat_c; print(torch.npu.is_available())"
-
-# Forward and backward rendering accuracy tests
-python -m pytest -v --tb=long "$REPO/tests/test_calc_render_fwd.py" "$REPO/tests/test_calc_render_bwd.py"
-# All Python tests
-python -m pytest -v --tb=long "$REPO/tests"
-# Alternatively, run an individual test script
-python "$REPO/tests/test_calc_render_fwd.py"
-# Run one unit test case
-python -m pytest "$REPO/tests/test_spherical_harmonics.py::TestSphericalHarmonicsForward::test_spherical_harmonics_forward"
-
-# C++ operator invocation tests, not a replacement for Python accuracy tests
-bash "$REPO/tests/kernel_tests/build_kernel_tests.sh" && bash "$REPO/tests/kernel_tests/run_kernel_tests.sh"
-```
-
-Build logs are written to `tests/kernel_tests/build_out/build.log`, the run summary to `run_results.txt` in the same directory, and each test's stdout and stderr to `*_run.log`. Compilation failures, missing executables, runtime failures, and no tests produce a nonzero script exit status.
-
-CPU regression tests for the reference and diagnostics require only PyTorch and NumPy, without CANN or an NPU. Run these commands from the repository root in a new shell:
-
-```bash
-REPO="$(pwd)"
-python -m unittest discover -s "$REPO/tests" -p test_render_test_utils.py -v
-# Mocked script regression tests require only Python and Bash
-python -m unittest discover -s "$REPO/tests" -p test_kernel_test_scripts.py -v
-```
-
-Rendering tests use seed `1234`, positive-definite covariances, and independent CPU reference inputs. Backward tests also check all seven gradient fields. Comparisons preserve the installed `torch_npu.testing.TestCase.assertRtolEqual` defaults without relaxing tolerances. Failures report the output field, case, shape, dtype, device, comparator defaults, error statistics, and worst location; nonfinite values fail separately. The reference follows the current kernel's transmittance check before complete groups of four Gaussians, with no additional check for the remaining tail.
-
-For remaining failures, retain the full log and record the hardware model and CANN, torch, and torch_npu versions. An accuracy assertion alone does not identify a hardware or kernel defect.
+- Complete training/inference samples are available in `examples/arch22` (A2/A3) and `examples/arch35` (A5).
+- For more interface usage, refer to the test code in the tests directory.
 
 ## Python API
 
@@ -161,9 +127,11 @@ For remaining failures, retain the full log and record the hardware model and CA
 | :--------------------------------------- | :----------------------------------------------------------------------------------------------- |
 | `spherical_harmonics`                  | Spherical harmonics computation, supports automatic backward propagation, converts direction vectors to view-dependent colors                                     |
 | `projection_three_dims_gaussian_fused` | Projection filtering fused operator, complete 3D-to-2D projection pipeline (covariance computation + projection transformation + Gaussian filtering), supports automatic backward propagation       |
+| `calc_render`                          | Gaussian splatting rendering computation, performs tile-based alpha blending and depth computation, automatically selecting the implementation based on the built backend (simt / clip_gsids), supports automatic backward propagation |
 | `gaussian_sort`                        | Gaussian sphere depth sorting, performs tile-based depth sorting on Gaussian spheres for the rendering pipeline                                 |
 | `flash_gaussian_build_mask`            | Flash rendering mask construction, builds the masks and indices required for Flash Gaussian Splatting rendering                              |
 | `gaussian_filter`                      | Gaussian sphere filtering (low-level API), independent filtering operator, typically called automatically within `projection_three_dims_gaussian_fused` |
+| `fused_ssim`                           | Fused SSIM (structural similarity) forward/backward computation for training loss, supports automatic backward propagation                              |
 | `Rasterizer`                           | Complete rasterizer (recommended), encapsulates the complete rendering pipeline (projection + sorting + tile construction + rendering computation)                            |
 | `get_render_schedule_cpp`              | Rendering schedule helper, obtains rendering schedule information (internal helper function)                                                   |
 
@@ -173,18 +141,22 @@ For remaining failures, retain the full log and record the hardware model and CA
 
 For advanced users who need to directly call underlying operators, this project provides ACLNN-level C++/Python interfaces. For detailed API documentation, refer to [docs/en/kernels/](docs/en/kernels/).
 
-| No. | Operator Name                      | Python Interface                                                | Documentation Link                                               |
-| :--: | :--------------------------------- | :-------------------------------------------------------------- | :-------------------------------------------------------------- |
-|  1  | SphericalHarmonicsForward          | `gauss_splat.gsplat_c.spherical_harmonics_forward`            | [API Documentation](docs/en/kernels/aclnnSphericalHarmonicsForward_en.md)          |
-|  2  | SphericalHarmonicsBwd              | `gauss_splat.gsplat_c.spherical_harmonics_bwd`                | [API Documentation](docs/en/kernels/aclnnSphericalHarmonicsBwd_en.md)              |
-|  3  | QuatScalesToCovars                 | `gauss_splat.gsplat_c.quat_scales_to_covars`                  | [API Documentation](docs/en/kernels/aclnnQuatScalesToCovars_en.md)                 |
-|  4  | ProjectionThreeDimsGaussianForward | `gauss_splat.gsplat_c.projection_three_dims_gaussian_forward` | [API Documentation](docs/en/kernels/aclnnProjectionThreeDimsGaussianForward_en.md) |
-|  5  | GaussianSort                       | `gauss_splat.gsplat_c.gaussian_sort`                          | [API Documentation](docs/en/kernels/aclnnGaussianSort_en.md)                       |
-|  6  | GaussianFilter                     | `gauss_splat.gsplat_c.gaussian_filter`                        | [API Documentation](docs/en/kernels/aclnnGaussianFilter_en.md)                     |
-|  7  | FullyFusedProjectionBwd            | `gauss_splat.gsplat_c.fully_fused_projection_bwd`             | [API Documentation](docs/en/kernels/aclnnFullyFusedProjectionBwd_en.md)            |
-|  8  | CalcRenderFwdDoubleClipGsids       | `gauss_splat.gsplat_c.calc_render_fwd_double_clip_gsids`      | [API Documentation](docs/en/kernels/aclnnCalcRenderFwdDoubleClipGsids_en.md)       |
-|  9  | CalcRenderBwdVarClipGsids          | `gauss_splat.gsplat_c.calc_render_bwd_var_clip_gsids`         | [API Documentation](docs/en/kernels/aclnnCalcRenderBwdVarClipGsids_en.md)          |
-|  10  | FlashGaussianBuildMask             | `gauss_splat.gsplat_c.flash_gaussian_build_mask`              | [API Documentation](docs/en/kernels/aclnnFlashGaussianBuildMask_en.md)             |
+| No. | Operator Name                      | Python Interface                                                | Supported Products | Documentation Link                                               |
+| :--: | :--------------------------------- | :-------------------------------------------------------------- | :----------------: | :-------------------------------------------------------------- |
+|  1  | SphericalHarmonicsForward          | `gauss_splat.gsplat_c.spherical_harmonics_forward`            | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnSphericalHarmonicsForward_en.md)          |
+|  2  | SphericalHarmonicsBwd              | `gauss_splat.gsplat_c.spherical_harmonics_bwd`                | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnSphericalHarmonicsBwd_en.md)              |
+|  3  | QuatScalesToCovars                 | `gauss_splat.gsplat_c.quat_scales_to_covars`                  | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnQuatScalesToCovars_en.md)                 |
+|  4  | ProjectionThreeDimsGaussianForward | `gauss_splat.gsplat_c.projection_three_dims_gaussian_forward` | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnProjectionThreeDimsGaussianForward_en.md) |
+|  5  | GaussianSort                       | `gauss_splat.gsplat_c.gaussian_sort`                          | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnGaussianSort_en.md)                       |
+|  6  | GaussianFilter                     | `gauss_splat.gsplat_c.gaussian_filter`                        | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnGaussianFilter_en.md)                     |
+|  7  | FullyFusedProjectionBwd            | `gauss_splat.gsplat_c.fully_fused_projection_bwd`             | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnFullyFusedProjectionBwd_en.md)            |
+|  8  | CalcRenderFwdDoubleClipGsids       | `gauss_splat.gsplat_c.calc_render_fwd_double_clip_gsids`      | A2/A3             | [API Documentation](docs/en/kernels/aclnnCalcRenderFwdDoubleClipGsids_en.md)       |
+|  9  | CalcRenderBwdVarClipGsids          | `gauss_splat.gsplat_c.calc_render_bwd_var_clip_gsids`         | A2/A3             | [API Documentation](docs/en/kernels/aclnnCalcRenderBwdVarClipGsids_en.md)          |
+|  10  | FlashGaussianBuildMask             | `gauss_splat.gsplat_c.flash_gaussian_build_mask`              | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnFlashGaussianBuildMask_en.md)             |
+|  11  | CalcRenderSimtFwd                  | `gauss_splat.gsplat_c.calc_render_simt_fwd`                   | A5                | [API Documentation](docs/en/kernels/aclnnCalcRenderSimtFwd_en.md)                  |
+|  12  | CalcRenderSimtBwd                  | `gauss_splat.gsplat_c.calc_render_simt_bwd`                   | A5                | [API Documentation](docs/en/kernels/aclnnCalcRenderSimtBwd_en.md)                  |
+|  13  | FusedSsimForward                   | `gauss_splat.gsplat_c.fused_ssim_forward`                     | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnFusedSsimForward_en.md)                   |
+|  14  | FusedSsimBackward                  | `gauss_splat.gsplat_c.fused_ssim_backward`                    | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnFusedSsimBackward_en.md)                  |
 
 **Note**: Directly calling underlying operators requires manual handling of shape transformations and memory management. Using the high-level Python API is recommended.
 
@@ -199,7 +171,8 @@ gauss-splat/
 │   │   ├── gaussian_sort.py             # Sorting operator
 │   │   ├── flash_gaussian_build_mask.py # Flash mask construction
 │   │   ├── gaussian_filter.py           # Filtering operator
-│   │   ├── calc_render.py               # Rendering computation
+│   │   ├── calc_render.py               # Rendering computation (simt / clip_gsids)
+│   │   ├── fused_ssim.py                # Fused SSIM (training loss)
 │   │   ├── rendering.py                 # Rasterizer class
 │   │   └── get_render_schedule.py       # Helper functions
 │   ├── csrc/               # C++ binding implementation
@@ -213,20 +186,53 @@ gauss-splat/
 │   ├── fully_fused_projection_bwd/
 │   ├── calc_render_fwd_double_clip_gsids/
 │   ├── calc_render_bwd_var_clip_gsids/
+│   ├── calc_render_simt_fwd/
+│   ├── calc_render_simt_bwd/
+│   ├── fused_ssim_forward/
+│   ├── fused_ssim_backward/
 │   └── flash_gaussian_build_mask/
 ├── docs/                   # Documentation directory
 │   └── kernels/            # ACLNN operator API documentation
+├── examples/               # Training/inference samples
+│   ├── arch22/             # A2/A3 samples
+│   └── arch35/             # A5 samples
 ├── tests/                  # Test code
 │   ├── test_spherical_harmonics.py      # Python tests
+│   ├── host/               # Host (CPU) tests
 │   └── kernel_tests/      # C++ operator tests
 └── README.md               # This document
 ```
 
+## Testing
+
+Before running the tests, complete the compilation and installation as described in the Installation section above, and load the CANN environment (`source ${CANN_INSTALL_PATH}/ascend-toolkit/set_env.sh`).
+
+### Python Tests
+
+`tests/` contains the operator Python cases and `tests/host/` contains pure CPU cases. Run them outside the repository to avoid importing the source-tree `gauss_splat` package:
+
+```bash
+REPO=<absolute path to the gauss-splat repository>; cd /tmp
+python -m pytest -v "$REPO/tests"
+python -B -m unittest discover -s "$REPO/tests/host" -p 'test_*.py' -v
+```
+
+### C++ Operator Tests
+
+```bash
+cd <gauss-splat repository path>
+bash tests/kernel_tests/build_kernel_tests.sh   # Build; binaries go to tests/kernel_tests/build_out/
+bash tests/kernel_tests/run_kernel_tests.sh     # Run and print results
+```
+
+> Notes:
+> - `build_kernel_tests.sh` links the package's `aclnn_*.h` into `${ASCEND_TOOLKIT_HOME}/include/aclnnop/`. If that directory is not writable the link fails with `aclnnop/...h: No such file or directory`; use a writable include directory or adjust the directory permissions.
+> - The render forward/backward operators are architecture-specific: A2/A3 uses `test_calc_render_fwd_double_clip_gsids` and `test_calc_render_bwd_var_clip_gsids`, while A5 uses `test_calc_render_simt_fwd`. The script automatically skips the cases that do not apply to the current build vendor (`customize`/`customize_arch35`).
+
 ## More Information
 
 - [Operator API Documentation](docs/en/kernels/): Detailed description of underlying ACLNN operators
-- [Test Instructions](tests/README_en.md): Commands for Python unit, CPU/host, and C++ operator tests
-- [C++ Operator Test Code](tests/kernel_tests/): Build and run scripts and test cases
+- [Operator Tests](tests/kernel_tests/): C++ test code (see the Testing section above for how to run)
 - [Contribution Guide](CONTRIBUTING.md): How to participate in project development
 - [Security Statement](SECURITY.md): Security usage guide
 - [License](LICENSE): CANN Open Software License Agreement Version 2.0

@@ -5,5 +5,7 @@ include(cmake/config.cmake)
 include(cmake/func.cmake)
 include(cmake/intf.cmake)
 
+option(USE_ARCH35 "Use arch35 specific implementations" OFF)
+
 add_subdirectory(${PROJECT_SOURCE_DIR}/kernels)
 add_subdirectory(${PROJECT_SOURCE_DIR}/gauss_splat/csrc)

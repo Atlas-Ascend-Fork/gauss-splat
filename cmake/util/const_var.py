@@ -1,6 +1,15 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# ----------------------------------------------------------------------------
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+# ----------------------------------------------------------------------------
 
-#!/usr/bin/env python
-# coding=utf-8
 """
 Function:
 The replay funtion entry
@@ -20,7 +29,8 @@ AUTO_GEN_DIR = 'auto_gen_dir'
 WFLAGS = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
 WMODES = stat.S_IWUSR | stat.S_IRUSR
 SOC_MAP_EXT = {'ascend310p': 'Ascend310P3', 'ascend310b': 'Ascend310B1',
-               'ascend910': 'Ascend910A', 'ascend910b': 'Ascend910B1', 'ascend910_93': 'Ascend910_9391'}
+               'ascend910': 'Ascend910A', 'ascend910b': 'Ascend910B1',
+               'ascend910_93': 'Ascend910_9391', 'ascend950': 'Ascend950PR_9599'}
 BIN_CMD = 'opc $1 --main_func={fun} --input_param={param} --soc_version={soc} \
 --output=$2 --impl_mode={impl} --simplified_key_mode=0 --op_mode=dynamic\n'
 CHK_CMD = '''

@@ -6,11 +6,15 @@
 
 ## External Interface List
 
+The following lists the current repository's `gauss_splat` Python API, shared by the `arch22` and `arch35` 3DGS paths.
+
 ### 1. Rasterizer Class
 
 **Function**: Gaussian Splatting rasterizer, providing the complete rendering pipeline.
 
 **Location**: `gauss_splat.Rasterizer`
+
+This high-level API sets `vi` and `sigma` to 1 internally. `rasterization()` does not accept custom values, and its returned `info` does not contain `vi_culling`. Use the projection function below when these values are needed.
 
 #### Main Methods
 
@@ -41,7 +45,7 @@ Renders 3D Gaussian point clouds to 2D images.
 - `render_colors` (Tensor): Rendered color image, shape (C, H, W, 3)
 - `render_depth` (Tensor): Rendered depth image, shape (C, H, W, 1)
 - `info` (dict): Metadata dictionary, containing:
-  - `gaussian_ids`: Gaussian point IDs (currently None)
+  - `gaussian_ids`: Original Gaussian IDs for a single A5 view, shape (cnt,); None on other paths
   - `means2d`: 2D projection coordinates, shape (B, C, 2, N)
   - `radii`: Projection radii, shape (B, C, 2, N)
   - `width`: Image width
@@ -80,6 +84,9 @@ render_colors, render_depth, info = rasterizer.rasterization(
 - `opacities` (Tensor): Opacities, shape (B, N)
 - `viewmats` (Tensor): View transformation matrix, shape (B, C, 4, 4)
 - `ks` (Tensor): Camera intrinsic matrix, shape (B, C, 3, 3)
+- `vi` (Tensor): Visibility weights, shape (B, C, N)
+- `sigma` (Tensor): Filtering scale, shape (1,)
+- `rast_ctx` (RastCtx, optional): Rasterization context; created automatically by default
 - `width` (int): Image width
 - `height` (int): Image height
 - `eps` (float): Minimum Gaussian radius threshold, default 0.3
@@ -98,23 +105,16 @@ render_colors, render_depth, info = rasterizer.rasterization(
 - `covars2d` (Tensor): 2D covariance matrices, shape (B, C, 3, N)
 - `colors` (Tensor): Filtered colors, shape (B, C, 3, N)
 - `cnt` (Tensor): Number of valid Gaussian points, shape (B, C)
-- `proj_filter` (Tensor): Projection filter, shape (B, C, ceil(N/8))
+- `proj_filter` (Tensor): Projection visibility filter, shape (B, C, ceil(N/8)) on A2/A3
+- `vi_culling` (Tensor): Visibility values after filtering, shape (B, C, N)
 
 **Example**:
 
 ```python
-means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter = \
+means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter, vi_culling = \
     gauss_splat.projection_three_dims_gaussian_fused(
-        means,  # means
-        colors,  # colors
-        None,  # covars
-        quats,  # quat
-        scales,  # scales
-        opacities,  # opacities
-        viewmats,  # viewmats
-        Ks,  # ks
-        1920,  # width
-        1080,  # height
+        means, colors, None, quats, scales, opacities,
+        viewmats, Ks, vi, sigma, None, 1920, 1080
     )
 ```
 
@@ -125,6 +125,8 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter =
 **Function**: Calculates Gaussian Splatting rendering, performing alpha blending and depth computation.
 
 **Location**: `gauss_splat.calc_render`
+
+This function processes one camera in one batch at a time. `N` is the number of Gaussian slots for that view. Each Gaussian has one value for each conic component and for opacity, so these four inputs have shape `(N,)`, rather than the projection function's `(B, C, N)`. Select the batch and camera before calling it.
 
 **Parameters**:
 
@@ -139,8 +141,6 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter =
 - `offsets` (Tensor): Offsets, shape(vectorCnt + (TileNum * 2))
 - `sorted_gs_ids` (Tensor): Sorted Gaussian point IDs, shape (totalGauss)
 
-These four parameters are one-dimensional vectors for a single view. CalcRender.forward adds the row dimension with unsqueeze(0) before concatenating with means/colors; do not add it in the caller.
-
 **Return Values**:
 
 - If `depths` is provided:
@@ -152,18 +152,12 @@ These four parameters are one-dimensional vectors for a single view. CalcRender.
 **Example**:
 
 ```python
+b, c = 0, 0  # pix_coords, lb_sched and sorted_gs_id must match this view
 render_colors, render_depths = gauss_splat.calc_render(
-                                   means2d,  # means
-                                   conics[:, 0],  # conic0s
-                                   conics[:, 1],  # conic1s
-                                   conics[:, 2],  # conic2s
-                                   opacities,  # opacities
-                                   colors,  # colors
-                                   depths,  # depths
-                                   pix_coords,  # tile_coords
-                                   lb_sched,  # offsets
-                                   sorted_gs_id,  # sorted_gs_ids
-                               )
+    means2d[b, c], conics[b, c, 0], conics[b, c, 1], conics[b, c, 2],
+    opacities[b, c], colors[b, c], depths[b, c].unsqueeze(0),
+    pix_coords, lb_sched, sorted_gs_id
+)
 ```
 
 ---
@@ -188,10 +182,8 @@ render_colors, render_depths = gauss_splat.calc_render(
 
 ```python
 colors = gauss_splat.spherical_harmonics(
-             3,  # degrees_to_use
-             view_directions,  # dirs
-             sh_coefficients,  # coeffs
-         )
+    3, view_directions, sh_coefficients
+)
 ```
 
 ---
@@ -219,13 +211,9 @@ colors = gauss_splat.spherical_harmonics(
 
 ```python
 sorted_gs_ids = gauss_splat.gaussian_sort(
-                    lb_sched_tensor,  # lb_sched
-                    tile_sums,  # gaussian_cnt
-                    tile_depths,  # depths
-                    tile_gauss_ids,  # gs_ids
-                    sorted_offset,  # sorted_offset
-                    max_tile_gauss,  # max_tile_gauss
-                )
+    lb_sched_tensor, tile_sums, tile_depths,
+    tile_gauss_ids, sorted_offset, max_tile_gauss
+)
 ```
 
 ---
@@ -245,8 +233,8 @@ sorted_gs_ids = gauss_splat.gaussian_sort(
 - `depths` (Tensor): Depth values, shape (B, C, 1, N)
 - `cnt` (Tensor): Valid Gaussian point count, shape (B, C)
 - `tile_grid` (Tensor): Tile grid coordinates
-- `image_width` (int): Image width
-- `image_height` (int): Image height
+- `image_width` (float): Image width
+- `image_height` (float): Image height
 - `tile_size` (int): Tile size, default 64
 
 **Return Values**:
@@ -322,7 +310,7 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 
 **Parameters**:
 
-- `nums_tensor` (Tensor): Number of Gaussian points per tile, shape (B, C, T). For batched inputs with `B*C > 1`, it must be an `int64` CPU tensor. For 1D inputs or `B*C == 1`, the implementation accepts the input device and returns the schedule on that device.
+- `nums_tensor` (Tensor): Number of Gaussian points per tile. For shape (B, C, T), use an int64 CPU tensor; the schedule is returned on CPU. A 1D int64 input may be on CPU or NPU and returns the schedule on the same device.
 - `num_bins` (int): Number of bins (number of vector processors)
 
 **Return Values**:
@@ -341,11 +329,32 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 
 ---
 
+### 9. fused_ssim
+
+**Function**: Computes structural similarity (SSIM) with autograd support.
+
+**Location**: `gauss_splat.fused_ssim`
+
+**Parameters**:
+
+- `img1` (Tensor): Image, shape (B, C, H, W), float32
+- `img2` (Tensor): Image, shape (B, C, H, W), float32
+- `window_size` (int): Window size, default 7
+- `sigma` (float): Gaussian window standard deviation, default 0.75
+- `size_average` (bool): Whether to average, default True
+- `reduction` (str, optional): "mean", "sum", or "none"; overrides `size_average` when set
+
+**Return Values**:
+
+- `ssim` (Tensor): A scalar for "mean" or "sum"; shape (B,) for "none"
+
+---
+
 ## Data Type Description
 
 ### Tensor Device Requirements
 
-Except for the documented `get_render_schedule_cpp` batch case, input tensors must be on the NPU device and support automatic differentiation. For a batched `get_render_schedule_cpp` input with `B*C > 1`, `nums_tensor` must be an `int64` CPU tensor.
+Operator inputs generally reside on NPU. `get_render_schedule_cpp` is an exception: its batched input must be an int64 CPU tensor, and callers may move the returned schedule to NPU.
 
 ### Data Format
 

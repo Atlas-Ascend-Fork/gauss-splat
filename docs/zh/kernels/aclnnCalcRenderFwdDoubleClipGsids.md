@@ -1,6 +1,6 @@
 # aclnnCalcRenderFwdDoubleClipGsids
 
-[📄 查看源码](https://gitcode.com/cann/gauss-splat/blob/master/kernels/calc_render_fwd_double_clip_gsids/op_kernel/calc_render_fwd_double_clip_gsids.cpp)
+[📄 查看源码](https://gitcode.com/cann/gauss-splat/blob/master/kernels/calc_render_fwd_double_clip_gsids/op_kernel/arch22/calc_render_fwd_double_clip_gsids.cpp)
 
 ## 产品支持情况
 

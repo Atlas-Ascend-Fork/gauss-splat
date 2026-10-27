@@ -1,6 +1,6 @@
 # aclnnCalcRenderBwdVarClipGsids
 
-[View Source Code](https://gitcode.com/cann/gauss-splat/blob/master/kernels/calc_render_bwd_var_clip_gsids/op_kernel/calc_render_bwd_var_clip_gsids.cpp)
+[View Source Code](https://gitcode.com/cann/gauss-splat/blob/master/kernels/calc_render_bwd_var_clip_gsids/op_kernel/arch22/calc_render_bwd_var_clip_gsids.cpp)
 
 ## Product Support
 

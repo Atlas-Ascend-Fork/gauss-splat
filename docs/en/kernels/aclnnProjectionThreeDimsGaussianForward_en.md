@@ -1,12 +1,12 @@
 # aclnnProjectionThreeDimsGaussianForward
 
-[View Source Code](https://gitcode.com/cann/gauss-splat/blob/master/kernels/projection_three_dims_gaussian_forward/op_kernel/projection_three_dims_gaussian_forward.cpp)
+[View Source Code (arch22)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/projection_three_dims_gaussian_forward/op_kernel/arch22/projection_three_dims_gaussian_forward.cpp) | [View Source Code (arch35)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/projection_three_dims_gaussian_forward/op_kernel/arch35/projection_three_dims_gaussian_forward.cpp)
 
 ## Product Support
 
 | Product                                                     | Supported |
 | :------------------------------------------------------- | :------: |
-| Ascend 950PR/Ascend 950DT                   |    No    |
+| Ascend 950PR/Ascend 950DT                   |    Yes    |
 | Atlas A3 training series products/Atlas A3 inference series products |    Yes    |
 | Atlas A2 training series products/Atlas A2 inference series products |    Yes    |
 | Atlas 200I/500 A2 inference products                  |    No    |
@@ -15,7 +15,7 @@
 
 ## Function Description
 
-- Interface function: `projection_three_dims_gaussian_forward` projects 3D Gaussian spheres onto the 2D image plane, computing the projected position, depth, conic parameters, and so on.
+- Interface function: `projection_three_dims_gaussian_forward` projects 3D Gaussian spheres onto the 2D image plane, computing the projected position (`means2d`), depth (`depths`), conic parameters (`conics`), screen radius (`radius`), 2D covariance (`covars2d`), and so on. The covariance input supports two mutually exclusive forms: pass the 3D covariance `covars` directly, or pass the quaternion `quat` together with the scales `scales`, which the operator fuses on the device side (equivalent to inlining `quat_scales_to_covars`) before projection.
 - Computation formula:
 
 Projects 3D Gaussian spheres onto the 2D plane through the camera matrix:
@@ -32,6 +32,14 @@ $$
 
 Where $J$ is the Jacobian matrix, $K$ is the camera intrinsic matrix, and $viewmat$ is the view transformation matrix.
 
+When the input is the quaternion `quat` and the scales `scales`, the 3D covariance is first fused as:
+
+$$
+\Sigma = R \cdot S \cdot S^T \cdot R^T
+$$
+
+Where $R$ is the rotation matrix converted from the quaternion and $S = \mathrm{diag}(s_x, s_y, s_z)$; $\Sigma$ then takes the role of $covars$ in the formula above.
+
 ## Function Prototype
 
 Each operator is divided into a two-stage interface. You must first call the "aclnnProjectionThreeDimsGaussianForwardGetWorkspaceSize" interface to obtain the required workspace size and the executor that contains the operator computation process, and then call the "aclnnProjectionThreeDimsGaussianForward" interface to execute the computation.
@@ -42,6 +50,8 @@ aclnnStatus aclnnProjectionThreeDimsGaussianForwardGetWorkspaceSize(
     const aclTensor *covars,
     const aclTensor *viewmats,
     const aclTensor *ks,
+    const aclTensor *quat,
+    const aclTensor *scales,
     int64_t          imageWidth,
     int64_t          imageHeight,
     float            eps2d,
@@ -97,7 +107,7 @@ aclnnStatus aclnnProjectionThreeDimsGaussianForward(
       <td>covars</td>
       <td>Input</td>
       <td>3D Gaussian sphere covariance matrices.</td>
-      <td>Empty tensors are not supported.</td>
+      <td>Optional input; can pass nullptr. Mutually exclusive with (quat, scales); only one of the two may be provided.</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, 3, 3, gaussian_num)</td>
@@ -121,6 +131,26 @@ aclnnStatus aclnnProjectionThreeDimsGaussianForward(
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, 3, 3)</td>
+      <td>Yes</td>
+    </tr>
+    <tr>
+      <td>quat</td>
+      <td>Input</td>
+      <td>Quaternions, representing the rotation of the Gaussian spheres.</td>
+      <td>Optional input; can pass nullptr. Must be provided together with scales; in this case covars is not required and the operator fuses them into the covariance on the device side.</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(batch_size, 4, gaussian_num)</td>
+      <td>Yes</td>
+    </tr>
+    <tr>
+      <td>scales</td>
+      <td>Input</td>
+      <td>Scaling factors, representing the scale of the Gaussian spheres along each axis.</td>
+      <td>Optional input; can pass nullptr. Must be provided together with quat; in this case covars is not required and the operator fuses them into the covariance on the device side.</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(batch_size, 3, gaussian_num)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -167,7 +197,7 @@ aclnnStatus aclnnProjectionThreeDimsGaussianForward(
       <td>cameraModel</td>
       <td>Input</td>
       <td>Camera model type.</td>
-      <td>0 indicates pinhole camera model.</td>
+      <td>0 indicates the pinhole (PINHOLE) camera model, 1 the orthographic (ORTHO) camera model, and 2 the fisheye (FISHEYE) camera model.</td>
       <td>INT64</td>
       <td>-</td>
       <td>-</td>
@@ -328,6 +358,22 @@ aclnnStatus aclnnProjectionThreeDimsGaussianForward(
 - **Return Value:**
   
   aclnnStatus: Returns a status code. For details, refer to [aclnn Return Codes](https://gitcode.com/cann/ops-nn/blob/master/docs/zh/context/aclnn_return_code.md).
+
+## Constraints
+
+- Data types: `means`, `covars`, `viewmats`, `ks`, `quat`, `scales`, and all outputs are FLOAT; all data formats are ND.
+- Covariance input is mutually exclusive: exactly one of `covars` or (`quat`, `scales`) must be provided. When `covars` is provided, set `quat` and `scales` to nullptr; when (`quat`, `scales`) is provided, set `covars` to nullptr. Providing both or neither is invalid.
+- `means`, `viewmats`, and `ks` are required inputs and empty tensors are not supported; `quat` and `scales` must be provided as a pair.
+- `imageWidth` and `imageHeight` must be positive integers; the recommended value of `eps2d` is 0.3.
+- `cameraModel` currently implements only the perspective projection of the pinhole camera model (0); 1 (orthographic) and 2 (fisheye) are reserved values.
+- When `calcCompensations` is true, `compensations` is written; when false, this output carries no valid result.
+- Per product path: both Atlas A2/A3 and A5 (Ascend 950) support direct projection from `covars`; A5 additionally supports fusing `quat` and `scales` on the device side before projection.
+
+**Dimension Variable Description:**
+
+- batch_size: Batch size, indicating the number of data batches processed at once.
+- camera_num: Number of cameras, indicating the number of cameras participating in the computation.
+- gaussian_num: Number of Gaussian spheres, indicating the number of 3D Gaussian spheres in each batch.
 
 ## Calling Example
 

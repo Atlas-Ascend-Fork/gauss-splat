@@ -1,12 +1,12 @@
 # aclnnSphericalHarmonicsBwd
 
-[📄 查看源码](https://gitcode.com/cann/gauss-splat/blob/master/kernels/spherical_harmonics_bwd/op_kernel/spherical_harmonics_bwd.cpp)
+[📄 查看源码 (arch22)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/spherical_harmonics_bwd/op_kernel/arch22/spherical_harmonics_bwd.cpp) | [📄 查看源码 (arch35)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/spherical_harmonics_bwd/op_kernel/arch35/spherical_harmonics_bwd.cpp)
 
 ## 产品支持情况
 
 | 产品                                                     | 是否支持 |
 | :------------------------------------------------------- | :------: |
-| Ascend 950PR/Ascend 950DT                   |    ×    |
+| Ascend 950PR/Ascend 950DT                   |    √    |
 | Atlas A3 训练系列产品/Atlas A3 推理系列产品 |    √    |
 | Atlas A2 训练系列产品/Atlas A2 推理系列产品 |    √    |
 | Atlas 200I/500 A2 推理产品                  |    ×    |
@@ -15,16 +15,34 @@
 
 ## 功能说明
 
-- 接口功能：`spherical_harmonics_bwd`计算球谐函数的反向传播，用于3D Gaussian Splatting训练中的梯度计算。
+- 接口功能：`spherical_harmonics_bwd`计算球谐函数的前向 `spherical_harmonics_forward` 的反向传播，用于3D Gaussian Splatting训练中的梯度计算。给定前向输入 `dirs`、`coeffs` 以及颜色梯度 `vColors`，输出方向梯度 `vDirs` 与系数梯度 `vCoeffs`。
 - 计算公式：
 
-反向传播计算方向和系数的梯度：
+记前向阶数为 $L$（`degree`），系数个数 $K=(L+1)^2$，通道数为 3，单位方向 $\hat{d} = d / \lVert d \rVert$。前向计算为：
 
 $$
-v\_dirs = \frac{\partial L}{\partial dirs}, \quad v\_coeffs = \frac{\partial L}{\partial coeffs}
+output_{k,c} = \sum_{l=0}^{L} \sum_{m=-l}^{l} c_{lm} \cdot Y_{lm}(\hat{d})
 $$
 
-基于前向公式 $output = \sum_{l=0}^{L} \sum_{m=-l}^{l} c_{lm} \cdot Y_{lm}(dirs)$ 进行反向梯度计算。
+其中 $c_{lm}$ 为球谐系数（`coeffs`），$Y_{lm}$ 为球谐基函数。记 $v_{c} = \dfrac{\partial L}{\partial output_{k,c}}$ 为颜色梯度（`vColors`），则系数梯度为：
+
+$$
+v\_coeffs_{k,c} = Y_{k}(\hat{d}) \cdot v_{c}
+$$
+
+方向梯度先按各阶基函数对方向的导数累加：
+
+$$
+\tilde{g} = \sum_{k,c} \text{coeffs}_{k,c} \cdot v_{c} \cdot \nabla Y_{k}(\hat{d})
+$$
+
+再经单位化（normalize）雅可比投影回原始方向向量：
+
+$$
+v\_dirs = \frac{\tilde{g} - \hat{d}\,\left(\hat{d} \cdot \tilde{g}\right)}{\lVert d \rVert}
+$$
+
+其中方向单位化在算子内部完成，$\lVert d \rVert$ 过小时按 $10^{-12}$ 截断以避免除零。当 `degree` 为 0 时，$Y_0$ 为常数，故 $v\_dirs$ 全为 0，$v\_coeffs = 0.28209479177387814 \cdot vColors$。
 
 ## 函数原型
 
@@ -170,7 +188,7 @@ aclnnStatus aclnnSphericalHarmonicsBwd(
             <tr>
                 <td>ACLNN_ERR_PARAM_INVALID</td>
                 <td>161002</td>
-                <td>dirs、coeffs、vColors、vDirs、vCoeffs的数据类型和数据格式不在支持的范围内，或degree不在0~4范围内。</td>
+                <td>dirs、coeffs、vColors、vDirs、vCoeffs的数据类型和数据格式不在支持的范围内，或degree不在0~4范围内，或coeffs对应的K不等于(degree+1)*(degree+1)。</td>
             </tr>
         </tbody>
     </table>
@@ -212,6 +230,23 @@ aclnnStatus aclnnSphericalHarmonicsBwd(
 - **返回值：**
   
   aclnnStatus：返回状态码，具体参见[aclnn返回码](https://gitcode.com/cann/ops-nn/blob/master/docs/zh/context/aclnn_return_code.md)。
+
+## 约束说明
+
+- 数据类型：`dirs`、`coeffs`、`vColors`、`vDirs`、`vCoeffs` 均为 FLOAT；数据格式均为 ND。
+- `dirs`、`coeffs`、`vColors`、`vDirs`、`vCoeffs` 均不支持空tensor，支持非连续Tensor。
+- `degree` 支持 0~4；`coeffs` 第二维 `K` 必须等于 `(degree+1)*(degree+1)`，通道维固定为 3。
+- `dirs`、`coeffs`、`vColors` 的 batchSize 与 gaussian_num 必须一致；`vDirs` 的 shape 与 `dirs` 一致，`vCoeffs` 的 shape 与 `coeffs` 一致。
+- 方向向量在算子内部进行单位化，调用方无需预先归一化；方向模长过小时按 $10^{-12}$ 截断。
+- gaussian_num 切分到各 AIV 核进行并行计算，`degree` 越大 K 越大，单核可处理的高斯球数量相应减少。
+- Atlas A2/A3 与 A5（Ascend 950）均支持本算子。
+
+**维度变量说明：**
+
+- batchSize：批次大小，表示一次处理的数据批次数量。
+- gaussian_num：高斯球数量，表示每个批次中3D高斯球的个数。
+- K：球谐系数个数，等于 $(degree+1)^2$，取值范围为 1（degree=0）~25（degree=4）。
+- 通道数：颜色通道数，固定为 3。
 
 ## 调用示例
 

@@ -31,11 +31,19 @@ if(CANN_PATHS)
   if(${ARCH} STREQUAL "aarch64")
     target_include_directories(intf_pub
                                INTERFACE ${CANN_PATHS}/aarch64-linux/include)
+    target_include_directories(intf_pub
+                               INTERFACE ${CANN_PATHS}/aarch64-linux/pkg_inc)
+    target_include_directories(intf_pub
+                               INTERFACE ${CANN_PATHS}/aarch64-linux/pkg_inc/base)
     target_link_directories(intf_pub INTERFACE
                             ${CANN_PATHS}/aarch64-linux/lib64)
   else()
     target_include_directories(intf_pub
                                INTERFACE ${CANN_PATHS}/x86_64-linux/include)
+    target_include_directories(intf_pub
+                               INTERFACE ${CANN_PATHS}/x86_64-linux/pkg_inc)
+    target_include_directories(intf_pub
+                               INTERFACE ${CANN_PATHS}/x86_64-linux/pkg_inc/base)
     target_link_directories(intf_pub INTERFACE ${CANN_PATHS}/x86_64-linux/lib64)
   endif()
 endif()

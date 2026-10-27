@@ -37,21 +37,20 @@ at::Tensor spherical_harmonics_forward(at::Tensor& dirs, at::Tensor& coeffs, int
     auto batchSize = dirs.sizes()[0];
     auto gaussianNum = dirs.sizes()[1];
 
-    uint32_t dirsNumel = dirs.numel();
-    uint32_t coeffsNumel = coeffs.numel();
-    dirsNumel = static_cast<uint32_t>(dirsNumel / SH_TAIL_DIM);
-    coeffsNumel = static_cast<uint32_t>(coeffsNumel / SH_TAIL_DIM / coeffsNum);
-    dirs = dirs.reshape({dirsNumel, SH_TAIL_DIM}).contiguous().permute({1, 0}).contiguous();
-    coeffs = coeffs.reshape({coeffsNumel, coeffsNum, SH_TAIL_DIM}).contiguous().permute({1, 2, 0}).contiguous();
+    // Keep the batch dim so tensor shapes match the arch35 host tiling
+    // contract ([B,3,N] / [B,K,C,N]) and the kernel GM addressing:
+    // dirs [B,N,3] -> [B,3,N], coeffs [B,N,K,3] -> [B,K,3,N].
+    dirs = dirs.permute({0, 2, 1}).contiguous();
+    coeffs = coeffs.permute({0, 2, 3, 1}).contiguous();
 
-    TORCH_CHECK(dirs.sizes()[0] == SH_TAIL_DIM,
-        "The last dimension of Dirs Tensor Must be 3.");
-    TORCH_CHECK(coeffs.sizes()[1] == SH_TAIL_DIM,
-        "The last dimension of Coeffs Tensor Must be 3.");
+    TORCH_CHECK(dirs.sizes()[1] == SH_TAIL_DIM,
+        "The second dimension of Dirs Tensor Must be 3.");
+    TORCH_CHECK(coeffs.sizes()[2] == SH_TAIL_DIM,
+        "The third dimension of Coeffs Tensor Must be 3.");
 
-    at::Tensor output = at::zeros(dirs.sizes(), dirs.options().dtype(at::kFloat));
+    at::Tensor output = at::zeros({batchSize, SH_TAIL_DIM, gaussianNum},
+                                  dirs.options().dtype(at::kFloat));
     EXEC_NPU_CMD(aclnnSphericalHarmonicsForward, dirs, coeffs, degrees_to_use, output);
 
-    output = output.reshape({SH_TAIL_DIM, batchSize, gaussianNum}).contiguous().permute({1, 0, 2}).contiguous();
     return output;
 }

@@ -1,12 +1,12 @@
 # aclnnSphericalHarmonicsForward
 
-[View Source Code](https://gitcode.com/cann/gauss-splat/blob/master/kernels/spherical_harmonics_forward/op_kernel/spherical_harmonics_forward.cpp)
+[View Source Code (arch22)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/spherical_harmonics_forward/op_kernel/arch22/spherical_harmonics_forward.cpp) | [View Source Code (arch35)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/spherical_harmonics_forward/op_kernel/arch35/spherical_harmonics_forward.cpp)
 
 ## Product Support
 
 | Product                                                     | Supported |
 | :------------------------------------------------------- | :------: |
-| Ascend 950PR/Ascend 950DT                   |    No    |
+| Ascend 950PR/Ascend 950DT                   |    Yes    |
 | Atlas A3 training series products/Atlas A3 inference series products |    Yes    |
 | Atlas A2 training series products/Atlas A2 inference series products |    Yes    |
 | Atlas 200I/500 A2 inference products                  |    No    |
@@ -72,17 +72,17 @@ aclnnStatus aclnnSphericalHarmonicsForward(
       <td>Empty tensors are not supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(3, gaussian_num)</td>
+      <td>(batchSize, 3, gaussian_num)</td>
       <td>Yes</td>
     </tr>
     <tr>
       <td>coeffs</td>
       <td>Input</td>
       <td>Spherical harmonics coefficients, used for color computation.</td>
-      <td>Empty tensors are not supported. The number of coefficients is related to degrees_to_use.</td>
+      <td>Empty tensors are not supported. The number of coefficients K is related to degrees_to_use, and the channel count C supports 1 to 4, usually 3.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(K, 3, gaussian_num), where K=(degrees_to_use+1)*(degrees_to_use+1)</td>
+      <td>(batchSize, K, C, gaussian_num), where K=(degrees_to_use+1)*(degrees_to_use+1)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -102,7 +102,7 @@ aclnnStatus aclnnSphericalHarmonicsForward(
       <td>Empty tensors are not supported.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(3, gaussian_num)</td>
+      <td>(batchSize, C, gaussian_num)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -148,7 +148,7 @@ aclnnStatus aclnnSphericalHarmonicsForward(
             <tr>
                 <td>ACLNN_ERR_PARAM_INVALID</td>
                 <td>161002</td>
-                <td>The data types and formats of dirs, coeffs, and output are not within the supported range, or degrees_to_use is not within the range of 0 to 4.</td>
+                <td>The data types and formats of dirs, coeffs, and output are not within the supported range, or degrees_to_use is not within the range of 0 to 4, or the channel dimension C of coeffs is not within the range of 1 to 4.</td>
             </tr>
         </tbody>
     </table>
@@ -190,6 +190,23 @@ aclnnStatus aclnnSphericalHarmonicsForward(
 - **Return Value:**
   
   aclnnStatus: Returns a status code. For details, refer to [aclnn Return Codes](https://gitcode.com/cann/ops-nn/blob/master/docs/zh/context/aclnn_return_code.md).
+
+## Constraints
+
+- Data types: `dirs`, `coeffs`, and `output` are all FLOAT; data formats are all ND.
+- `dirs`, `coeffs`, and `output` do not support empty tensors, and support non-contiguous tensors.
+- `degrees_to_use` supports 0 to 4; the second dimension `K` of `coeffs` must equal `(degrees_to_use+1)*(degrees_to_use+1)`, and the channel dimension `C` supports 1 to 4, usually 3.
+- The batchSize and gaussian_num of `dirs` and `coeffs` must be consistent; the shape of `output` is `(batchSize, C, gaussian_num)`.
+- Direction vectors are normalized inside the operator; the caller does not need to normalize them beforehand.
+- gaussian_num is split across AIV cores for parallel computation. A larger `degrees_to_use` means a larger K, and the number of gaussians a single core can process decreases accordingly.
+- Both Atlas A2/A3 and A5 (Ascend 950) support this operator.
+
+**Dimension Variable Description:**
+
+- batchSize: Batch size, the number of data batches processed at a time.
+- gaussian_num: Number of gaussians, the number of 3D gaussians in each batch.
+- K: Number of spherical harmonics coefficients, equal to $(degrees\_to\_use+1)^2$, ranging from 1 (degree=0) to 25 (degree=4).
+- C: Number of color channels, supports 1 to 4, usually 3.
 
 ## Calling Example
 

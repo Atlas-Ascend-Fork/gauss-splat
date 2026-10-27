@@ -25,11 +25,20 @@ void init_op_api_so_path(const std::string& path)
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
-    m.def("_init_op_api_so_path", &init_op_api_so_path);
+    // New Features need attribute to register here.
+#ifdef ASCEND_COMPUTE_UNI_A5
+    m.attr("use_arch35") = true;
+    m.attr("sf_covars_fused") = true;
+    m.attr("sf_render_method") = "simt";
 
+    m.def("calc_render_simt_fwd", &calc_render_simt_fwd);
+    m.def("calc_render_simt_bwd", &calc_render_simt_bwd);
+#else
     m.def("calc_render_fwd_double_clip_gsids", &calc_render_fwd_double_clip_gsids);
-
     m.def("calc_render_bwd_var_clip_gsids", &calc_render_bwd_var_clip_gsids);
+#endif
+
+    m.def("_init_op_api_so_path", &init_op_api_so_path);
 
     m.def("gaussian_sort", &gaussian_sort);
 
@@ -48,4 +57,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("flash_gaussian_build_mask", &flash_gaussian_build_mask);
 
     m.def("gaussian_filter", &gaussian_filter);
+
+    m.def("fused_ssim_forward", &fused_ssim_forward);
+
+    m.def("fused_ssim_backward", &fused_ssim_backward);
 }

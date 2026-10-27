@@ -16,10 +16,12 @@ __all__ = [
     "flash_gaussian_build_mask",
     "gaussian_filter",
     "Rasterizer",
+    "fused_ssim",
 ]
 
 import os
 import torch
+import gauss_splat.gsplat_c as _C
 from gauss_splat.gsplat_c import _init_op_api_so_path
 
 from .ops.projection_three_dims_gaussian_fused import projection_three_dims_gaussian_fused
@@ -30,11 +32,13 @@ from .ops.spherical_harmonics import spherical_harmonics
 from .ops.flash_gaussian_build_mask import flash_gaussian_build_mask
 from .ops.gaussian_filter import gaussian_filter
 from .ops.rendering import Rasterizer
+from .ops.fused_ssim import fused_ssim
 
 
 def _set_env():
+    use_arch35 = getattr(_C, "use_arch35", False)
     gauss_splat_root = os.path.dirname(os.path.abspath(__file__))
-    gauss_splat_opp_path = os.path.join(gauss_splat_root, "packages", "vendors", "customize")
+    gauss_splat_opp_path = os.path.join(gauss_splat_root, "packages", "vendors", "customize_arch35" if use_arch35 else "customize")
     ascend_custom_opp_path = os.environ.get("ASCEND_CUSTOM_OPP_PATH")
     ascend_custom_opp_path = (
         gauss_splat_opp_path
@@ -42,7 +46,7 @@ def _set_env():
         else gauss_splat_opp_path + ":" + ascend_custom_opp_path
     )
     os.environ["ASCEND_CUSTOM_OPP_PATH"] = ascend_custom_opp_path
-    gauss_splat_op_api_so_path = os.path.join(gauss_splat_opp_path, "op_api", "lib", "libcust_opapi.so")
+    gauss_splat_op_api_so_path = os.path.join(gauss_splat_opp_path, "op_api", "lib", "libcust_opapi_arch35.so" if use_arch35 else "libcust_opapi.so")
     _init_op_api_so_path(gauss_splat_op_api_so_path)
 
 _set_env()

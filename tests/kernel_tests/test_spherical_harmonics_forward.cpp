@@ -36,9 +36,9 @@ int InitializeTensors(TensorResources& resources) {
     int64_t degreesToUse = 3;
     int64_t K = (degreesToUse + 1) * (degreesToUse + 1);
     
-    std::vector<int64_t> dirsShape =   {3, gaussNum};
-    std::vector<int64_t> coeffsShape = {K, 3, gaussNum};
-    std::vector<int64_t> outputShape = {3, gaussNum};
+    std::vector<int64_t> dirsShape =   {batchSize, 3, gaussNum};
+    std::vector<int64_t> coeffsShape = {batchSize, K, 3, gaussNum};
+    std::vector<int64_t> outputShape = {batchSize, 3, gaussNum};
 
     int64_t dirsShapeSize = GetShapeSize(dirsShape);
     int64_t coeffsShapeSize = GetShapeSize(coeffsShape);
@@ -139,7 +139,7 @@ int main() {
     TensorResources resources = {};
     void* workspaceAddr = nullptr;
     uint64_t workspaceSize = 0;
-    std::vector<int64_t> outputShape = {1, 1024, 3};
+    std::vector<int64_t> outputShape = {1, 3, 1024};
     int ret = ACL_SUCCESS;
 
     // 1. Initialize device and stream

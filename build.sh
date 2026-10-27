@@ -1,11 +1,11 @@
 # Copyright 2026 Huawei Technologies Co., Ltd
 CUR_DIR=$(dirname $(readlink -f $0))
-SCRIPTS_DIR=${CUR_DIR}/scripts
 BUILD_PACKAGES_DIR=${CUR_DIR}/gauss_splat/packages
-SUPPORTED_PY_VERSION=(3.7 3.8 3.9 3.10 3.11 3.12 3.13 3.14)
-PY_VERSION='3.7'
+SUPPORTED_PY_VERSION=(3.9 3.10 3.11 3.12 3.13 3.14)
+PY_VERSION='3.9'
 SINGLE_OP=''
 BUILD_TYPE='Release'
+USE_ARCH35='false'
 
 function check_python_version() {
     matched_py_version='false'
@@ -20,7 +20,7 @@ function check_python_version() {
     fi
 }
 function usage() {
-    echo "Usage: $0 --python=3.7 [--debug]" 1>&2
+    echo "Usage: $0 --python=3.9 [--debug] [--a5]" 1>&2
 }
 function parse_script_args() {
     while [ "$#" -gt 0 ]; do
@@ -31,6 +31,10 @@ function parse_script_args() {
                 ;;
             --debug)
                 BUILD_TYPE='Debug'
+                shift 1
+                ;;
+            --a5|--A5)
+                USE_ARCH35='true'
                 shift 1
                 ;;
             *)
@@ -58,8 +62,8 @@ function main()
 
     check_python_version
 
-    chmod -R 777 ${SCRIPTS_DIR}
     export BUILD_PYTHON_VERSION=${PY_VERSION}
+    export USE_ARCH35
     rm -rf ${BUILD_PACKAGES_DIR}
 
     python"${PY_VERSION}" setup.py bdist_wheel

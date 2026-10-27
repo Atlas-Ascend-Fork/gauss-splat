@@ -1,12 +1,12 @@
 # aclnnProjectionThreeDimsGaussianForward
 
-[📄 查看源码](https://gitcode.com/cann/gauss-splat/blob/master/kernels/projection_three_dims_gaussian_forward/op_kernel/projection_three_dims_gaussian_forward.cpp)
+[📄 查看源码 (arch22)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/projection_three_dims_gaussian_forward/op_kernel/arch22/projection_three_dims_gaussian_forward.cpp) | [📄 查看源码 (arch35)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/projection_three_dims_gaussian_forward/op_kernel/arch35/projection_three_dims_gaussian_forward.cpp)
 
 ## 产品支持情况
 
 | 产品                                                     | 是否支持 |
 | :------------------------------------------------------- | :------: |
-| Ascend 950PR/Ascend 950DT                   |    ×    |
+| Ascend 950PR/Ascend 950DT                   |    √    |
 | Atlas A3 训练系列产品/Atlas A3 推理系列产品 |    √    |
 | Atlas A2 训练系列产品/Atlas A2 推理系列产品 |    √    |
 | Atlas 200I/500 A2 推理产品                  |    ×    |
@@ -15,7 +15,7 @@
 
 ## 功能说明
 
-- 接口功能：`projection_three_dims_gaussian_forward`将3D高斯球投影到2D图像平面，计算投影后的位置、深度、锥形参数等。
+- 接口功能：`projection_three_dims_gaussian_forward`将3D高斯球投影到2D图像平面，计算投影后的位置（`means2d`）、深度（`depths`）、锥形参数（`conics`）、屏幕半径（`radius`）及2D协方差（`covars2d`）等。协方差输入支持两种形式，二选一：直接传入三维协方差 `covars`，或传入四元数 `quat` 与缩放 `scales`，由算子在设备侧在线融合（等价于内联 `quat_scales_to_covars`）后再投影。
 - 计算公式：
 
 将3D高斯球通过相机矩阵投影到2D平面：
@@ -32,6 +32,14 @@ $$
 
 其中$J$是雅可比矩阵，$K$是相机内参矩阵，$viewmat$是视图变换矩阵。
 
+当输入为四元数 `quat` 与缩放 `scales` 时，先融合为三维协方差：
+
+$$
+\Sigma = R \cdot S \cdot S^T \cdot R^T
+$$
+
+其中 $R$ 为由四元数转换得到的旋转矩阵，$S = \mathrm{diag}(s_x, s_y, s_z)$，并以 $\Sigma$ 作为上式中的 $covars$ 参与投影。
+
 ## 函数原型
 
 每个算子分为两段式接口，必须先调用"aclnnProjectionThreeDimsGaussianForwardGetWorkspaceSize"接口获取计算所需workspace大小以及包含了算子计算流程的执行器，再调用"aclnnProjectionThreeDimsGaussianForward"接口执行计算。
@@ -42,6 +50,8 @@ aclnnStatus aclnnProjectionThreeDimsGaussianForwardGetWorkspaceSize(
     const aclTensor *covars,
     const aclTensor *viewmats,
     const aclTensor *ks,
+    const aclTensor *quat,
+    const aclTensor *scales,
     int64_t          imageWidth,
     int64_t          imageHeight,
     float            eps2d,
@@ -97,7 +107,7 @@ aclnnStatus aclnnProjectionThreeDimsGaussianForward(
       <td>covars</td>
       <td>输入</td>
       <td>3D高斯球的协方差矩阵。</td>
-      <td>不支持空tensor。</td>
+      <td>可选输入，可传入nullptr；与（quat、scales）二选一，不能同时传入。</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, 3, 3, gaussian_num)</td>
@@ -121,6 +131,26 @@ aclnnStatus aclnnProjectionThreeDimsGaussianForward(
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, 3, 3)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>quat</td>
+      <td>输入</td>
+      <td>四元数，表示高斯球的旋转。</td>
+      <td>可选输入，可传入nullptr；需与 scales 同时传入，此时无需传入 covars，由算子在线融合为协方差。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(batch_size, 4, gaussian_num)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>scales</td>
+      <td>输入</td>
+      <td>缩放因子，表示高斯球在各轴上的尺度。</td>
+      <td>可选输入，可传入nullptr；需与 quat 同时传入，此时无需传入 covars，由算子在线融合为协方差。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(batch_size, 3, gaussian_num)</td>
       <td>√</td>
     </tr>
     <tr>
@@ -167,7 +197,7 @@ aclnnStatus aclnnProjectionThreeDimsGaussianForward(
       <td>cameraModel</td>
       <td>输入</td>
       <td>相机模型类型。</td>
-      <td>0表示针孔相机模型。</td>
+      <td>0表示针孔（PINHOLE）相机模型，1表示正交（ORTHO）相机模型，2表示鱼眼（FISHEYE）相机模型。</td>
       <td>INT64</td>
       <td>-</td>
       <td>-</td>
@@ -328,6 +358,22 @@ aclnnStatus aclnnProjectionThreeDimsGaussianForward(
 - **返回值：**
   
   aclnnStatus：返回状态码，具体参见[aclnn返回码](https://gitcode.com/cann/ops-nn/blob/master/docs/zh/context/aclnn_return_code.md)。
+
+## 约束说明
+
+- 数据类型：`means`、`covars`、`viewmats`、`ks`、`quat`、`scales` 及全部输出均为 FLOAT；数据格式均为 ND。
+- 协方差输入互斥：`covars` 与（`quat`、`scales`）必须且只能提供一组。传入 `covars` 时将 `quat`、`scales` 置为 nullptr；传入（`quat`、`scales`）时将 `covars` 置为 nullptr。两者同时传入或同时缺省均视为参数非法。
+- `means`、`viewmats`、`ks` 为必选输入，不支持空tensor；`quat` 与 `scales` 需成对传入。
+- `imageWidth`、`imageHeight` 必须为正整数；`eps2d` 推荐取 0.3。
+- `cameraModel` 当前仅实现针孔相机模型（0）的透视投影；1（正交）、2（鱼眼）为预留取值。
+- `calcCompensations` 为 true 时写出 `compensations`，为 false 时该输出不写出有效结果。
+- 各产品路径：Atlas A2/A3 与 A5（Ascend 950）均支持 `covars` 直接投影；A5 额外支持由 `quat`、`scales` 在设备侧在线融合后再投影。
+
+**维度变量说明：**
+
+- batch_size：批次大小，表示一次处理的数据批次数量。
+- camera_num：相机数量，表示参与计算的相机个数。
+- gaussian_num：高斯球数量，表示每个批次中3D高斯球的个数。
 
 ## 调用示例
 

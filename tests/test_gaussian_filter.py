@@ -47,7 +47,7 @@ def _gaussian_filter(means, colors, det, opacities, means2d, depths, radius_in,
         opacities = opacities.unsqueeze(1).repeat(1, camera_nums, 1)
     means = means.float().permute(0, 2, 1).contiguous()
     means2d = means2d.float().permute(0, 1, 3, 2).contiguous()
-    radius = radius_in.float().permute(0, 1, 3, 2).contiguous()
+    radius = radius_in.float().permute(0, 1, 3, 2).contiguous().clone()
     radius_out = radius_in.float().permute(0, 1, 3, 2).contiguous()
     conics = conics.float().permute(0, 1, 3, 2).contiguous()
     colors = colors.float().permute(0, 2, 1).contiguous()
@@ -114,9 +114,13 @@ def _gaussian_filter(means, colors, det, opacities, means2d, depths, radius_in,
            conics_culling.float(), opacities_culling.float(), filter_uint8, cnt.to(torch.int32)
  
  
-class TestSphericalHarmonicsForward(TestCase):
+class TestGaussianFilter(TestCase):
     def setUp(self):
+        torch.manual_seed(13)
         self.test_cases = [
+            [1, 1, 1],
+            [2, 2, 65],
+            [2, 2, 769],
             [1, 1, 10000],
             [2, 7, 18471],
             [1, 1, 117611],
@@ -140,19 +144,25 @@ class TestSphericalHarmonicsForward(TestCase):
         covars2d = torch.rand(b, c, 3, n).float() + 1.0
 
  
+        # Deterministically cover determinant, depth and screen-space culling.
+        det[..., 1::7] = -1
+        depths[..., 2::7] = 0.5
+        depths[..., 3::7] = 3.0
+        means2d[..., 0, 4::7] = -100
+        means2d[..., 1, 5::7] = 1000
         return Inputs(means, colors, det, opacities, means2d, depths, radius, conics, covars2d, compensations),\
-               Inputs(means, colors, det, opacities, means2d, depths, radius, conics, covars2d, compensations),
+               Inputs(means, colors, det, opacities, means2d, depths, radius, conics, covars2d, None)
 
     def gen_results(self):
         test_results = []
         for test_case in self.test_cases:
             inputs0, inputs1 = self.gen_inputs(test_case)
-            cpu_results0 = self.cpu_to_exec(inputs0, 0, 600, 1.0, 2.0)
-            npu_results0 = self.npu_to_exec(inputs0, 0, 600, 1.0, 2.0)
+            cpu_results0 = self.cpu_to_exec(inputs0, 800, 600, 1.0, 2.0)
+            npu_results0 = self.npu_to_exec(inputs0, 800, 600, 1.0, 2.0)
             test_results.append((cpu_results0, npu_results0))
  
-            cpu_results1 = self.cpu_to_exec(inputs1, 0, 600, 1.0, 2.0)
-            npu_results1 = self.npu_to_exec(inputs1, 0, 600, 1.0, 2.0)
+            cpu_results1 = self.cpu_to_exec(inputs1, 800, 600, 1.0, 2.0)
+            npu_results1 = self.npu_to_exec(inputs1, 800, 600, 1.0, 2.0)
             test_results.append((cpu_results1, npu_results1))
 
         return test_results
@@ -199,9 +209,16 @@ class TestSphericalHarmonicsForward(TestCase):
         radius = inputs.radius.npu()
         conics = inputs.conics.npu()
         covars2d = inputs.covars2d.npu()
+        b, c, n = det.shape
+        quat = torch.zeros((b, 4, n), device=means.device)
+        quat[:, 0] = 1.0
+        scales = torch.ones((b, 3, n), device=means.device)
+        vi = torch.ones((b, c, n), device=means.device)
+        sigma = torch.ones((1,), device=means.device)
         means_culling, colors_culling, means2d_culling, depths_culling, radius_culling,\
-            covars2d_culling, conics_culling, opacities_culling, proj_filter, cnt = gaussian_filter(means, colors, det,\
-            opacities, means2d, depths, radius, conics, covars2d, compensations, width, height, near_plane, far_plane)
+            covars2d_culling, conics_culling, opacities_culling, _, _, _, _, proj_filter, cnt, _, _ = gaussian_filter(
+                means, colors, det, opacities, means2d, depths, radius, conics, covars2d,
+                compensations, quat, scales, vi, sigma, width, height, near_plane, far_plane)
         return ExecResults(
             means_culling=means_culling.detach().float(),
             colors_culling=colors_culling.detach().float(),
@@ -215,17 +232,35 @@ class TestSphericalHarmonicsForward(TestCase):
             cnt=cnt.detach().float()
         )
  
+    @staticmethod
+    def _mask_padding(array, cnt):
+        # Compact culling buffers only define entries [0, cnt); the tail is
+        # unspecified by the operator contract, so ignore it when comparing.
+        n = array.shape[-1]
+        keep = np.arange(n)[None, None, :] < cnt[..., None]
+        if array.ndim == 4:
+            keep = keep[:, :, None, :]
+        return np.where(keep, array, 0)
+
     def test_gaussian_filter(self):
         for cpu_results, npu_results in self.test_results:
-            self.assertRtolEqual(cpu_results.means_culling.numpy(), npu_results.means_culling.cpu().numpy())
-            self.assertRtolEqual(cpu_results.colors_culling.numpy(), npu_results.colors_culling.cpu().numpy())
-            self.assertRtolEqual(cpu_results.means2d_culling.numpy(), npu_results.means2d_culling.cpu().numpy())
-            self.assertRtolEqual(cpu_results.depths_culling.numpy(), npu_results.depths_culling.cpu().numpy())
-            self.assertRtolEqual(cpu_results.radius_culling.numpy(), npu_results.radius_culling.cpu().numpy())
-            self.assertRtolEqual(cpu_results.covars2d_culling.numpy(), npu_results.covars2d_culling.cpu().numpy())
-            self.assertRtolEqual(cpu_results.conics_culling.numpy(), npu_results.conics_culling.cpu().numpy())
-            self.assertRtolEqual(cpu_results.opacities_culling.numpy(), npu_results.opacities_culling.cpu().numpy())
-            self.assertRtolEqual(cpu_results.proj_filter.numpy(), npu_results.proj_filter.cpu().numpy())
+            cnt = npu_results.cnt.cpu().numpy()
+            n = cpu_results.means_culling.shape[-1]
+            culling_fields = (
+                "means_culling", "colors_culling", "means2d_culling", "depths_culling",
+                "radius_culling", "covars2d_culling", "conics_culling", "opacities_culling",
+            )
+            for field in culling_fields:
+                cpu_value = self._mask_padding(getattr(cpu_results, field).numpy(), cnt)
+                npu_value = self._mask_padding(getattr(npu_results, field).cpu().numpy(), cnt)
+                self.assertRtolEqual(cpu_value.astype(np.float32), npu_value.astype(np.float32))
+            # filter is a bit-packed bitmap whose first n bits are defined; the
+            # padding bits of the final byte are unspecified.
+            cpu_bits = np.unpackbits(cpu_results.proj_filter.numpy().astype(np.uint8),
+                                     axis=-1, bitorder='little')[..., :n]
+            npu_bits = np.unpackbits(npu_results.proj_filter.cpu().numpy().astype(np.uint8),
+                                     axis=-1, bitorder='little')[..., :n]
+            self.assertRtolEqual(cpu_bits.astype(np.float32), npu_bits.astype(np.float32))
             self.assertRtolEqual(cpu_results.cnt.numpy(), npu_results.cnt.cpu().numpy())
  
 if __name__ == "__main__":

@@ -41,6 +41,12 @@ struct TensorResources {
     void* opacitiesCullingDeviceAddr = nullptr;
     void* filterDeviceAddr = nullptr;
     void* cntDeviceAddr = nullptr;
+    void* quatsCullingDeviceAddr = nullptr;
+    void* scalesCullingDeviceAddr = nullptr;
+    void* viCullingDeviceAddr = nullptr;
+    void* compensationsCullingDeviceAddr = nullptr;
+    void* filterFloatDeviceAddr = nullptr;
+    void* denseIndicesDeviceAddr = nullptr;
 
     aclTensor* meansTensor = nullptr;
     aclTensor* colorsTensor = nullptr;
@@ -62,6 +68,12 @@ struct TensorResources {
     aclTensor* opacitiesCullingTensor = nullptr;
     aclTensor* filterTensor = nullptr;
     aclTensor* cntTensor = nullptr;
+    aclTensor* quatsCullingTensor = nullptr;
+    aclTensor* scalesCullingTensor = nullptr;
+    aclTensor* viCullingTensor = nullptr;
+    aclTensor* compensationsCullingTensor = nullptr;
+    aclTensor* filterFloatTensor = nullptr;
+    aclTensor* denseIndicesTensor = nullptr;
 };
 
 int InitializeTensors(TensorResources& resources) {
@@ -81,6 +93,12 @@ int InitializeTensors(TensorResources& resources) {
     std::vector<int64_t> compensationsShape = {batchSize, cameraNum, 1, gaussNum};
     std::vector<int64_t> filterShape = {batchSize, cameraNum, gaussNum};
     std::vector<int64_t> cntShape = {batchSize, cameraNum};
+    std::vector<int64_t> quatsCullingShape = {batchSize, cameraNum, 4, gaussNum};
+    std::vector<int64_t> scalesCullingShape = {batchSize, cameraNum, 3, gaussNum};
+    std::vector<int64_t> viCullingShape = {batchSize, cameraNum, gaussNum};
+    std::vector<int64_t> compensationsCullingShape = {batchSize, cameraNum, gaussNum};
+    std::vector<int64_t> filterFloatShape = {batchSize, cameraNum, gaussNum};
+    std::vector<int64_t> denseIndicesShape = {batchSize, cameraNum, gaussNum};
 
     std::vector<float> meansHostData(GetShapeSize(meansShape), 0.0f);
     std::vector<float> colorsHostData(GetShapeSize(colorsShape), 1.0f);
@@ -92,7 +110,13 @@ int InitializeTensors(TensorResources& resources) {
     std::vector<float> conicsHostData(GetShapeSize(conicsShape), 0.1f);
     std::vector<float> covars2dHostData(GetShapeSize(covars2dShape), 0.1f);
     std::vector<uint8_t> filterHostData(GetShapeSize(filterShape), 0);
-    std::vector<int32_t> cntHostData(GetShapeSize(cntShape), 0);
+    std::vector<float> cntHostData(GetShapeSize(cntShape), 0.0f);
+    std::vector<float> quatsCullingHostData(GetShapeSize(quatsCullingShape), 0.0f);
+    std::vector<float> scalesCullingHostData(GetShapeSize(scalesCullingShape), 0.0f);
+    std::vector<float> viCullingHostData(GetShapeSize(viCullingShape), 0.0f);
+    std::vector<float> compensationsCullingHostData(GetShapeSize(compensationsCullingShape), 0.0f);
+    std::vector<float> filterFloatHostData(GetShapeSize(filterFloatShape), 0.0f);
+    std::vector<int32_t> denseIndicesHostData(GetShapeSize(denseIndicesShape), 0);
 
     int ret = CreateAclTensor(meansHostData, meansShape, &resources.meansDeviceAddr,
                               aclDataType::ACL_FLOAT, &resources.meansTensor);
@@ -167,7 +191,32 @@ int InitializeTensors(TensorResources& resources) {
     if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
 
     ret = CreateAclTensor(cntHostData, cntShape, &resources.cntDeviceAddr,
-                          aclDataType::ACL_INT32, &resources.cntTensor);
+                          aclDataType::ACL_FLOAT, &resources.cntTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(quatsCullingHostData, quatsCullingShape, &resources.quatsCullingDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.quatsCullingTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(scalesCullingHostData, scalesCullingShape, &resources.scalesCullingDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.scalesCullingTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(viCullingHostData, viCullingShape, &resources.viCullingDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.viCullingTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(compensationsCullingHostData, compensationsCullingShape,
+                          &resources.compensationsCullingDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.compensationsCullingTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(filterFloatHostData, filterFloatShape, &resources.filterFloatDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.filterFloatTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(denseIndicesHostData, denseIndicesShape, &resources.denseIndicesDeviceAddr,
+                          aclDataType::ACL_INT32, &resources.denseIndicesTensor);
     if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
 
     return ACL_SUCCESS;
@@ -184,11 +233,15 @@ int ExecuteGaussianFilter(TensorResources& resources, aclrtStream stream,
     int ret = aclnnGaussianFilterGetWorkspaceSize(
         resources.meansTensor, resources.colorsTensor, resources.detTensor, resources.opacitiesTensor,
         resources.means2dTensor, resources.depthsTensor, resources.radiusTensor, resources.conicsTensor,
-        resources.covars2dTensor, nullptr, width, height, nearPlane, farPlane,
+        resources.covars2dTensor, nullptr, nullptr, nullptr, nullptr, nullptr,
+        width, height, nearPlane, farPlane, 0 /* supportFeatures */,
         resources.meansCullingTensor, resources.colorsCullingTensor, resources.means2dCullingTensor,
         resources.depthsCullingTensor, resources.radiusCullingTensor, resources.covars2dCullingTensor,
-        resources.conicsCullingTensor, resources.opacitiesCullingTensor, resources.filterTensor,
-        resources.cntTensor, workspaceSize, &executor);
+        resources.conicsCullingTensor, resources.opacitiesCullingTensor,
+        resources.quatsCullingTensor, resources.scalesCullingTensor, resources.viCullingTensor,
+        resources.compensationsCullingTensor, resources.filterTensor, resources.cntTensor,
+        resources.filterFloatTensor, resources.denseIndicesTensor,
+        workspaceSize, &executor);
 
     if (!CHECK_RET(ret == ACL_SUCCESS)) {
         LOG_PRINT("aclnnGaussianFilterGetWorkspaceSize failed. ERROR: %d\n", ret);
@@ -230,6 +283,12 @@ void CleanupResources(TensorResources& resources, void* workspaceAddr,
     if (resources.opacitiesCullingTensor) aclDestroyTensor(resources.opacitiesCullingTensor);
     if (resources.filterTensor) aclDestroyTensor(resources.filterTensor);
     if (resources.cntTensor) aclDestroyTensor(resources.cntTensor);
+    if (resources.quatsCullingTensor) aclDestroyTensor(resources.quatsCullingTensor);
+    if (resources.scalesCullingTensor) aclDestroyTensor(resources.scalesCullingTensor);
+    if (resources.viCullingTensor) aclDestroyTensor(resources.viCullingTensor);
+    if (resources.compensationsCullingTensor) aclDestroyTensor(resources.compensationsCullingTensor);
+    if (resources.filterFloatTensor) aclDestroyTensor(resources.filterFloatTensor);
+    if (resources.denseIndicesTensor) aclDestroyTensor(resources.denseIndicesTensor);
 
     if (resources.meansDeviceAddr) aclrtFree(resources.meansDeviceAddr);
     if (resources.colorsDeviceAddr) aclrtFree(resources.colorsDeviceAddr);
@@ -250,6 +309,12 @@ void CleanupResources(TensorResources& resources, void* workspaceAddr,
     if (resources.opacitiesCullingDeviceAddr) aclrtFree(resources.opacitiesCullingDeviceAddr);
     if (resources.filterDeviceAddr) aclrtFree(resources.filterDeviceAddr);
     if (resources.cntDeviceAddr) aclrtFree(resources.cntDeviceAddr);
+    if (resources.quatsCullingDeviceAddr) aclrtFree(resources.quatsCullingDeviceAddr);
+    if (resources.scalesCullingDeviceAddr) aclrtFree(resources.scalesCullingDeviceAddr);
+    if (resources.viCullingDeviceAddr) aclrtFree(resources.viCullingDeviceAddr);
+    if (resources.compensationsCullingDeviceAddr) aclrtFree(resources.compensationsCullingDeviceAddr);
+    if (resources.filterFloatDeviceAddr) aclrtFree(resources.filterFloatDeviceAddr);
+    if (resources.denseIndicesDeviceAddr) aclrtFree(resources.denseIndicesDeviceAddr);
 
     if (workspaceAddr) aclrtFree(workspaceAddr);
     if (stream) aclrtDestroyStream(stream);
@@ -288,7 +353,7 @@ int main() {
         LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", ret);
     }
 
-    PrintIntResult(cntShape, &resources.cntDeviceAddr, "cnt");
+    PrintResult<float>(cntShape, &resources.cntDeviceAddr, "cnt");
 
     CleanupResources(resources, workspaceAddr, stream, deviceId);
     return 0;

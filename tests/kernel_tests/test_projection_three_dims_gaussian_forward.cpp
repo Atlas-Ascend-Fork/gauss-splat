@@ -133,7 +133,7 @@ int ExecuteProjectionThreeDimsGaussianForward(TensorResources& resources, aclrtS
 
     int ret = aclnnProjectionThreeDimsGaussianForwardGetWorkspaceSize(
         resources.meansTensor, resources.covarsTensor, resources.viewmatsTensor, resources.ksTensor,
-        imageWidth, imageHeight, eps2d, calcCompensations, cameraModel,
+        nullptr, nullptr, imageWidth, imageHeight, eps2d, calcCompensations, cameraModel,
         resources.means2dTensor, resources.depthsTensor, resources.conicsTensor,
         resources.compensationsTensor, resources.detTensor, resources.radiusTensor, resources.covars2dTensor,
         workspaceSize, &executor);

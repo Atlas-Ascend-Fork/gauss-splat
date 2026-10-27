@@ -35,6 +35,7 @@ from torch_npu.testing.testcase import TestCase, run_tests
 from torch import Tensor
 
 from gauss_splat.gsplat_c import fully_fused_projection_bwd
+from gauss_splat.ops.rast_ctx import RastCtx
 
 torch.npu.set_device('npu:0')
 torch.set_printoptions(sci_mode=False)
@@ -262,14 +263,14 @@ def _fully_fused_projection_bwd(means, quats, scales, conics, viewmats, ks, v_me
     proj_filter = (proj_filter.unsqueeze(-1).bitwise_and(bit_mask) != 0).reshape(b, c, -1)
     proj_filter = proj_filter[:, :, :n]
     
-    for b in range(b):
-        for c in range(c):
-            cnt = proj_filter[b, c].sum()
-            v_conics[b, c, proj_filter[b, c]] = v_conics_culling[b, c, :cnt]
-            v_means2d[b, c, proj_filter[b, c]] = v_means2d_culling[b, c, :cnt]
-            v_depths[b, c, proj_filter[b, c]] = v_depths_culling[b, c, :cnt]
-            v_colors[b, c, proj_filter[b, c]] = v_colors_culling[b, c, :cnt]
-            v_opacities[b, c, proj_filter[b, c]] = v_opacities_culling[b, c, :cnt]
+    for batch_idx in range(b):
+        for camera_idx in range(c):
+            cnt = proj_filter[batch_idx, camera_idx].sum()
+            v_conics[batch_idx, camera_idx, proj_filter[batch_idx, camera_idx]] = v_conics_culling[batch_idx, camera_idx, :cnt]
+            v_means2d[batch_idx, camera_idx, proj_filter[batch_idx, camera_idx]] = v_means2d_culling[batch_idx, camera_idx, :cnt]
+            v_depths[batch_idx, camera_idx, proj_filter[batch_idx, camera_idx]] = v_depths_culling[batch_idx, camera_idx, :cnt]
+            v_colors[batch_idx, camera_idx, proj_filter[batch_idx, camera_idx]] = v_colors_culling[batch_idx, camera_idx, :cnt]
+            v_opacities[batch_idx, camera_idx, proj_filter[batch_idx, camera_idx]] = v_opacities_culling[batch_idx, camera_idx, :cnt]
     
     covar2d_inv = torch.stack([conics[..., 0], conics[..., 1], conics[..., 1],\
                             conics[..., 2]], dim=-1).reshape(conics.shape[:-1] + (2, 2))
@@ -301,8 +302,9 @@ def _fully_fused_projection_bwd(means, quats, scales, conics, viewmats, ks, v_me
     return v_p_w, v_quats, v_scales, v_r, v_colors, v_opacities
 
 
-class TestProjection3DGSForward(TestCase):
+class TestProjection3DGSBackward(TestCase):
     def setUp(self):
+        torch.manual_seed(13)
         self.test_cases = [
             [1, 1, 10000, 64, 64],
             [1, 8, 80000, 64, 64],
@@ -400,9 +402,19 @@ class TestProjection3DGSForward(TestCase):
             compensations = inputs.compensations.npu()
         else:
             compensations = None
-        v_p_w, v_quats, v_scales, v_r, v_colors, v_opacities = fully_fused_projection_bwd(means,\
-            quats, scales, conics, viewmats, ks, v_means2d, v_depths, v_conics, v_colors_culling,\
-            v_opacities_culling, proj_filter, compensations, width, height)
+        b, _, n = means.shape
+        c = viewmats.shape[1]
+        rast_ctx = RastCtx()
+        rast_ctx.proj_backward_culling = False
+        rast_ctx.prealloc_if_need(b, c, n, means.device)
+        outputs = rast_ctx.outputs_for_proj_backward()
+        for output in outputs:
+            output.zero_()
+        v_p_w, v_quats, v_scales, v_r, v_colors, v_opacities, *_ = fully_fused_projection_bwd(
+            means, quats, scales, conics, viewmats, ks, v_means2d, v_depths, v_conics,
+            v_colors_culling, v_opacities_culling, proj_filter, compensations,
+            None, None, None, None, None, None, None,
+            width, height, 0, 0, outputs)
         return ExecResults(
             v_p_w=v_p_w.detach().float(),
             v_quats=v_quats.detach().float(),
@@ -419,6 +431,108 @@ class TestProjection3DGSForward(TestCase):
             self.assertRtolEqual(cpu_results.v_scales.numpy(), npu_results.v_scales.cpu().numpy(), prec=5.e-1)
             self.assertRtolEqual(cpu_results.v_colors.numpy(), npu_results.v_colors.cpu().numpy(), prec=1.e-3)
             self.assertRtolEqual(cpu_results.v_opacities.numpy(), npu_results.v_opacities.cpu().numpy(), prec=1.e-3)
+
+class TestProjectionAutogradEndToEnd(unittest.TestCase):
+    """Exercise public forward -> filter -> loss.backward with real NPU ops."""
+
+    def check_projection(self, n, compensation=False, all_culled=False):
+        from gauss_splat import projection_three_dims_gaussian_fused
+        from test_gaussian_filter import _gaussian_filter
+        from test_projection_3dgs_forward import _world_to_cam, _persp_proj
+
+        torch.manual_seed(2026)
+        b, c, width, height = 2, 2, 64, 64
+        means = torch.rand(b, n, 3) - 0.5
+        means[..., 2] = torch.rand(b, n) + 3
+        # Holes and differing camera counts exercise compact-index row strides.
+        means[:, 1::5, 2] = -2
+        means[:, 2::7, 0] = 30
+        if all_culled:
+            means[..., 2] = -2
+        quats = torch.rand(b, n, 4) + 0.2
+        scales = torch.rand(b, n, 3) * 0.15 + 0.1
+        colors = torch.rand(b, 3, n)
+        opacities = torch.rand(b, n) * 0.5 + 0.4
+        leaves = [t.requires_grad_() for t in (means, quats, scales, colors, opacities)]
+        device_leaves = [t.detach().npu().requires_grad_() for t in leaves]
+        views = torch.eye(4).repeat(b, c, 1, 1)
+        views[:, 1, 0, 3] = 1.5
+        views[1, :, 1, 3] = 0.2
+        ks = torch.tensor([[40., 0., 32.], [0., 40., 32.], [0., 0., 1.]]).repeat(b, c, 1, 1)
+
+        # Independent differentiable CPU reference; no native/NPU calls.
+        covars, _ = _quat_scale_to_covar_preci(quats, scales, True, False)
+        means_c, covars_c = _world_to_cam(means, covars, views)
+        means2d, covars2d = _persp_proj(means_c, covars_c, ks, width, height)
+        det_orig = torch.linalg.det(covars2d)
+        covars2d = covars2d + torch.eye(2) * 0.3
+        det = torch.linalg.det(covars2d).clamp_min(1e-10)
+        conics = torch.stack((covars2d[..., 1, 1], -covars2d[..., 0, 1],
+                              covars2d[..., 0, 0]), -1) / det[..., None]
+        half_trace = covars2d.diagonal(dim1=-2, dim2=-1).sum(-1) / 2
+        bound = 3.33 * (half_trace + (half_trace.square() - det).clamp_min(0.01).sqrt()).sqrt()
+        radius = torch.minimum(3.33 * covars2d.diagonal(dim1=-2, dim2=-1).sqrt(),
+                               bound[..., None]).ceil()
+        packed_covars = torch.stack((covars2d[..., 0, 0], covars2d[..., 0, 1],
+                                     covars2d[..., 1, 1]), -1)
+        comp = (det_orig / det).clamp_min(0).sqrt() if compensation else None
+        # Current backward treats compensation as a saved opacity multiplier,
+        # without differentiating compensation through covariance.
+        comp = comp.detach() if comp is not None else None
+        expected_filter = _gaussian_filter(
+            means.transpose(1, 2), colors, det, opacities,
+            means2d.transpose(2, 3), means_c[..., 2], radius.transpose(2, 3),
+            conics.transpose(2, 3), packed_covars.transpose(2, 3), comp,
+            width, height, 0.01, 100.)
+        expected = tuple(expected_filter[i] for i in (2, 3, 6, 7, 4, 5, 1, 9, 8))
+        mn, qn, sn, cn, on = device_leaves
+        actual = projection_three_dims_gaussian_fused(
+            mn, cn, None, qn, sn, on, views.npu(), ks.npu(),
+            torch.ones((b, c, n), device=mn.device), torch.ones((1,), device=mn.device),
+            None, width, height, 0.3, 0.01, 100., compensation, 'pinhole')
+        # Compact culling buffers only define entries [0, cnt); the operator
+        # leaves the tail unspecified, so mask it before comparing/backprop.
+        cnt = actual[7]
+        def _mask_compact(value):
+            keep = torch.arange(value.shape[-1], device=value.device) < cnt[..., None]
+            if value.dim() == 4:
+                keep = keep[:, :, None, :]
+            return torch.where(keep, value, torch.zeros_like(value))
+        masked = [_mask_compact(actual[i]) for i in range(7)]
+        for i, (result, reference) in enumerate(zip(masked + [actual[7]], expected[:8])):
+            torch.testing.assert_close(result.cpu(), reference, atol=1e-4, rtol=1e-4,
+                                       msg=lambda message, i=i: f'forward output {i}: {message}')
+        if all_culled:
+            self.assertEqual(actual[7].sum().item(), 0)
+        else:
+            self.assertTrue(bool((actual[7] > 0).all()))
+            self.assertTrue(bool((actual[7] < n).all()))
+        # Only outputs supported by the public backward contract enter loss.
+        cpu_loss, npu_loss = 0, 0
+        for i in (0, 1, 2, 3, 6):
+            grad = torch.randn_like(expected[i])
+            cpu_loss = cpu_loss + (expected[i] * grad).sum()
+            npu_loss = npu_loss + (masked[i] * grad.npu()).sum()
+        cpu_loss.backward()
+        npu_loss.backward()
+        for name, cpu, npu in zip(('means', 'quats', 'scales', 'colors', 'opacities'),
+                                   leaves, device_leaves):
+            self.assertIsNotNone(npu.grad, name)
+            torch.testing.assert_close(npu.grad.cpu(), cpu.grad, atol=2e-4, rtol=2e-3,
+                                       msg=lambda message: f'{name} gradient: {message}')
+
+    def test_public_autograd_tail(self):
+        self.check_projection(65)
+
+    def test_public_autograd_multiple_tiles(self):
+        self.check_projection(769)
+
+    def test_public_autograd_compensation(self):
+        self.check_projection(65, compensation=True)
+
+    def test_public_autograd_all_culled(self):
+        self.check_projection(65, all_culled=True)
+
 
 if __name__ == "__main__":
     run_tests()

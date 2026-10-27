@@ -1,12 +1,12 @@
 # aclnnGaussianFilter
 
-[📄 查看源码](https://gitcode.com/cann/gauss-splat/blob/master/kernels/gaussian_filter/op_kernel/gaussian_filter.cpp)
+[📄 查看源码 (arch22)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/gaussian_filter/op_kernel/arch22/gaussian_filter.cpp) | [📄 查看源码 (arch35)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/gaussian_filter/op_kernel/arch35/gaussian_filter.cpp)
 
 ## 产品支持情况
 
 | 产品                                                     | 是否支持 |
 | :------------------------------------------------------- | :------: |
-| Ascend 950PR/Ascend 950DT                   |    ×    |
+| Ascend 950PR/Ascend 950DT                   |    √    |
 | Atlas A3 训练系列产品/Atlas A3 推理系列产品 |    √    |
 | Atlas A2 训练系列产品/Atlas A2 推理系列产品 |    √    |
 | Atlas 200I/500 A2 推理产品                  |    ×    |
@@ -15,16 +15,42 @@
 
 ## 功能说明
 
-- 接口功能：`gaussian_filter`根据视锥体参数对高斯球进行筛选，剔除不在可见范围内的高斯球。
+- 接口功能：`gaussian_filter` 根据视锥体参数对每个 (batch, camera) 视图下的高斯球进行筛选，剔除不在可见范围内的高斯球，并将筛选结果沿高斯球维度压缩为紧凑排布（compact）。同时输出筛选标记（按位压缩位图与浮点掩码）、每个视图内有效高斯球数量，以及紧凑位置到原始密集下标的映射；并支持配合 `vi`、`sigma` 的深度修正。
 - 计算公式：
 
-根据near_plane、far_plane、图像边界等参数筛选高斯球：
+对每个 (batch, camera) 视图下第 $i$ 个高斯球，记：
 
 $$
-filter[i] = \begin{cases} 1 & \text{if } depth_i \in [near\_plane, far\_plane] \text{ and } means2d_i \in image \\ 0 & \text{otherwise} \end{cases}
+d_i = depths[b,c,i], \quad m_i = means2d[b,c,:,i], \quad r_i = radius[b,c,:,i]
 $$
 
-筛选后的输出保持原始数据顺序，但仅保留可见的高斯球。
+筛选标记为：
+
+$$
+filter[b,c,i] = \begin{cases}
+1 & \text{if } i < gaussian\_num \ \wedge\ det[b,c,i] > 0 \ \wedge\ near\_plane < d_i < far\_plane \\
+  & \wedge\ vi[b,c,i] > 0 \\
+  & \wedge\ (m_{x,i} + r_{x,i} > 0) \wedge (m_{x,i} - r_{x,i} < width) \\
+  & \wedge\ (m_{y,i} + r_{y,i} > 0) \wedge (m_{y,i} - r_{y,i} < height) \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+其中 `vi > 0` 条件在 A5（Ascend 950）路径生效。
+
+每个视图内有效高斯球数量：
+
+$$
+cnt[b,c] = \sum_{i} filter[b,c,i]
+$$
+
+紧凑排布与下标映射（$\{\, i \mid filter[b,c,i]=1 \,\}$ 按原始顺序排列）：
+
+$$
+culling[b,c,:,0:cnt] = args[b,c,:,i] \big|_{filter[b,c,i]=1}, \quad denseIndices[b,c,k] = \text{第 } k \text{ 个有效高斯球的原始下标}
+$$
+
+其中 `args` 为各参数（`means`、`colors`、`quats`、`scales`、`means2d`、`depths`、`radius`、`covars2d`、`conics`、`opacities`、`vi`、`compensations`），分别写入对应的 `*Culling` 输出；`filter` 为按位压缩的 UINT8 位图，`filterFloat` 为 0/1 浮点掩码。当开启 `supportFeatures` bit0（深度修正）时，`viCulling = vi × max(1 − depths / sigma, 0)`，否则 `viCulling = vi`。
 
 ## 函数原型
 
@@ -42,10 +68,15 @@ aclnnStatus aclnnGaussianFilterGetWorkspaceSize(
     const aclTensor *conics,
     const aclTensor *covars2d,
     const aclTensor *compensations,
+    const aclTensor *quats,
+    const aclTensor *scales,
+    const aclTensor *vi,
+    const aclTensor *sigma,
     int64_t          width,
     int64_t          height,
     float            nearPlane,
     float            farPlane,
+    int64_t          supportFeatures,
     const aclTensor *meansCulling,
     const aclTensor *colorsCulling,
     const aclTensor *means2dCulling,
@@ -54,8 +85,14 @@ aclnnStatus aclnnGaussianFilterGetWorkspaceSize(
     const aclTensor *covars2dCulling,
     const aclTensor *conicsCulling,
     const aclTensor *opacitiesCulling,
+    const aclTensor *quatsCulling,
+    const aclTensor *scalesCulling,
+    const aclTensor *viCulling,
+    const aclTensor *compensationsCulling,
     const aclTensor *filter,
     const aclTensor *cnt,
+    const aclTensor *filterFloat,
+    const aclTensor *denseIndices,
     uint64_t        *workspaceSize,
     aclOpExecutor  **executor)
 ```
@@ -99,10 +136,10 @@ aclnnStatus aclnnGaussianFilter(
       <td>colors</td>
       <td>输入</td>
       <td>高斯球颜色。</td>
-      <td>不支持空tensor。</td>
+      <td>不支持空tensor。通道数 color_dims 通常为3，启用扩展特征时可为7。</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, 3, gaussian_num)</td>
+      <td>(batch_size, color_dims, gaussian_num)</td>
       <td>√</td>
     </tr>
     <tr>
@@ -178,11 +215,51 @@ aclnnStatus aclnnGaussianFilter(
     <tr>
       <td>compensations</td>
       <td>输入</td>
-      <td>补偿值（可选）。</td>
-      <td>可选输入，可传入nullptr。</td>
+      <td>透明度补偿值。</td>
+      <td>可选输入，可传入nullptr；不为空时 opacitiesCulling 按透明度×补偿加权，并输出 compensationsCulling。</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, gaussian_num)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>quats</td>
+      <td>输入</td>
+      <td>四元数。</td>
+      <td>可选输入，可传入nullptr；不为空时参与筛选并输出 quatsCulling。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(batch_size, 4, gaussian_num)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>scales</td>
+      <td>输入</td>
+      <td>缩放因子。</td>
+      <td>可选输入，可传入nullptr；不为空时参与筛选并输出 scalesCulling。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(batch_size, 3, gaussian_num)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>vi</td>
+      <td>输入</td>
+      <td>逐视图深度修正权重（LCWSR 中每个高斯球的逐视图权重）。</td>
+      <td>可选输入，可传入nullptr；不为空时筛选条件要求 vi &gt; 0，并输出 viCulling。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(batch_size, camera_num, gaussian_num)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>sigma</td>
+      <td>输入</td>
+      <td>深度修正尺度参数（标量）。</td>
+      <td>可选输入，可传入nullptr；启用深度修正（supportFeatures bit0）时使用。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(1,)</td>
       <td>√</td>
     </tr>
     <tr>
@@ -226,10 +303,20 @@ aclnnStatus aclnnGaussianFilter(
       <td>-</td>
     </tr>
     <tr>
+      <td>supportFeatures</td>
+      <td>输入</td>
+      <td>功能开关位掩码。</td>
+      <td>默认为0；bit0：启用深度修正（viCulling 按 vi×(1−depths/sigma) 加权），其余位预留。</td>
+      <td>INT64</td>
+      <td>-</td>
+      <td>-</td>
+      <td>-</td>
+    </tr>
+    <tr>
       <td>meansCulling</td>
       <td>输出</td>
-      <td>筛选后的3D位置。</td>
-      <td>不支持空tensor。</td>
+      <td>筛选后的3D位置（沿高斯球维压缩为紧凑排布）。</td>
+      <td>不支持空tensor；仅前 cnt 个位置有效。</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, 3, gaussian_num)</td>
@@ -239,17 +326,17 @@ aclnnStatus aclnnGaussianFilter(
       <td>colorsCulling</td>
       <td>输出</td>
       <td>筛选后的颜色。</td>
-      <td>不支持空tensor。</td>
+      <td>不支持空tensor；仅前 cnt 个位置有效。</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, 3, gaussian_num)</td>
+      <td>(batch_size, camera_num, color_dims, gaussian_num)</td>
       <td>√</td>
     </tr>
     <tr>
       <td>means2dCulling</td>
       <td>输出</td>
       <td>筛选后的2D位置。</td>
-      <td>不支持空tensor。</td>
+      <td>不支持空tensor；仅前 cnt 个位置有效。</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, 2, gaussian_num)</td>
@@ -259,7 +346,7 @@ aclnnStatus aclnnGaussianFilter(
       <td>depthsCulling</td>
       <td>输出</td>
       <td>筛选后的深度。</td>
-      <td>不支持空tensor。</td>
+      <td>不支持空tensor；仅前 cnt 个位置有效。</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, gaussian_num)</td>
@@ -269,7 +356,7 @@ aclnnStatus aclnnGaussianFilter(
       <td>radiusCulling</td>
       <td>输出</td>
       <td>筛选后的半径。</td>
-      <td>不支持空tensor。</td>
+      <td>不支持空tensor；仅前 cnt 个位置有效。</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, 2, gaussian_num)</td>
@@ -279,7 +366,7 @@ aclnnStatus aclnnGaussianFilter(
       <td>covars2dCulling</td>
       <td>输出</td>
       <td>筛选后的2D协方差。</td>
-      <td>不支持空tensor。</td>
+      <td>不支持空tensor；仅前 cnt 个位置有效。</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, 3, gaussian_num)</td>
@@ -289,7 +376,7 @@ aclnnStatus aclnnGaussianFilter(
       <td>conicsCulling</td>
       <td>输出</td>
       <td>筛选后的锥形参数。</td>
-      <td>不支持空tensor。</td>
+      <td>不支持空tensor；仅前 cnt 个位置有效。</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, 3, gaussian_num)</td>
@@ -299,7 +386,47 @@ aclnnStatus aclnnGaussianFilter(
       <td>opacitiesCulling</td>
       <td>输出</td>
       <td>筛选后的透明度。</td>
-      <td>不支持空tensor。</td>
+      <td>不支持空tensor；仅前 cnt 个位置有效。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(batch_size, camera_num, gaussian_num)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>quatsCulling</td>
+      <td>输出</td>
+      <td>筛选后的四元数。</td>
+      <td>不支持空tensor；仅前 cnt 个位置有效。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(batch_size, camera_num, 4, gaussian_num)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>scalesCulling</td>
+      <td>输出</td>
+      <td>筛选后的缩放因子。</td>
+      <td>不支持空tensor；仅前 cnt 个位置有效。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(batch_size, camera_num, 3, gaussian_num)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>viCulling</td>
+      <td>输出</td>
+      <td>筛选后的深度修正权重。</td>
+      <td>不支持空tensor；仅前 cnt 个位置有效。启用深度修正时按 vi×(1−depths/sigma) 加权。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(batch_size, camera_num, gaussian_num)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>compensationsCulling</td>
+      <td>输出</td>
+      <td>筛选后的透明度补偿值。</td>
+      <td>不支持空tensor；仅前 cnt 个位置有效。</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num, gaussian_num)</td>
@@ -308,8 +435,8 @@ aclnnStatus aclnnGaussianFilter(
     <tr>
       <td>filter</td>
       <td>输出</td>
-      <td>筛选标记位。</td>
-      <td>不支持空tensor。</td>
+      <td>筛选标记位（按位压缩的 UINT8 位图）。</td>
+      <td>不支持空tensor。第 i 位为1表示第 i 个高斯球通过筛选。</td>
       <td>UINT8</td>
       <td>ND</td>
       <td>(batch_size, camera_num, ceil(gaussian_num/8))</td>
@@ -320,9 +447,29 @@ aclnnStatus aclnnGaussianFilter(
       <td>输出</td>
       <td>筛选后的高斯球数量。</td>
       <td>不支持空tensor。</td>
-      <td>INT32</td>
+      <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, camera_num)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>filterFloat</td>
+      <td>输出</td>
+      <td>筛选标记的浮点掩码（0/1）。</td>
+      <td>不支持空tensor。第 i 个元素为1表示第 i 个高斯球通过筛选。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(batch_size, camera_num, gaussian_num)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>denseIndices</td>
+      <td>输出</td>
+      <td>紧凑位置到原始密集高斯球下标的映射索引。</td>
+      <td>不支持空tensor。第 k 个元素为紧凑排布第 k 个有效高斯球的原始下标。</td>
+      <td>INT32</td>
+      <td>ND</td>
+      <td>(batch_size, camera_num, gaussian_num)</td>
       <td>√</td>
     </tr>
     <tr>
@@ -368,7 +515,7 @@ aclnnStatus aclnnGaussianFilter(
             <tr>
                 <td>ACLNN_ERR_PARAM_INVALID</td>
                 <td>161002</td>
-                <td>输入输出tensor的数据类型和数据格式不在支持的范围内，或参数值不合法。</td>
+                <td>输入输出tensor的数据类型、数据格式或shape不在支持的范围内，或参数值/属性值不合法。</td>
             </tr>
         </tbody>
     </table>
@@ -413,16 +560,24 @@ aclnnStatus aclnnGaussianFilter(
 
 ## 约束说明
 
-- 大部分输入输出tensor的数据类型为FLOAT。
-- filter的数据类型为UINT8，cnt的数据类型为INT32。
-- compensations为可选输入，可传入nullptr。
-- width和height必须为正整数，nearPlane和farPlane为浮点数。
+- 数据类型：`means`、`colors`、`det`、`opacities`、`means2d`、`depths`、`radius`、`conics`、`covars2d`、`compensations`、`quats`、`scales`、`vi`、`sigma` 及全部 `*Culling` 输出、`filterFloat` 均为 FLOAT；`filter` 为 UINT8；`cnt` 为 FLOAT；`denseIndices` 为 INT32。数据格式均为 ND。
+- `compensations`、`quats`、`scales`、`vi`、`sigma` 为可选输入，可传入 nullptr。
+- `width`、`height` 必须为正整数；`nearPlane`、`farPlane` 为浮点数；`supportFeatures` 为位掩码（默认0）。
+- `supportFeatures` 位定义：
+  - bit0（1）：启用深度修正，`viCulling = vi × max(1 − depths / sigma, 0)`；关闭时 `viCulling = vi`。
+  - 其余位预留。
+- 筛选结果为沿高斯球维压缩后的紧凑排布：各 `*Culling` 输出与 `denseIndices` 的最后一维仍为 `gaussian_num`，但每个 (batch, camera) 视图仅前 `cnt` 个位置有效。
+- 各产品路径实际写出（有效）的输出不同：
+  - Atlas A2/A3：输出 `meansCulling`、`colorsCulling`、`means2dCulling`、`depthsCulling`、`radiusCulling`、`covars2dCulling`、`conicsCulling`、`opacitiesCulling`、`filter`、`cnt`；`quatsCulling`、`scalesCulling`、`viCulling`、`compensationsCulling`、`filterFloat`、`denseIndices` 为预留输出。
+  - A5（Ascend 950）：输出全部16个输出；`filter` 为按位压缩位图，`filterFloat` 为对应的浮点掩码。
+- 所有输出均为必选输出，第一段接口需全部传入有效tensor。
 
 **维度变量说明：**
 
 - batch_size：批次大小，表示一次处理的数据批次数量。
 - gaussian_num：高斯球数量，表示每个批次中3D高斯球的个数。
 - camera_num：相机数量，表示参与计算的相机个数。
+- color_dims：颜色通道数，通常为3，启用扩展特征时为7。
 
 ## 调用示例
 

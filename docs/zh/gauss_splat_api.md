@@ -6,11 +6,15 @@
 
 ## 对外接口列表
 
+以下列出当前仓库 `gauss_splat` 的 Python 接口。`arch22` 和 `arch35` 的 3DGS 路径共用这套接口；
+
 ### 1. Rasterizer 类
 
 **功能**: 高斯溅射光栅化器，提供完整的渲染流水线。
 
 **位置**: `gauss_splat.Rasterizer`
+
+该高层接口在内部将 `vi` 和 `sigma` 初始化为 1；调用方不能通过 `rasterization()` 传入自定义值，返回的 `info` 也不包含 `vi_culling`。需要这些量时使用下方的投影函数接口。
 
 #### 主要方法
 
@@ -41,7 +45,7 @@
 - `render_colors` (Tensor): 渲染的颜色图像，形状 (C, H, W, 3)
 - `render_depth` (Tensor): 渲染的深度图像，形状 (C, H, W, 1)
 - `info` (dict): 元数据字典，包含:
-  - `gaussian_ids`: 高斯点ID（当前为None）
+  - `gaussian_ids`: A5 单视角下参与投影的原始高斯点ID，形状 (cnt,)；其他路径为 None
   - `means2d`: 2D投影坐标，形状 (B, C, 2, N)
   - `radii`: 投影半径，形状 (B, C, 2, N)
   - `width`: 图像宽度
@@ -80,6 +84,9 @@ render_colors, render_depth, info = rasterizer.rasterization(
 - `opacities` (Tensor): 不透明度，形状 (B, N)
 - `viewmats` (Tensor): 视图变换矩阵，形状 (B, C, 4, 4)
 - `ks` (Tensor): 相机内参矩阵，形状 (B, C, 3, 3)
+- `vi` (Tensor): 可见性权重，形状 (B, C, N)
+- `sigma` (Tensor): 过滤尺度，形状 (1,)
+- `rast_ctx` (RastCtx, optional): 光栅化上下文，默认自动创建
 - `width` (int): 图像宽度
 - `height` (int): 图像高度
 - `eps` (float): 最小高斯半径阈值，默认0.3
@@ -98,23 +105,16 @@ render_colors, render_depth, info = rasterizer.rasterization(
 - `covars2d` (Tensor): 2D协方差矩阵，形状 (B, C, 3, N)
 - `colors` (Tensor): 过滤后的颜色，形状 (B, C, 3, N)
 - `cnt` (Tensor): 有效高斯点数量, 形状 (B, C)
-- `proj_filter` (Tensor): 投影过滤器，形状 (B, C, ceil(N/8))
+- `proj_filter` (Tensor): 投影可见性过滤结果；A2/A3 上形状为 (B, C, ceil(N/8))
+- `vi_culling` (Tensor): 过滤后的可见性，形状 (B, C, N)
 
 **示例**:
 
 ```python
-means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter = \
+means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter, vi_culling = \
     gauss_splat.projection_three_dims_gaussian_fused(
-        means,  # means
-        colors,  # colors
-        None,  # covars
-        quats,  # quat
-        scales,  # scales
-        opacities,  # opacities
-        viewmats,  # viewmats
-        Ks,  # ks
-        1920,  # width
-        1080,  # height
+        means, colors, None, quats, scales, opacities,
+        viewmats, Ks, vi, sigma, None, 1920, 1080
     )
 ```
 
@@ -125,6 +125,8 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter =
 **功能**: 计算高斯溅射渲染，执行alpha混合和深度计算。
 
 **位置**: `gauss_splat.calc_render`
+
+此函数一次处理一个 batch 中的一台相机；`N` 是该视角下的高斯点槽位数。每个高斯点只有一个锥形参数分量和一个不透明度，因此这四项是 `(N,)`，而非投影函数输出的 `(B, C, N)`。调用前要先选定 batch 和相机索引。
 
 **参数**:
 
@@ -139,8 +141,6 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter =
 - `offsets` (Tensor): 偏移量，形状 (vectorCnt + (TileNum * 2))
 - `sorted_gs_ids` (Tensor): 排序后的高斯点ID，形状 (totalGauss)
 
-这四个参数是单视图的一维向量；CalcRender.forward 会对它们 unsqueeze(0) 后与二维 means/colors 拼接，调用方不要提前添加行维度。
-
 **返回值**:
 
 - 如果提供`depths`:
@@ -152,18 +152,12 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter =
 **示例**:
 
 ```python
+b, c = 0, 0  # pix_coords、lb_sched 和 sorted_gs_id 也须对应此视角
 render_colors, render_depths = gauss_splat.calc_render(
-                                   means2d,  # means
-                                   conics[:, 0],  # conic0s
-                                   conics[:, 1],  # conic1s
-                                   conics[:, 2],  # conic2s
-                                   opacities,  # opacities
-                                   colors,  # colors
-                                   depths,  # depths
-                                   pix_coords,  # tile_coords
-                                   lb_sched,  # offsets
-                                   sorted_gs_id,  # sorted_gs_ids
-                               )
+    means2d[b, c], conics[b, c, 0], conics[b, c, 1], conics[b, c, 2],
+    opacities[b, c], colors[b, c], depths[b, c].unsqueeze(0),
+    pix_coords, lb_sched, sorted_gs_id
+)
 ```
 
 ---
@@ -188,10 +182,8 @@ render_colors, render_depths = gauss_splat.calc_render(
 
 ```python
 colors = gauss_splat.spherical_harmonics(
-             3,  # degrees_to_use
-             view_directions,  # dirs
-             sh_coefficients,  # coeffs
-         )
+    3, view_directions, sh_coefficients
+)
 ```
 
 ---
@@ -219,13 +211,9 @@ colors = gauss_splat.spherical_harmonics(
 
 ```python
 sorted_gs_ids = gauss_splat.gaussian_sort(
-                    lb_sched_tensor,  # lb_sched
-                    tile_sums,  # gaussian_cnt
-                    tile_depths,  # depths
-                    tile_gauss_ids,  # gs_ids
-                    sorted_offset,  # sorted_offset
-                    max_tile_gauss,  # max_tile_gauss
-                )
+    lb_sched_tensor, tile_sums, tile_depths,
+    tile_gauss_ids, sorted_offset, max_tile_gauss
+)
 ```
 
 ---
@@ -245,8 +233,8 @@ sorted_gs_ids = gauss_splat.gaussian_sort(
 - `depths` (Tensor): 深度值，形状 (B, C, 1, N)
 - `cnt` (Tensor): 有效高斯点计数，形状 (B, C)
 - `tile_grid` (Tensor): tile网格坐标
-- `image_width` (int): 图像宽度
-- `image_height` (int): 图像高度
+- `image_width` (float): 图像宽度
+- `image_height` (float): 图像高度
 - `tile_size` (int): tile大小，默认64
 
 **返回值**:
@@ -322,7 +310,7 @@ tile_sums, tile_offsets, tile_depths, tile_gauss_ids = \
 
 **参数**:
 
-- `nums_tensor` (Tensor): 每个tile的高斯点数量，形状 (B, C, T)。对于 `B*C>1` 的批量输入，必须是 CPU 上的 `int64` 张量；对于 1D 输入或 `B*C==1`，实现接受输入所在设备，并在同一设备返回调度结果。
+- `nums_tensor` (Tensor): 每个 tile 的高斯点数量。形状为 (B, C, T) 时必须是 int64 CPU 张量，返回的调度结果也在 CPU；一维 int64 输入可在 CPU 或 NPU，结果保留输入设备。
 - `num_bins` (int): 分箱数量（向量处理器数量）
 
 **返回值**:
@@ -341,11 +329,32 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 
 ---
 
+### 9. fused_ssim
+
+**功能**: 计算结构相似度（SSIM），支持自动求导。
+
+**位置**: `gauss_splat.fused_ssim`
+
+**参数**:
+
+- `img1` (Tensor): 图像，形状 (B, C, H, W)，float32
+- `img2` (Tensor): 图像，形状 (B, C, H, W)，float32
+- `window_size` (int): 窗口大小，默认 7
+- `sigma` (float): 高斯窗口标准差，默认 0.75
+- `size_average` (bool): 是否取平均值，默认 True
+- `reduction` (str, optional): "mean"、"sum" 或 "none"；指定时覆盖 `size_average`
+
+**返回值**:
+
+- `ssim` (Tensor): "mean" 或 "sum" 时为标量；"none" 时形状为 (B,)
+
+---
+
 ## 数据类型说明
 
 ### 张量设备要求
 
-除文档明确说明的 `get_render_schedule_cpp` 批量路径外，输入张量必须在NPU设备上，支持自动求导。对于 `B*C>1` 的批量 `get_render_schedule_cpp` 输入，`nums_tensor` 必须是 CPU 上的 `int64` 张量。
+算子输入通常位于 NPU。`get_render_schedule_cpp` 例外：批量输入必须是 int64 CPU 张量，调用方可再将返回的调度结果移至 NPU。
 
 ### 数据格式
 

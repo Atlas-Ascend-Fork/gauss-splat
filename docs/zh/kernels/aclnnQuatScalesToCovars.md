@@ -1,12 +1,12 @@
 # aclnnQuatScalesToCovars
 
-[📄 查看源码](https://gitcode.com/cann/gauss-splat/blob/master/kernels/quat_scales_to_covars/op_kernel/quat_scales_to_covars.cpp)
+[📄 查看源码 (arch22)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/quat_scales_to_covars/op_kernel/arch22/quat_scales_to_covars.cpp) | [📄 查看源码 (arch35)](https://gitcode.com/cann/gauss-splat/blob/master/kernels/quat_scales_to_covars/op_kernel/arch35/quat_scales_to_covars.cpp)
 
 ## 产品支持情况
 
 | 产品                                                     | 是否支持 |
 | :------------------------------------------------------- | :------: |
-| Ascend 950PR/Ascend 950DT                   |    ×    |
+| Ascend 950PR/Ascend 950DT                   |    √    |
 | Atlas A3 训练系列产品/Atlas A3 推理系列产品 |    √    |
 | Atlas A2 训练系列产品/Atlas A2 推理系列产品 |    √    |
 | Atlas 200I/500 A2 推理产品                  |    ×    |
@@ -76,7 +76,7 @@ aclnnStatus aclnnQuatScalesToCovars(
       <td>quat</td>
       <td>输入</td>
       <td>四元数，表示高斯球的旋转。</td>
-      <td>不支持空tensor。四元数应已归一化。</td>
+      <td>不支持空tensor。分量为 $(w, x, y, z)$（实部在前）；算子内部会对四元数进行归一化，调用方无需预先归一化。</td>
       <td>FLOAT</td>
       <td>ND</td>
       <td>(batch_size, 4, gaussian_num)</td>
@@ -187,6 +187,19 @@ aclnnStatus aclnnQuatScalesToCovars(
 - **返回值：**
   
   aclnnStatus：返回状态码，具体参见[aclnn返回码](https://gitcode.com/cann/ops-nn/blob/master/docs/zh/context/aclnn_return_code.md)。
+
+## 约束说明
+
+- 数据类型：`quat`、`scales`、`covars` 均为 FLOAT；数据格式均为 ND。
+- `quat`、`scales`、`covars` 均不支持空tensor，支持非连续Tensor。
+- `quat` 与 `scales` 的 batch_size、gaussian_num 需一致；输出 `covars` 的 shape 由 `quat` 推导，为 (batch_size, 3, 3, gaussian_num)。
+- `quat` 的分量顺序为 $(w, x, y, z)$（实部在前）；算子内部会对四元数进行归一化，调用方无需预先归一化。
+- Atlas A2/A3 与 A5（Ascend 950）均支持本算子；`gaussian_num` 按 8 元素对齐后切分到各 AIV 核。
+
+**维度变量说明：**
+
+- batch_size：批次大小，表示一次处理的数据批次数量。
+- gaussian_num：高斯球数量，表示每个批次中3D高斯球的个数。
 
 ## 调用示例
 

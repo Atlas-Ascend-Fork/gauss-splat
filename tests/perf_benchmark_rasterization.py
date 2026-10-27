@@ -29,7 +29,6 @@ import os
 import sys
 import time
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -204,42 +203,42 @@ def run_func_tests(n_gs, width, height, tile_size, sh_degree):
 # 性能基准测试
 # ============================================================================
 
-@dataclass(frozen=True)
-class PerfBenchmarkConfig:
-    n_gs: int
-    width: int
-    height: int
-    tile_size: int
-    sh_degree: int
-    warmup_iters: int
-    perf_iters: int
+def run_perf_benchmark(n_gs, width, height, tile_size, sh_degree, warmup_iters, perf_iters):
+    print("=" * 70)
+    print("性能基准测试")
+    print("=" * 70)
+    print(f"  参数: n_gs={n_gs}, width={width}, height={height}, tile_size={tile_size}, sh_degree={sh_degree}")
+    print(f"  预热轮数: {warmup_iters}, 测试轮数: {perf_iters}")
+    print()
 
+    splats = gen_splats(n_gs, sh_degree)
+    cam = gen_camera(width, height)
 
-def _warmup_rasterizer(rasterizer, cam, splats, config):
-    print(f"  Warmup ({config.warmup_iters} iters)...", end=" ", flush=True)
-    for _ in range(config.warmup_iters):
-        rasterizer.rasterization(
+    # ---------- warmup ----------
+    print(f"  Warmup ({warmup_iters} iters)...", end=" ", flush=True)
+    rasterizer = Rasterizer()
+    for _ in range(warmup_iters):
+        render_colors, render_depths, meta = rasterizer.rasterization(
             cam=cam,
-            size=(config.width, config.height),
-            tile_size=config.tile_size,
-            active_sh_degree=config.sh_degree,
+            size=(width, height),
+            tile_size=tile_size,
+            active_sh_degree=sh_degree,
             splats=splats,
             camera_model="pinhole",
         )
         torch.npu.synchronize()
     print("done")
 
-
-def _measure_rasterization(rasterizer, cam, splats, config):
+    # ---------- benchmark ----------
     durations = []
-    print(f"  Benchmark ({config.perf_iters} iters)...", flush=True)
-    for i in range(config.perf_iters):
+    print(f"  Benchmark ({perf_iters} iters)...", flush=True)
+    for i in range(perf_iters):
         t0 = time.time()
-        rasterizer.rasterization(
+        render_colors, render_depths, meta = rasterizer.rasterization(
             cam=cam,
-            size=(config.width, config.height),
-            tile_size=config.tile_size,
-            active_sh_degree=config.sh_degree,
+            size=(width, height),
+            tile_size=tile_size,
+            active_sh_degree=sh_degree,
             splats=splats,
             camera_model="pinhole",
         )
@@ -248,10 +247,8 @@ def _measure_rasterization(rasterizer, cam, splats, config):
         dur_ms = (t1 - t0) * 1000.0
         durations.append(dur_ms)
         print(f"    iter {i:3d}: {dur_ms:.3f} ms")
-    return durations
 
-
-def _summarize_perf_result(config, durations):
+    # ---------- 统计 ----------
     dur_arr = np.array(durations)
     print()
     print(f"  端到端性能统计 (ms):")
@@ -266,13 +263,13 @@ def _summarize_perf_result(config, durations):
     print(f"    FPS:    {1000.0 / dur_arr.mean():.1f}")
 
     perf_result = {
-        "n_gs": config.n_gs,
-        "width": config.width,
-        "height": config.height,
-        "tile_size": config.tile_size,
-        "sh_degree": config.sh_degree,
-        "warmup_iters": config.warmup_iters,
-        "perf_iters": config.perf_iters,
+        "n_gs": n_gs,
+        "width": width,
+        "height": height,
+        "tile_size": tile_size,
+        "sh_degree": sh_degree,
+        "warmup_iters": warmup_iters,
+        "perf_iters": perf_iters,
         "mean_ms": float(dur_arr.mean()),
         "median_ms": float(np.median(dur_arr)),
         "min_ms": float(dur_arr.min()),
@@ -285,23 +282,6 @@ def _summarize_perf_result(config, durations):
         "durations": durations,
     }
     return perf_result
-
-
-def run_perf_benchmark(n_gs, width, height, tile_size, sh_degree, warmup_iters, perf_iters):
-    print("=" * 70)
-    print("性能基准测试")
-    print("=" * 70)
-    print(f"  参数: n_gs={n_gs}, width={width}, height={height}, tile_size={tile_size}, sh_degree={sh_degree}")
-    print(f"  预热轮数: {warmup_iters}, 测试轮数: {perf_iters}")
-    print()
-
-    config = PerfBenchmarkConfig(n_gs, width, height, tile_size, sh_degree, warmup_iters, perf_iters)
-    splats = gen_splats(config.n_gs, config.sh_degree)
-    cam = gen_camera(config.width, config.height)
-    rasterizer = Rasterizer()
-    _warmup_rasterizer(rasterizer, cam, splats, config)
-    durations = _measure_rasterization(rasterizer, cam, splats, config)
-    return _summarize_perf_result(config, durations)
 
 
 # ============================================================================

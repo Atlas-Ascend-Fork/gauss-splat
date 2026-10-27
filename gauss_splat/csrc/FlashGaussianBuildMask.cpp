@@ -8,7 +8,9 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 #include <cmath>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include "OpApiCommon.h"
 #include "functions.h"
@@ -17,8 +19,35 @@ using namespace NPU_NAME_SPACE;
 using namespace std;
 
 namespace {
-constexpr uint32_t BLOCK_NUM = 48;
+// gather_mask is a per-core scratch: one row per active AIV. Query the real
+// platform vector-core count at runtime (asc-devkit grid_config.asc pattern:
+// aclrtGetDeviceInfo + ACL_DEV_ATTR_VECTOR_CORE_NUM) instead of hardcoding the
+// core count, and cache it per device. Falls back to a safe upper bound when
+// the query fails; tiling still clamps dispatch to min(AIV, scratch rows).
+constexpr uint32_t BLOCK_NUM_FALLBACK = 64;
 constexpr uint32_t GATHER_NUM = 20;
+
+uint32_t GetBlockNum(int32_t deviceId)
+{
+#ifdef ASCEND_COMPUTE_UNI_A5
+    static std::mutex cacheMutex;
+    static std::unordered_map<int32_t, uint32_t> cache;
+    const std::lock_guard<std::mutex> lock(cacheMutex);
+    const auto cached = cache.find(deviceId);
+    if (cached != cache.end()) {
+        return cached->second;
+    }
+    int64_t coreNum = 0;
+    const aclError ret = aclrtGetDeviceInfo(static_cast<uint32_t>(deviceId), ACL_DEV_ATTR_VECTOR_CORE_NUM, &coreNum);
+    const uint32_t blockNum =
+        (ret == ACL_SUCCESS && coreNum > 0) ? static_cast<uint32_t>(coreNum) : BLOCK_NUM_FALLBACK;
+    cache.emplace(deviceId, blockNum);
+    return blockNum;
+#else
+    constexpr uint32_t BLOCK_NUM = 48;
+    return BLOCK_NUM;
+#endif
+}
 }  // namespace
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> flash_gaussian_build_mask(
@@ -56,7 +85,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> flash_gaussian_build_
     at::Tensor tile_sum = at::empty({batch_size, camera_num, tile_num, 1}, opacity.options().dtype(at::kInt));
     at::Tensor tile_depths =
         at::empty({batch_size, camera_num, tile_num, gaussian_num}, opacity.options().dtype(at::kFloat));
-    at::Tensor gather_mask = at::empty({BLOCK_NUM, GATHER_NUM, gaussian_num}, opacity.options().dtype(at::kFloat));
+    const uint32_t blockNum = GetBlockNum(static_cast<int32_t>(opacity.get_device()));
+    at::Tensor gather_mask = at::empty({blockNum, GATHER_NUM, gaussian_num}, opacity.options().dtype(at::kFloat));
     at::Tensor gauss_index =
         at::empty({batch_size, camera_num, tile_num, gaussian_num}, opacity.options().dtype(at::kFloat));
 

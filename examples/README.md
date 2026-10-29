@@ -1,16 +1,22 @@
-# Atlas A5 3DGS 训练样例
+# Atlas A2/A3/A5 3DGS 训练样例
 
-本目录是 Atlas A5 的单卡训练与评估流程。`examples/arch22` 是 A2/A3 流程；两个样例使用同一套 `gauss_splat` 扩展，但训练脚本和策略实现不同。
+本目录是 Atlas A2/A3/A5 的单卡训练与评估流程。
 
 ## 环境与安装
 
-在 Atlas A5 Linux 机器上安装与硬件匹配的 NPU 驱动、CANN toolkit、A5 ops 包，以及彼此兼容的 PyTorch 和 torch_npu。具体版本以目标机器的 CANN 发布配套关系为准。先加载 CANN 环境变量，再从仓库根目录编译 A5 扩展：
+在目标机器上安装与硬件匹配的 NPU 驱动、CANN toolkit，以及彼此兼容的 PyTorch 和 torch_npu（版本以目标机器的 CANN 发布配套关系为准）。先加载 CANN 环境变量，再从仓库根目录按架构编译扩展：
 
 ```bash
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
+
+# Ascend910B / Atlas A2/A3
+bash build.sh --python=3.9
+
+# Ascend950 / Atlas A5
 bash build.sh --python=3.9 --a5
+
 pip install dist/*.whl --force-reinstall
-cd examples/arch35
+cd examples
 pip install -r requirements.txt
 ```
 
@@ -18,7 +24,7 @@ pip install -r requirements.txt
 
 ## 数据与运行
 
-在 `examples/arch35` 目录执行：
+在 `examples` 目录执行：
 
 ```bash
 python datasets/download_dataset.py
@@ -26,7 +32,7 @@ python train.py --data_dir data/360_v2/garden --result_dir results/garden
 python train.py --data_dir data/360_v2/garden --result_dir results/garden --ckpt results/garden/ckpts/ckpt_29999_rank0.pt
 ```
 
-`train_all.sh` 用于按脚本中的场景列表批量训练。`rasterization/config.py` 定义训练配置，`rasterization/runner.py` 驱动训练与评估，`rasterization/rasterizer.py` 实现 A5 渲染流程。
+`train_all.sh` 用于按脚本中的场景列表批量训练。`rasterization/config.py` 定义训练配置，`rasterization/runner.py` 驱动训练与评估。
 
 ## 引用
 

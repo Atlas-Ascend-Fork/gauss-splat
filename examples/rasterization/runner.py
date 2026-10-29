@@ -9,6 +9,7 @@ import time
 import datetime
 from collections import defaultdict
 from types import SimpleNamespace
+from typing import Tuple
 import imageio
 import numpy as np
 import torch
@@ -24,8 +25,54 @@ from datasets.colmap import Dataset, Parser
 from rasterization.utils import SSIM, set_random_seed, create_splats_with_optimizers
 from gsplat.utils import save_ply
 from rasterization.config import Config
-from rasterization.rasterizer_3dgs import Rasterizer as Rasterizer3DGS
+from gsplat.strategy import DefaultStrategy
 from gauss_splat import fused_ssim
+from gauss_splat import Rasterizer as _GSRasterizer
+
+
+def is_arch35() -> bool:
+    """True when the loaded gauss_splat extension was built for Ascend950/A5."""
+    try:
+        from gauss_splat import gsplat_c
+
+        return bool(getattr(gsplat_c, "use_arch35", False))
+    except Exception:
+        return False
+
+
+def _to_CN2(t):
+    """Convert means2d gradient / radii to [C, N, 2] format."""
+    while t.ndim > 3 and t.shape[0] == 1:
+        t = t.squeeze(0)
+    if t.ndim == 3 and t.shape[1] in (2, 3) and t.shape[1] < t.shape[2]:
+        t = t.permute(0, 2, 1).contiguous()
+    elif t.ndim == 2:
+        t = t.unsqueeze(0)
+    return t
+
+
+class Rasterizer:
+    def __init__(self, cfg: Config) -> None:
+        self.cfg = cfg
+        self._impl = _GSRasterizer()
+
+    def ascend_rasterize_splats(
+        self,
+        cam: Tuple,
+        size: Tuple,
+        tile_size: int,
+        active_sh_degree: int,
+        splats: dict,
+    ) -> Tuple:
+        camtoworlds, Ks, render_mode = cam
+        return self._impl.rasterization(
+            cam=(camtoworlds, Ks, render_mode),
+            size=size,
+            tile_size=tile_size,
+            active_sh_degree=active_sh_degree,
+            splats=splats,
+            camera_model=self.cfg.camera_model,
+        )
 
 
 class Runner:
@@ -41,6 +88,10 @@ class Runner:
         self.local_rank = local_rank
         self.world_size = world_size
         self.device = f"npu:{local_rank}"
+
+        # Densify Strategy
+        self.strategy_name = "adc" if is_arch35() else "default"
+        self.strategy = None
 
         # Where to dump results.
         os.makedirs(cfg.result_dir, exist_ok=True)
@@ -74,13 +125,8 @@ class Runner:
         self.valset = Dataset(self.parser, split="val")
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         print("Scene scale:", self.scene_scale)
-        
-        if cfg.render_backend == "3dgs":
-            self.raserizer = Rasterizer3DGS(cfg)
-        else:
-            from rasterization.rasterizer import Rasterizer as CBSRasterizer
 
-            self.raserizer = CBSRasterizer(cfg)
+        self.raserizer = Rasterizer(cfg)
 
         # Model
         feature_dim = None
@@ -123,15 +169,42 @@ class Runner:
         # Densification strategy state (only used when cfg.densify=True).
         self.strategy_state = None
         if cfg.densify:
-            if cfg.lc_wsr_enable:
-                cfg.strategy.initialize_state(0.01, torch.log, self.splats["means"].shape[0], self.scene_scale, self.device)
+            if self.strategy_name == "adc":
+                self.strategy = cfg.strategy
+                if cfg.lc_wsr_enable:
+                    self.strategy.initialize_state(0.01, torch.log,
+                        self.splats["means"].shape[0], self.scene_scale, self.device)
+                else:
+                    self.strategy.check_sanity(self.splats, self.optimizers)
+                    self.strategy_state = self.strategy.initialize_state(
+                        scene_scale=self.scene_scale,
+                        lc_wsr_enable=cfg.lc_wsr_enable
+                    )
             else:
-                cfg.strategy.check_sanity(self.splats, self.optimizers)
-                self.strategy_state = cfg.strategy.initialize_state(
-                    scene_scale=self.scene_scale,
-                    lc_wsr_enable=cfg.lc_wsr_enable
+                self.strategy = DefaultStrategy(
+                    prune_opa=cfg.prune_opa,
+                    grow_grad2d=cfg.grow_grad2d,
+                    refine_start_iter=cfg.refine_start_iter,
+                    refine_stop_iter=cfg.refine_stop_iter,
+                    refine_every=cfg.refine_every,
+                    reset_every=cfg.reset_every,
+                    verbose=(world_rank == 0),
                 )
- 
+                self.strategy.check_sanity(self.splats, self.optimizers)
+                self.strategy_state = self.strategy.initialize_state(
+                    scene_scale=self.scene_scale
+                )
+                if world_rank == 0:
+                    print(
+                        f"[Densify] DefaultStrategy enabled "
+                        f"(refine [{cfg.refine_start_iter}-{cfg.refine_stop_iter}] "
+                        f"every {cfg.refine_every}, reset every {cfg.reset_every}, "
+                        f"grow_grad2d={cfg.grow_grad2d})"
+                    )
+        else:
+            self.strategy_state = None
+            self.strategy = None
+
         if cfg.profiling:
             name = cfg.data_dir.split("/")[-2]
             self.max_profiling_step = 32
@@ -222,7 +295,7 @@ class Runner:
             renders, render_depth, info = self.raserizer.ascend_rasterize_splats(
                 cam=(camtoworlds, Ks, render_mode),
                 size=(width, height),
-                tile_size=cfg.tile_size, 
+                tile_size=cfg.tile_size,
                 active_sh_degree=sh_degree_to_use,
                 splats=self.splats,
             )
@@ -232,17 +305,15 @@ class Runner:
                 colors, depths = renders, render_depth
 
             if cfg.densify:
-                cfg.strategy.step_pre_backward(
+                self.strategy.step_pre_backward(
                     self.splats, self.optimizers, self.strategy_state, step, info
                 )
 
             # loss
             l1loss = F.l1_loss(colors, pixels)
-            # ssimloss = 1.0 - SSIM.ssim(
-            #     colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2)
-            # )
-            ssimloss = 1.0 - fused_ssim(
-                colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2), window_size=11
+            ssim_call, wnd_size = (fused_ssim, 11) if is_arch35() else (SSIM.ssim, 7)
+            ssimloss = 1.0 - ssim_call(
+                colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2), window_size=wnd_size
             )
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
             if cfg.depth_loss:
@@ -260,11 +331,13 @@ class Runner:
                 )  # [1, 1, M, 1]
                 depths_sample = depths_sample.squeeze(3).squeeze(1)  # [1, M]
                 # calculate loss in disparity space
-                disp = torch.where(depths_sample > 0.0, depths_sample, torch.zeros_like(depths_sample))
+                disp = torch.where(depths_sample > 0.0,
+                    depths_sample if is_arch35() else 1.0 / depths_sample,
+                    torch.zeros_like(depths_sample))
                 disp_gt = 1.0 / depths_gt  # [1, M]
                 depthloss = F.l1_loss(disp, disp_gt) * self.scene_scale
                 loss += depthloss * cfg.depth_lambda
-            
+
             # regularizations
             if cfg.opacity_reg > 0.0:
                 loss = (
@@ -294,10 +367,9 @@ class Runner:
                 k_scale_weight = (weight_ratio / weight_loss.detach()).detach()
                 loss = loss + (weight_loss * k_scale_weight if weight_loss > weight_ratio else weight_loss)
 
-
             loss.backward()
 
-            if cfg.densify:
+            if cfg.densify and self.strategy_name == "adc":
                 means2d_grad = info["means2d"].grad.permute(0, 1, 3, 2)[0, 0]  # [N,2]
                 strategy_info = dict(info)
                 if cfg.lc_wsr_enable:
@@ -306,13 +378,26 @@ class Runner:
                     strategy_info["means2d"] = SimpleNamespace(grad=means2d_grad)
                 strategy_info["radii"] = info["radii"].permute(0, 1, 3, 2)[0, 0]
                 strategy_info["proj_filter"] = info["proj_filter"][0, 0]
-                cfg.strategy.step_post_backward(
+                self.strategy.step_post_backward(
                     self.splats,
                     self.optimizers,
                     self.strategy_state,
                     step,
                     strategy_info,
                 )
+            elif cfg.densify and info["means2d"] is not None and info["means2d"].grad is not None:
+                with torch.no_grad():
+                    g = _to_CN2(info["means2d"].grad)
+                    radii_cn2 = _to_CN2(info["radii"])
+                    proxy_m2d = torch.empty_like(g, requires_grad=False)
+                    proxy_m2d.grad = g
+                    proxy_info = dict(info)
+                    proxy_info["means2d"] = proxy_m2d
+                    proxy_info["radii"] = radii_cn2
+                    self.strategy.step_post_backward(
+                        self.splats, self.optimizers,
+                        self.strategy_state, step, proxy_info,
+                    )
 
             desc = f"loss={loss.item():.3f}| " f"sh degree={sh_degree_to_use}| "
             if cfg.depth_loss:
@@ -373,7 +458,7 @@ class Runner:
             # eval the full set
             if step in [i - 1 for i in cfg.eval_steps]:
                 self.eval(step)
-            
+
             if self.cfg.profiling:
                 if step < self.max_profiling_step:
                     self.profiler.step()
@@ -400,14 +485,14 @@ class Runner:
             render_mode = "RGB"
             pixels = data["image"].to(device) / 255.0
             height, width = pixels.shape[1:3]
-            
+
             torch_npu.npu.synchronize()
             tic = time.time()
             colors, depths, info = self.raserizer.ascend_rasterize_splats(
                 cam=(camtoworlds, Ks, render_mode),
                 size=(width, height),
-                tile_size=cfg.tile_size, 
-                active_sh_degree=cfg.sh_degree, 
+                tile_size=cfg.tile_size,
+                active_sh_degree=cfg.sh_degree,
                 splats=self.splats,
             )
             torch_npu.npu.synchronize()
@@ -416,7 +501,7 @@ class Runner:
             colors = torch.clamp(colors, 0.0, 1.0)
             ###  nan
             colors = torch.nan_to_num(colors, nan=0.0, posinf=1e10, neginf=-1e10)
-            
+
             canvas_list = [pixels, colors]
 
             if world_rank == 0:
@@ -461,6 +546,7 @@ class Runner:
             return total_render_time, len(valloader)
             # ===== [Profiling 修改] 结束 =====
         return 0.0, 0
+
     def perf_forward(self, num_steps: int = 10):
         """Forward-only perf mode: run N iterations without backward."""
         cfg = self.cfg

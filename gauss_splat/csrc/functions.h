@@ -62,10 +62,10 @@ gaussian_filter(at::Tensor &means, at::Tensor &colors, at::Tensor &det, at::Tens
                 const c10::optional<at::Tensor> &sigma, int width, int height, double near_plane, double far_plane, int support_features, const std::vector<at::Tensor> &outputs);
 
 // SIMT rendering: lastIds contains per-pixel global positions in gsIds.
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor> calc_render_simt_fwd(
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor> calc_render_fwd_clip_last_ids(
     const at::Tensor &gs, const at::Tensor &tileCoords,
     const at::Tensor &offsets, const at::Tensor &gsIds);
-at::Tensor calc_render_simt_bwd(
+at::Tensor calc_render_bwd_clip_last_ids(
     const at::Tensor &vColor, const at::Tensor &vDepth,
     const at::Tensor &lastCumsum, const at::Tensor &error,
     const at::Tensor &gs, const at::Tensor &tileCoords,

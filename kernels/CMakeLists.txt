@@ -5,8 +5,8 @@
 set(ASCEND_OPS
     calc_render_bwd_var_clip_gsids
     calc_render_fwd_double_clip_gsids
-    calc_render_simt_bwd
-    calc_render_simt_fwd
+    calc_render_bwd_clip_last_ids
+    calc_render_fwd_clip_last_ids
     flash_gaussian_build_mask
     fully_fused_projection_bwd
     fused_ssim_backward

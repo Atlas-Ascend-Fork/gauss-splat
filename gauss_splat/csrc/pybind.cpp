@@ -29,10 +29,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 #ifdef ASCEND_COMPUTE_UNI_A5
     m.attr("use_arch35") = true;
     m.attr("sf_covars_fused") = true;
-    m.attr("sf_render_method") = "simt";
+    m.attr("sf_render_method") = "clip_lastids";
 
-    m.def("calc_render_simt_fwd", &calc_render_simt_fwd);
-    m.def("calc_render_simt_bwd", &calc_render_simt_bwd);
+    m.def("calc_render_fwd_clip_last_ids", &calc_render_fwd_clip_last_ids);
+    m.def("calc_render_bwd_clip_last_ids", &calc_render_bwd_clip_last_ids);
 #else
     m.def("calc_render_fwd_double_clip_gsids", &calc_render_fwd_double_clip_gsids);
     m.def("calc_render_bwd_var_clip_gsids", &calc_render_bwd_var_clip_gsids);

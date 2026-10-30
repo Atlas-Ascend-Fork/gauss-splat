@@ -117,7 +117,7 @@ print(f"渲染深度形状: {render_depths.shape}")  # (1, 1080, 1920, 1)
 
 ### 其他
 
-- 完整训练/推理样例可参考 `examples/arch22`（A2/A3）与 `examples/arch35`（A5）。
+- 完整训练/推理样例可参考 `examples`。
 - 更多接口用法参考tests目录下的测试代码。
 
 ## 📖Python API
@@ -126,7 +126,7 @@ print(f"渲染深度形状: {render_depths.shape}")  # (1, 1080, 1920, 1)
 | :--------------------------------------- | :----------------------------------------------------------------------------------------------- |
 | `spherical_harmonics`                  | 球谐函数计算，支持自动反向传播，将方向向量转换为视角相关颜色                                     |
 | `projection_three_dims_gaussian_fused` | 投影筛选融合算子，完整的3D→2D投影流水线（协方差计算+投影变换+高斯筛选），支持自动反向传播       |
-| `calc_render`                          | 高斯溅射渲染计算，执行基于Tile的Alpha混合与深度计算，根据编译后端（simt / clip_gsids）自动选择实现，支持自动反向传播 |
+| `calc_render`                          | 高斯溅射渲染计算，执行基于Tile的Alpha混合与深度计算，根据编译后端（clip_last_ids / clip_gsids）自动选择实现，支持自动反向传播 |
 | `gaussian_sort`                        | 高斯球深度排序，对高斯球按深度进行Tile-based排序，用于渲染流水线                                 |
 | `flash_gaussian_build_mask`            | Flash渲染掩码构建，构建Flash Gaussian Splatting渲染所需的掩码和索引                              |
 | `gaussian_filter`                      | 高斯球筛选（低级API），独立筛选算子，通常在 `projection_three_dims_gaussian_fused`内部自动调用 |
@@ -152,8 +152,8 @@ print(f"渲染深度形状: {render_depths.shape}")  # (1, 1080, 1920, 1)
 |  8  | CalcRenderFwdDoubleClipGsids       | `gauss_splat.gsplat_c.calc_render_fwd_double_clip_gsids`      |  A2/A3    | [API文档](docs/zh/kernels/aclnnCalcRenderFwdDoubleClipGsids.md)       |
 |  9  | CalcRenderBwdVarClipGsids          | `gauss_splat.gsplat_c.calc_render_bwd_var_clip_gsids`         |  A2/A3    | [API文档](docs/zh/kernels/aclnnCalcRenderBwdVarClipGsids.md)          |
 |  10  | FlashGaussianBuildMask             | `gauss_splat.gsplat_c.flash_gaussian_build_mask`              | A2/A3/A5  | [API文档](docs/zh/kernels/aclnnFlashGaussianBuildMask.md)             |
-|  11  | CalcRenderSimtFwd                  | `gauss_splat.gsplat_c.calc_render_simt_fwd`                   |    A5     | [API文档](docs/zh/kernels/aclnnCalcRenderSimtFwd.md)                  |
-|  12  | CalcRenderSimtBwd                  | `gauss_splat.gsplat_c.calc_render_simt_bwd`                   |    A5     | [API文档](docs/zh/kernels/aclnnCalcRenderSimtBwd.md)                  |
+|  11  | CalcRenderFwdClipLastids       | `gauss_splat.gsplat_c.calc_render_fwd_clip_last_ids`          |    A5     | [API文档](docs/zh/kernels/aclnnCalcRenderFwdClipLastids.md)           |
+|  12  | CalcRenderBwdClipLastids       | `gauss_splat.gsplat_c.calc_render_bwd_clip_last_ids`          |    A5     | [API文档](docs/zh/kernels/aclnnCalcRenderBwdClipLastids.md)           |
 |  13  | FusedSsimForward                   | `gauss_splat.gsplat_c.fused_ssim_forward`                     | A2/A3/A5  | [API文档](docs/zh/kernels/aclnnFusedSsimForward.md)                   |
 |  14  | FusedSsimBackward                  | `gauss_splat.gsplat_c.fused_ssim_backward`                    | A2/A3/A5  | [API文档](docs/zh/kernels/aclnnFusedSsimBackward.md)                  |
 
@@ -185,20 +185,18 @@ gauss-splat/
 │   ├── fully_fused_projection_bwd/
 │   ├── calc_render_fwd_double_clip_gsids/
 │   ├── calc_render_bwd_var_clip_gsids/
-│   ├── calc_render_simt_fwd/
-│   ├── calc_render_simt_bwd/
+│   ├── calc_render_fwd_clip_last_ids/
+│   ├── calc_render_bwd_clip_last_ids/
 │   ├── fused_ssim_forward/
 │   ├── fused_ssim_backward/
 │   └── flash_gaussian_build_mask/
 ├── docs/                   # 文档目录
 │   └── kernels/            # ACLNN算子API文档
 ├── examples/               # 训练/推理样例
-│   ├── arch22/             # A2/A3样例
-│   └── arch35/             # A5样例
 ├── tests/                  # 测试代码
-│   ├── test_spherical_harmonics.py      # Python测试
 │   ├── host/               # host(CPU)测试
-│   └── kernel_tests/      # C++算子测试
+│   └── kernels/            # C++算子测试
+│   └── ops/                # Python算子测试
 └── README.md               # 本文档
 ```
 
@@ -208,7 +206,7 @@ gauss-splat/
 
 ### Python 测试
 
-`tests/` 为算子 Python 用例，`tests/host/` 为纯 CPU 用例。请从仓库外执行，避免导入源码目录中的 `gauss_splat`：
+`tests/` 为算子用例，`tests/host/` 为纯 CPU 用例。请从仓库外执行，避免导入源码目录中的 `gauss_splat`：
 
 ```bash
 REPO=<gauss-splat 仓库绝对路径>; cd /tmp
@@ -220,18 +218,18 @@ python -B -m unittest discover -s "$REPO/tests/host" -p 'test_*.py' -v
 
 ```bash
 cd <gauss-splat 仓库路径>
-bash tests/kernel_tests/build_kernel_tests.sh   # 编译，产物在 tests/kernel_tests/build_out/
-bash tests/kernel_tests/run_kernel_tests.sh     # 运行并打印结果
+bash tests/kernels/build_kernel_tests.sh   # 编译，产物在 tests/kernels/build_out/
+bash tests/kernels/run_kernel_tests.sh     # 运行并打印结果
 ```
 
 > 说明：
 > - `build_kernel_tests.sh` 会把算子包内的 `aclnn_*.h` 链接到 `${ASCEND_TOOLKIT_HOME}/include/aclnnop/`。若该目录不可写，链接会失败并报 `aclnnop/...h: No such file or directory`，请改用可写的 include 目录或调整该目录权限。
-> - 渲染正/反向算子按架构区分：A2/A3 使用 `test_calc_render_fwd_double_clip_gsids`、`test_calc_render_bwd_var_clip_gsids`；A5 使用 `test_calc_render_simt_fwd`。脚本会根据当前构建的 vendor（`customize`/`customize_arch35`）自动跳过不适用的用例。
+> - 渲染正/反向算子按架构区分：A2/A3 使用 `test_calc_render_fwd_double_clip_gsids`、`test_calc_render_bwd_var_clip_gsids`；A5 使用 `test_calc_render_clip_fwd_last_ids`、`test_calc_render_bwd_clip_last_ids`。脚本会根据当前构建的 vendor（`customize`/`customize_arch35`）自动跳过不适用的用例。
 
 ## 💬更多信息
 
 - [算子API文档](docs/zh/kernels/)：底层ACLNN算子详细说明
-- [算子测试](tests/kernel_tests/)：C++测试代码（运行方式见上文《测试》）
+- [算子测试](tests/kernels/)：C++测试代码（运行方式见上文《测试》）
 - [贡献指南](CONTRIBUTING.md)：如何参与项目开发
 - [安全声明](SECURITY.md)：安全使用指南
 - [许可证](LICENSE)：CANN Open Software License Agreement Version 2.0

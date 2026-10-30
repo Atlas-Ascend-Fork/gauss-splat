@@ -118,7 +118,7 @@ print(f"Rendered depth shape: {render_depths.shape}")  # (1, 1080, 1920, 1)
 
 ### Others
 
-- Complete training/inference samples are available in `examples/arch22` (A2/A3) and `examples/arch35` (A5).
+- Complete training/inference samples are available in `examples`.
 - For more interface usage, refer to the test code in the tests directory.
 
 ## Python API
@@ -127,7 +127,7 @@ print(f"Rendered depth shape: {render_depths.shape}")  # (1, 1080, 1920, 1)
 | :--------------------------------------- | :----------------------------------------------------------------------------------------------- |
 | `spherical_harmonics`                  | Spherical harmonics computation, supports automatic backward propagation, converts direction vectors to view-dependent colors                                     |
 | `projection_three_dims_gaussian_fused` | Projection filtering fused operator, complete 3D-to-2D projection pipeline (covariance computation + projection transformation + Gaussian filtering), supports automatic backward propagation       |
-| `calc_render`                          | Gaussian splatting rendering computation, performs tile-based alpha blending and depth computation, automatically selecting the implementation based on the built backend (simt / clip_gsids), supports automatic backward propagation |
+| `calc_render`                          | Gaussian splatting rendering computation, performs tile-based alpha blending and depth computation, automatically selecting the implementation based on the built backend (clip_last_ids / clip_gsids), supports automatic backward propagation |
 | `gaussian_sort`                        | Gaussian sphere depth sorting, performs tile-based depth sorting on Gaussian spheres for the rendering pipeline                                 |
 | `flash_gaussian_build_mask`            | Flash rendering mask construction, builds the masks and indices required for Flash Gaussian Splatting rendering                              |
 | `gaussian_filter`                      | Gaussian sphere filtering (low-level API), independent filtering operator, typically called automatically within `projection_three_dims_gaussian_fused` |
@@ -153,8 +153,8 @@ For advanced users who need to directly call underlying operators, this project 
 |  8  | CalcRenderFwdDoubleClipGsids       | `gauss_splat.gsplat_c.calc_render_fwd_double_clip_gsids`      | A2/A3             | [API Documentation](docs/en/kernels/aclnnCalcRenderFwdDoubleClipGsids_en.md)       |
 |  9  | CalcRenderBwdVarClipGsids          | `gauss_splat.gsplat_c.calc_render_bwd_var_clip_gsids`         | A2/A3             | [API Documentation](docs/en/kernels/aclnnCalcRenderBwdVarClipGsids_en.md)          |
 |  10  | FlashGaussianBuildMask             | `gauss_splat.gsplat_c.flash_gaussian_build_mask`              | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnFlashGaussianBuildMask_en.md)             |
-|  11  | CalcRenderSimtFwd                  | `gauss_splat.gsplat_c.calc_render_simt_fwd`                   | A5                | [API Documentation](docs/en/kernels/aclnnCalcRenderSimtFwd_en.md)                  |
-|  12  | CalcRenderSimtBwd                  | `gauss_splat.gsplat_c.calc_render_simt_bwd`                   | A5                | [API Documentation](docs/en/kernels/aclnnCalcRenderSimtBwd_en.md)                  |
+|  11  | CalcRenderFwdClipLastids       | `gauss_splat.gsplat_c.calc_render_fwd_clip_last_ids`          | A5                | [API Documentation](docs/en/kernels/aclnnCalcRenderFwdClipLastids_en.md)                |
+|  12  | CalcRenderBwdClipLastids       | `gauss_splat.gsplat_c.calc_render_bwd_clip_last_ids`          | A5                | [API Documentation](docs/en/kernels/aclnnCalcRenderBwdClipLastids_en.md)                |
 |  13  | FusedSsimForward                   | `gauss_splat.gsplat_c.fused_ssim_forward`                     | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnFusedSsimForward_en.md)                   |
 |  14  | FusedSsimBackward                  | `gauss_splat.gsplat_c.fused_ssim_backward`                    | A2/A3/A5          | [API Documentation](docs/en/kernels/aclnnFusedSsimBackward_en.md)                  |
 
@@ -186,20 +186,18 @@ gauss-splat/
 │   ├── fully_fused_projection_bwd/
 │   ├── calc_render_fwd_double_clip_gsids/
 │   ├── calc_render_bwd_var_clip_gsids/
-│   ├── calc_render_simt_fwd/
-│   ├── calc_render_simt_bwd/
+│   ├── calc_render_fwd_clip_last_ids/
+│   ├── calc_render_bwd_clip_last_ids/
 │   ├── fused_ssim_forward/
 │   ├── fused_ssim_backward/
 │   └── flash_gaussian_build_mask/
 ├── docs/                   # Documentation directory
 │   └── kernels/            # ACLNN operator API documentation
 ├── examples/               # Training/inference samples
-│   ├── arch22/             # A2/A3 samples
-│   └── arch35/             # A5 samples
 ├── tests/                  # Test code
-│   ├── test_spherical_harmonics.py      # Python tests
 │   ├── host/               # Host (CPU) tests
-│   └── kernel_tests/      # C++ operator tests
+│   └── kernels/            # C++ operator tests
+│   └── ops/                # Python operator tests
 └── README.md               # This document
 ```
 
@@ -209,7 +207,7 @@ Before running the tests, complete the compilation and installation as described
 
 ### Python Tests
 
-`tests/` contains the operator Python cases and `tests/host/` contains pure CPU cases. Run them outside the repository to avoid importing the source-tree `gauss_splat` package:
+`tests/` contains the operator cases and `tests/host/` contains pure CPU cases. Run them outside the repository to avoid importing the source-tree `gauss_splat` package:
 
 ```bash
 REPO=<absolute path to the gauss-splat repository>; cd /tmp
@@ -221,18 +219,18 @@ python -B -m unittest discover -s "$REPO/tests/host" -p 'test_*.py' -v
 
 ```bash
 cd <gauss-splat repository path>
-bash tests/kernel_tests/build_kernel_tests.sh   # Build; binaries go to tests/kernel_tests/build_out/
-bash tests/kernel_tests/run_kernel_tests.sh     # Run and print results
+bash tests/kernels/build_kernel_tests.sh   # Build; binaries go to tests/kernels/build_out/
+bash tests/kernels/run_kernel_tests.sh     # Run and print results
 ```
 
 > Notes:
 > - `build_kernel_tests.sh` links the package's `aclnn_*.h` into `${ASCEND_TOOLKIT_HOME}/include/aclnnop/`. If that directory is not writable the link fails with `aclnnop/...h: No such file or directory`; use a writable include directory or adjust the directory permissions.
-> - The render forward/backward operators are architecture-specific: A2/A3 uses `test_calc_render_fwd_double_clip_gsids` and `test_calc_render_bwd_var_clip_gsids`, while A5 uses `test_calc_render_simt_fwd`. The script automatically skips the cases that do not apply to the current build vendor (`customize`/`customize_arch35`).
+> - The render forward/backward operators are architecture-specific: A2/A3 uses `test_calc_render_fwd_double_clip_gsids` and `test_calc_render_bwd_var_clip_gsids`, while A5 uses `test_calc_render_fwd_clip_last_ids` and `test_calc_render_bwd_clip_last_ids`. The script automatically skips the cases that do not apply to the current build vendor (`customize`/`customize_arch35`).
 
 ## More Information
 
 - [Operator API Documentation](docs/en/kernels/): Detailed description of underlying ACLNN operators
-- [Operator Tests](tests/kernel_tests/): C++ test code (see the Testing section above for how to run)
+- [Operator Tests](tests/kernels/): C++ test code (see the Testing section above for how to run)
 - [Contribution Guide](CONTRIBUTING.md): How to participate in project development
 - [Security Statement](SECURITY.md): Security usage guide
 - [License](LICENSE): CANN Open Software License Agreement Version 2.0

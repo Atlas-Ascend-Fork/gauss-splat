@@ -1,12 +1,12 @@
 file(GLOB ASCEND_CSRC_SRC ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 
-# A5只编译SIMT渲染实现(CalcRenderSimt.cpp)，非A5只编译clip_gsids渲染实现(CalcRender.cpp)。
+# A5只编译SIMT渲染实现(CalcRenderClipLastids.cpp)，非A5只编译clip_gsids渲染实现(CalcRender.cpp)。
 if(USE_ARCH35 OR "ascend950" IN_LIST ASCEND_COMPUTE_UNIT)
   set(GSPLAT_ARCH_A5 ON)
   list(REMOVE_ITEM ASCEND_CSRC_SRC ${CMAKE_CURRENT_SOURCE_DIR}/CalcRender.cpp)
 else()
   set(GSPLAT_ARCH_A5 OFF)
-  list(REMOVE_ITEM ASCEND_CSRC_SRC ${CMAKE_CURRENT_SOURCE_DIR}/CalcRenderSimt.cpp)
+  list(REMOVE_ITEM ASCEND_CSRC_SRC ${CMAKE_CURRENT_SOURCE_DIR}/CalcRenderClipLastids.cpp)
 endif()
 
 if(BUILD_STAGE EQUAL 2)

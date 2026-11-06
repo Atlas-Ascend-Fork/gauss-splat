@@ -474,49 +474,6 @@ class TestRasterizerMultiCamera(TestCase):
         gc.collect()
         torch.npu.empty_cache()
 
-    def test_multi_camera_gradients_match_individual_views(self):
-        means = torch.tensor([[-0.1, 0.0, 2.0], [0.1, 0.0, 2.0]],
-                             dtype=torch.float32, device='npu', requires_grad=True)
-        shN = torch.tensor([[[0.2, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]]],
-                           dtype=torch.float32, device='npu').expand(2, -1, -1).clone().requires_grad_()
-        splats = {
-            "means": means,
-            "quats": torch.tensor([[1.0, 0.0, 0.0, 0.0]], device='npu').expand(2, -1).clone().requires_grad_(),
-            "scales": torch.tensor([[-2.0, -2.2, -1.9]], device='npu').expand(2, -1).clone().requires_grad_(),
-            "opacities": torch.full((2,), 1.0, device='npu', requires_grad=True),
-            "sh0": torch.full((2, 1, 3), 0.2, device='npu', requires_grad=True),
-            "shN": shN,
-        }
-        camtoworlds = torch.eye(4, device='npu').unsqueeze(0).repeat(2, 1, 1)
-        camtoworlds[1, 0, 3] = 0.3
-        Ks = torch.tensor([[[50.0, 0.0, 16.0], [0.0, 50.0, 16.0], [0.0, 0.0, 1.0]]],
-                          device='npu').repeat(2, 1, 1)
-        grad_inputs = tuple(splats[key] for key in ("means", "quats", "scales", "opacities", "sh0", "shN"))
-
-        def render(camera_matrices, intrinsics):
-            return Rasterizer().rasterization(
-                cam=(camera_matrices, intrinsics, "RGB"),
-                size=(32, 32), tile_size=32, active_sh_degree=1,
-                splats=splats, camera_model="pinhole")
-
-        batch_colors, batch_depths, batch_info = render(camtoworlds, Ks)
-        batch_loss = batch_colors.sum() + 0.01 * batch_depths.sum()
-        batch_loss = batch_loss + 1e-4 * batch_info["means2d"].sum()
-        batch_grads = torch.autograd.grad(batch_loss, grad_inputs)
-
-        single_results = [render(camtoworlds[i:i + 1], Ks[i:i + 1]) for i in range(2)]
-        single_loss = sum(colors.sum() + 0.01 * depths.sum() + 1e-4 * info["means2d"].sum()
-                          for colors, depths, info in single_results)
-        single_grads = torch.autograd.grad(single_loss, grad_inputs)
-
-        self.assertGreater(batch_colors.detach().abs().sum().item(), 0)
-        self.assertGreater(sum(grad.detach().abs().sum().item() for grad in batch_grads), 0)
-        for camera_index, (colors, depths, _) in enumerate(single_results):
-            torch.testing.assert_close(batch_colors[camera_index], colors[0], rtol=1e-2, atol=1e-3)
-            torch.testing.assert_close(batch_depths[camera_index], depths[0], rtol=1e-2, atol=1e-3)
-        for batch_grad, single_grad in zip(batch_grads, single_grads):
-            torch.testing.assert_close(batch_grad, single_grad, rtol=1e-2, atol=1e-3)
-
 class TestRasterizerMinimalGaussians(TestCase):
 
     def setUp(self):

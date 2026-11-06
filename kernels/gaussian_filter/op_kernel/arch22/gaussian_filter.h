@@ -422,6 +422,15 @@ template <const bool ISCOMPEXIST> __aicore__ inline void GaussianFilter<ISCOMPEX
     CompareScalar(maskTmpUINT8, depthsLocal, farPlane_, CMPMODE::LT, offset16);
     PipeBarrier<PIPE_V>();
     And(filter.ReinterpretCast<uint16_t>(), mask, maskTmp, Ceil(offset16, AscendCUtils::GetBitSize(sizeof(uint16_t))));
+    /* Clear bits beyond the valid element count in the last partial byte. */
+    uint32_t tailBits = static_cast<uint32_t>(element) % ALIGN_8;
+    if (tailBits != 0) {
+        SetWaitFlag<HardEvent::V_S>(HardEvent::V_S);
+        uint32_t byteIdx = static_cast<uint32_t>(element) / ALIGN_8;
+        uint8_t tailMask = static_cast<uint8_t>((1u << tailBits) - 1u);
+        filter.SetValue(byteIdx, static_cast<uint8_t>(filter.GetValue(byteIdx) & tailMask));
+        SetWaitFlag<HardEvent::S_MTE3>(HardEvent::S_MTE3);
+    }
 
     outQue0_.EnQue<uint8_t>(filter);
     inQue0_.FreeTensor(in0Local);

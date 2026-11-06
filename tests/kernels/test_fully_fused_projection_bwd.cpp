@@ -9,6 +9,7 @@
  */
 
 #include <iostream>
+#include <numeric>
 #include <vector>
 #include <cmath>
 #include <cstring>
@@ -19,6 +20,8 @@
 using namespace std;
 
 namespace {
+
+constexpr int64_t kGaussNum = 256;
 
 struct TensorResources {
     void* meansDeviceAddr = nullptr;
@@ -43,6 +46,16 @@ struct TensorResources {
     void* v_ksDeviceAddr = nullptr;
     void* dL_dviDeviceAddr = nullptr;
     void* dL_dsigmaDeviceAddr = nullptr;
+    // A5 optional inputs: the A5 kernel reads all of them unconditionally, so the test
+    // has to provide real tensors instead of nullptr.
+    void* compensationsDeviceAddr = nullptr;
+    void* vViCullingDeviceAddr = nullptr;
+    void* opacitiesDeviceAddr = nullptr;
+    void* viDeviceAddr = nullptr;
+    void* sigmaDeviceAddr = nullptr;
+    void* depthsDeviceAddr = nullptr;
+    void* denseIndicesDeviceAddr = nullptr;
+    void* cntDeviceAddr = nullptr;
 
     aclTensor* meansTensor = nullptr;
     aclTensor* quatsTensor = nullptr;
@@ -66,12 +79,20 @@ struct TensorResources {
     aclTensor* v_ksTensor = nullptr;
     aclTensor* dL_dviTensor = nullptr;
     aclTensor* dL_dsigmaTensor = nullptr;
+    aclTensor* compensationsTensor = nullptr;
+    aclTensor* vViCullingTensor = nullptr;
+    aclTensor* opacitiesTensor = nullptr;
+    aclTensor* viTensor = nullptr;
+    aclTensor* sigmaTensor = nullptr;
+    aclTensor* depthsTensor = nullptr;
+    aclTensor* denseIndicesTensor = nullptr;
+    aclTensor* cntTensor = nullptr;
 };
 
 int InitializeTensors(TensorResources& resources) {
     int64_t batchSize = 1;
     int64_t cameraNum = 1;
-    int64_t gaussNum = 256;
+    int64_t gaussNum = kGaussNum;
     
     std::vector<int64_t> meansShape = {batchSize, 3, gaussNum};
     std::vector<int64_t> quatsShape = {batchSize, 4, gaussNum};
@@ -84,7 +105,12 @@ int InitializeTensors(TensorResources& resources) {
     std::vector<int64_t> v_conicsShape = {batchSize, cameraNum, 3, gaussNum};
     std::vector<int64_t> v_colors_cullingShape = {batchSize, 3, gaussNum};
     std::vector<int64_t> v_opacities_cullingShape = {batchSize, gaussNum};
+#ifdef ASCEND_COMPUTE_UNI_A5
+    // A5 uses a FLOAT 0/1 mask with one flag per gaussian; A2/A3 uses a packed UINT8 bitmap.
     std::vector<int64_t> filterShape = {batchSize, cameraNum, gaussNum};
+#else
+    std::vector<int64_t> filterShape = {batchSize, cameraNum, (gaussNum + 7) / 8};
+#endif
     std::vector<int64_t> v_pWShape = {batchSize, 3, gaussNum};
     std::vector<int64_t> v_quatsShape = {batchSize, 4, gaussNum};
     std::vector<int64_t> v_scalesShape = {batchSize, 3, gaussNum};
@@ -107,7 +133,11 @@ int InitializeTensors(TensorResources& resources) {
     std::vector<float> v_conicsHostData(GetShapeSize(v_conicsShape), 1.0f);
     std::vector<float> v_colors_cullingHostData(GetShapeSize(v_colors_cullingShape), 1.0f);
     std::vector<float> v_opacities_cullingHostData(GetShapeSize(v_opacities_cullingShape), 1.0f);
+#ifdef ASCEND_COMPUTE_UNI_A5
+    std::vector<float> filterHostData(GetShapeSize(filterShape), 1.0f);
+#else
     std::vector<uint8_t> filterHostData(GetShapeSize(filterShape), 1);
+#endif
     std::vector<float> v_pWHostData(GetShapeSize(v_pWShape), 0.0f);
     std::vector<float> v_quatsHostData(GetShapeSize(v_quatsShape), 0.0f);
     std::vector<float> v_scalesHostData(GetShapeSize(v_scalesShape), 0.0f);
@@ -163,9 +193,54 @@ int InitializeTensors(TensorResources& resources) {
                           aclDataType::ACL_FLOAT, &resources.v_opacities_cullingTensor);
     if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
 
+#ifdef ASCEND_COMPUTE_UNI_A5
+    ret = CreateAclTensor(filterHostData, filterShape, &resources.filterDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.filterTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+#else
     ret = CreateAclTensor(filterHostData, filterShape, &resources.filterDeviceAddr,
                           aclDataType::ACL_UINT8, &resources.filterTensor);
     if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+#endif
+
+#ifdef ASCEND_COMPUTE_UNI_A5
+    std::vector<int64_t> sliceShape = {batchSize * cameraNum, gaussNum};
+    std::vector<int64_t> sigmaShape = {1};
+    std::vector<float> compensationsHostData(GetShapeSize(sliceShape), 1.0f);
+    std::vector<float> vViCullingHostData(GetShapeSize(sliceShape), 0.0f);
+    std::vector<float> opacitiesHostData(GetShapeSize(sliceShape), 1.0f);
+    std::vector<float> viHostData(GetShapeSize(sliceShape), 1.0f);
+    std::vector<float> sigmaHostData(GetShapeSize(sigmaShape), 1.0f);
+    std::vector<float> depthsHostData(GetShapeSize(sliceShape), 0.0f);
+    std::vector<int32_t> denseIndicesHostData(GetShapeSize(sliceShape));
+    std::iota(denseIndicesHostData.begin(), denseIndicesHostData.end(), 0);
+    std::vector<int32_t> cntHostData(batchSize * cameraNum, static_cast<int32_t>(gaussNum));
+
+    ret = CreateAclTensor(compensationsHostData, sliceShape, &resources.compensationsDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.compensationsTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+    ret = CreateAclTensor(vViCullingHostData, sliceShape, &resources.vViCullingDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.vViCullingTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+    ret = CreateAclTensor(opacitiesHostData, sliceShape, &resources.opacitiesDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.opacitiesTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+    ret = CreateAclTensor(viHostData, sliceShape, &resources.viDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.viTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+    ret = CreateAclTensor(sigmaHostData, sigmaShape, &resources.sigmaDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.sigmaTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+    ret = CreateAclTensor(depthsHostData, sliceShape, &resources.depthsDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.depthsTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+    ret = CreateAclTensor(denseIndicesHostData, sliceShape, &resources.denseIndicesDeviceAddr,
+                          aclDataType::ACL_INT32, &resources.denseIndicesTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+    ret = CreateAclTensor(cntHostData, {batchSize * cameraNum}, &resources.cntDeviceAddr,
+                          aclDataType::ACL_INT32, &resources.cntTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+#endif
 
     ret = CreateAclTensor(v_pWHostData, v_pWShape, &resources.v_pWDeviceAddr,
                           aclDataType::ACL_FLOAT, &resources.v_pWTensor);
@@ -216,14 +291,38 @@ int ExecuteFullyFusedProjectionBwd(TensorResources& resources, aclrtStream strea
     int64_t height = 600;
     aclOpExecutor* executor;
 
+#ifdef ASCEND_COMPUTE_UNI_A5
+    // Identity compact mapping: every gaussian is visible, so the dense and compact
+    // layouts coincide and the kernel can scatter the gradients back unchanged.
+    const int64_t maxCompactCount = kGaussNum;
+    aclTensor* compensations = resources.compensationsTensor;
+    aclTensor* vViCulling = resources.vViCullingTensor;
+    aclTensor* opacities = resources.opacitiesTensor;
+    aclTensor* vi = resources.viTensor;
+    aclTensor* sigma = resources.sigmaTensor;
+    aclTensor* depths = resources.depthsTensor;
+    aclTensor* denseIndices = resources.denseIndicesTensor;
+    aclTensor* cnt = resources.cntTensor;
+#else
+    const int64_t maxCompactCount = 0;
+    aclTensor* compensations = nullptr;
+    aclTensor* vViCulling = nullptr;
+    aclTensor* opacities = nullptr;
+    aclTensor* vi = nullptr;
+    aclTensor* sigma = nullptr;
+    aclTensor* depths = nullptr;
+    aclTensor* denseIndices = nullptr;
+    aclTensor* cnt = nullptr;
+#endif
+
     int ret = aclnnFullyFusedProjectionBwdGetWorkspaceSize(
         resources.meansTensor, resources.quatsTensor, resources.scalesTensor,
         resources.conicsTensor, resources.viewmatsTensor, resources.ksTensor,
         resources.v_means2dTensor, resources.v_depthsTensor, resources.v_conicsTensor,
         resources.v_colors_cullingTensor, resources.v_opacities_cullingTensor,
         resources.filterTensor,
-        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-        width, height, 0 /* maxCompactCount */, 0 /* supportFeatures */,
+        compensations, vViCulling, opacities, vi, sigma, depths, denseIndices, cnt,
+        width, height, maxCompactCount, 0 /* supportFeatures */,
         resources.v_pWTensor, resources.v_quatsTensor, resources.v_scalesTensor,
         resources.v_RTensor, resources.v_colorsTensor, resources.v_opacitiesTensor,
         resources.v_viewmatsTensor, resources.v_ksTensor,
@@ -273,6 +372,14 @@ void CleanupResources(TensorResources& resources, void* workspaceAddr,
     if (resources.v_ksTensor) aclDestroyTensor(resources.v_ksTensor);
     if (resources.dL_dviTensor) aclDestroyTensor(resources.dL_dviTensor);
     if (resources.dL_dsigmaTensor) aclDestroyTensor(resources.dL_dsigmaTensor);
+    if (resources.compensationsTensor) aclDestroyTensor(resources.compensationsTensor);
+    if (resources.vViCullingTensor) aclDestroyTensor(resources.vViCullingTensor);
+    if (resources.opacitiesTensor) aclDestroyTensor(resources.opacitiesTensor);
+    if (resources.viTensor) aclDestroyTensor(resources.viTensor);
+    if (resources.sigmaTensor) aclDestroyTensor(resources.sigmaTensor);
+    if (resources.depthsTensor) aclDestroyTensor(resources.depthsTensor);
+    if (resources.denseIndicesTensor) aclDestroyTensor(resources.denseIndicesTensor);
+    if (resources.cntTensor) aclDestroyTensor(resources.cntTensor);
 
     if (resources.meansDeviceAddr) aclrtFree(resources.meansDeviceAddr);
     if (resources.quatsDeviceAddr) aclrtFree(resources.quatsDeviceAddr);
@@ -296,6 +403,14 @@ void CleanupResources(TensorResources& resources, void* workspaceAddr,
     if (resources.v_ksDeviceAddr) aclrtFree(resources.v_ksDeviceAddr);
     if (resources.dL_dviDeviceAddr) aclrtFree(resources.dL_dviDeviceAddr);
     if (resources.dL_dsigmaDeviceAddr) aclrtFree(resources.dL_dsigmaDeviceAddr);
+    if (resources.compensationsDeviceAddr) aclrtFree(resources.compensationsDeviceAddr);
+    if (resources.vViCullingDeviceAddr) aclrtFree(resources.vViCullingDeviceAddr);
+    if (resources.opacitiesDeviceAddr) aclrtFree(resources.opacitiesDeviceAddr);
+    if (resources.viDeviceAddr) aclrtFree(resources.viDeviceAddr);
+    if (resources.sigmaDeviceAddr) aclrtFree(resources.sigmaDeviceAddr);
+    if (resources.depthsDeviceAddr) aclrtFree(resources.depthsDeviceAddr);
+    if (resources.denseIndicesDeviceAddr) aclrtFree(resources.denseIndicesDeviceAddr);
+    if (resources.cntDeviceAddr) aclrtFree(resources.cntDeviceAddr);
 
     if (workspaceAddr) aclrtFree(workspaceAddr);
     if (stream) aclrtDestroyStream(stream);

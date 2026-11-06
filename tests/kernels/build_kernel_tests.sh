@@ -83,6 +83,11 @@ mkdir -p ${WORKDIR}
 
 CXX=g++
 CXXFLAGS="-std=c++11 -g -O0 -D_GLIBCXX_USE_CXX11_ABI=0"
+# Let the kernel tests adapt to the operator contract of the built vendor (A5 uses a
+# FLOAT filter mask and requires the optional inputs to be materialized).
+if [ "${VENDOR_NAME}" = "customize_arch35" ]; then
+    CXXFLAGS="${CXXFLAGS} -DASCEND_COMPUTE_UNI_A5"
+fi
 INCLUDES="-I${CANN_PATH}/include -I${OPAPI_INC}"
 
 LIB_DIRS="-L${CANN_PATH}/lib64 \

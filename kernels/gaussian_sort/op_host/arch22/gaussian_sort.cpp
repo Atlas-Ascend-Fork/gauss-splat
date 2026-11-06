@@ -90,7 +90,14 @@ static ge::graphStatus TilingForGaussianSort(gert::TilingContext *context)
     if (vectorNum == 0) {
         return ge::GRAPH_FAILED;
     }
-    uint32_t blockDim = (tileNum > vectorNum) ? vectorNum : tileNum;
+    // The schedule embeds its bin count before the two tile-sized sections.
+    // The kernel reads `blockNum` core offsets from the schedule prefix, so
+    // blockDim must equal num_bins, not min(tileNum, vectorNum).
+    uint64_t tileFields = 2ULL * tileNum;
+    if (scheduleNum <= tileFields || scheduleNum - tileFields > vectorNum) {
+        return ge::GRAPH_FAILED;
+    }
+    uint32_t blockDim = static_cast<uint32_t>(scheduleNum - tileFields);
     uint64_t ubSize;
     platformInfo.GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubSize);
     uint32_t maxSortNum = ubSize / (SORT_TENSOR_NUM * SIZE_OF_FLOAT);

@@ -161,7 +161,16 @@ class TestSphericalHarmonicsForward(TestCase):
             [3, 21983],
             [5, 89210],
             [1, 119987],
-            [6, 40000]
+            [6, 40000],
+            # Small / non-multiple-of-ALIGN_VALUE task counts exercise the tail path,
+            # which previously copied the padded (aligned) length and went out of bounds.
+            [1, 1],
+            [1, 2],
+            [1, 3],
+            [1, 7],
+            [1, 8],
+            [1, 9],
+            [2, 17],
         ]
         self.test_results = self.gen_results()
 
@@ -231,6 +240,17 @@ class TestSphericalHarmonicsForward(TestCase):
     def test_spherical_harmonics_forward(self):
         for cpu_results, npu_results in self.test_results:
             self.assertRtolEqual(cpu_results.output.cpu().numpy(), npu_results.output.cpu().numpy())
+
+    def test_spherical_harmonics_repeated_call_is_stable(self):
+        # The A5 degree 1-4 tail path used to read/write past the padded task range, so
+        # the same input could produce different results depending on the memory layout.
+        torch.manual_seed(0)
+        dirs = torch.randn(1, 2, 3)
+        dirs = dirs / dirs.norm(dim=-1, keepdim=True)
+        coeffs = torch.randn(1, 2, 4, 3)
+        out1 = spherical_harmonics(1, dirs.npu(), coeffs.npu()).cpu().numpy()
+        out2 = spherical_harmonics(1, dirs.npu(), coeffs.npu()).cpu().numpy()
+        self.assertRtolEqual(out1, out2, prec=0.0)
 
 if __name__ == "__main__":
     run_tests()

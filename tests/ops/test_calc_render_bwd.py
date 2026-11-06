@@ -227,6 +227,7 @@ def render_with_gsids(img_size, gs_attr, tile_offsets, sorted_gs_ids, tile_size)
 
 class TestCalcRenderForwardDoubleClipGsids(TestCase):
     def setUp(self):
+        torch.manual_seed(1234)
         self.test_cases = [
             [102000, 32 * 3, 32 * 4, 32],
         ]
@@ -252,7 +253,8 @@ class TestCalcRenderForwardDoubleClipGsids(TestCase):
         means2d = torch.cat([mean_x, mean_y], dim=1)
         colors = torch.rand((n_gs, 3)).npu()
         opacities = torch.rand((n_gs, 1)).npu()
-        cov2d = torch.rand((n_gs, 2, 2)).npu()
+        cov_scale = torch.rand((n_gs, 1, 1)).npu() * 0.5 + 0.1
+        cov2d = cov_scale * torch.eye(2, device=cov_scale.device)
 
         cov2d_00, cov2d_01, cov2d_11 = cov2d[:, 0, 0], cov2d[:, 0, 1], cov2d[:, 1, 1]
         conics_0, conics_1, conics_2 = inverse_cov2d_v2(cov2d_00, cov2d_01, cov2d_11)

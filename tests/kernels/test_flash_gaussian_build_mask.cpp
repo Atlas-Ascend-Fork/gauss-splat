@@ -20,6 +20,14 @@ using namespace std;
 
 namespace {
 
+// The tiling derives numTile = ceil(H / tile_size) * ceil(W / tile_size) from the
+// attrs and rejects any tile_grid / output shape that does not match it.
+constexpr int64_t kImageWidth = 800;
+constexpr int64_t kImageHeight = 600;
+constexpr int64_t kTileSize = 16;
+constexpr int64_t kNumTile = ((kImageHeight + kTileSize - 1) / kTileSize) *
+                             ((kImageWidth + kTileSize - 1) / kTileSize);
+
 struct TensorResources {
     void* means2dDeviceAddr = nullptr;
     void* opacityDeviceAddr = nullptr;
@@ -50,16 +58,21 @@ int InitializeTensors(TensorResources& resources) {
     int64_t batchSize = 1;
     int64_t cameraNum = 1;
     int64_t gaussNum = 256;
-    int64_t numTile = 50;
-    
+    int64_t numTile = kNumTile;
+    // gather_mask has one scratch row per active AIV core; query the real core count.
+    int64_t coreNum = 0;
+    const aclError infoRet = aclrtGetDeviceInfo(0, ACL_DEV_ATTR_VECTOR_CORE_NUM, &coreNum);
+    const int64_t blockNum = (infoRet == ACL_SUCCESS && coreNum > 0) ? coreNum : 64;
+
     std::vector<int64_t> means2dShape = {batchSize, cameraNum, 2, gaussNum};
     std::vector<int64_t> opacityShape = {batchSize, cameraNum, 1, gaussNum};
     std::vector<int64_t> conicsShape = {batchSize, cameraNum, 3, gaussNum};
     std::vector<int64_t> covars2dShape = {batchSize, cameraNum, 3, gaussNum};
-    std::vector<int64_t> depthsShape = {batchSize, cameraNum, gaussNum};
+    // depths must be rank 4: (B, C, 1, N)
+    std::vector<int64_t> depthsShape = {batchSize, cameraNum, 1, gaussNum};
     std::vector<int64_t> cntShape = {batchSize, cameraNum, 1};
     std::vector<int64_t> tileGridShape = {numTile, 2};
-    std::vector<int64_t> gatherMaskShape = {48, 20, gaussNum};
+    std::vector<int64_t> gatherMaskShape = {blockNum, 20, gaussNum};
     std::vector<int64_t> tileSumShape = {1, 1, numTile, 1};
     std::vector<int64_t> tileDepthsShape = {batchSize, cameraNum, numTile, gaussNum};
     std::vector<int64_t> gaussIndexShape = {batchSize, cameraNum, numTile, gaussNum};
@@ -125,9 +138,9 @@ int InitializeTensors(TensorResources& resources) {
 
 int ExecuteFlashGaussianBuildMask(TensorResources& resources, aclrtStream stream,
                                    void** workspaceAddr, uint64_t* workspaceSize) {
-    float imageWidth = 800.0f;
-    float imageHeight = 600.0f;
-    int64_t tileSize = 16;
+    float imageWidth = static_cast<float>(kImageWidth);
+    float imageHeight = static_cast<float>(kImageHeight);
+    int64_t tileSize = kTileSize;
     aclOpExecutor* executor;
 
     int ret = aclnnFlashGaussianBuildMaskGetWorkspaceSize(
@@ -196,7 +209,7 @@ int main() {
     TensorResources resources = {};
     void* workspaceAddr = nullptr;
     uint64_t workspaceSize = 0;
-    std::vector<int64_t> tileSumShape = {50};
+    std::vector<int64_t> tileSumShape = {kNumTile};
     int ret = ACL_SUCCESS;
 
     ret = Init(deviceId, &stream);

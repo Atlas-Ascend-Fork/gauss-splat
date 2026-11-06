@@ -36,6 +36,7 @@ from torch import Tensor
 
 from gauss_splat.gsplat_c import fully_fused_projection_bwd
 from gauss_splat.ops.rast_ctx import RastCtx
+from gauss_splat import gsplat_c
 
 torch.npu.set_device('npu:0')
 torch.set_printoptions(sci_mode=False)
@@ -386,6 +387,8 @@ class TestProjection3DGSBackward(TestCase):
 
 
     def npu_to_exec(self, inputs, width, height):
+        if getattr(gsplat_c, "use_arch35", False):
+            return self._npu_to_exec_arch35(inputs, width, height)
         means = inputs.means.npu()
         quats = inputs.quats.npu()
         scales = inputs.scales.npu()
@@ -424,13 +427,85 @@ class TestProjection3DGSBackward(TestCase):
             v_opacities=v_opacities.detach().float(),
         )
 
+    def _npu_to_exec_arch35(self, inputs, width, height):
+        """A5 runs the compact (culled) layout: per-gaussian attributes are packed in
+        front of every (batch, camera) slice and the gradients are scattered back to
+        the dense layout through cnt/dense_indices. This matches the contract of the
+        production forward -> filter -> backward chain; the A2/A3 dense layout and the
+        packed UINT8 filter are not valid inputs for the A5 kernel."""
+        b, _, n = inputs.means.shape
+        c = inputs.viewmats.shape[1]
+        bc = b * c
+
+        bits = np.unpackbits(inputs.proj_filter.numpy(), axis=-1, bitorder="little")[..., :n]
+        mask = torch.from_numpy(bits.astype(bool)).reshape(bc, n)
+        cnt = mask.sum(-1).to(torch.int32)
+        max_compact_count = max(1, int(cnt.max().item()))
+        dense_indices = torch.zeros(bc, max_compact_count, dtype=torch.int32)
+        for i in range(bc):
+            indices = mask[i].nonzero(as_tuple=False).flatten().to(torch.int32)
+            dense_indices[i, :indices.numel()] = indices
+
+        def _compact(values):
+            compacted = torch.zeros_like(values)
+            for i in range(bc):
+                compacted[i, ..., :cnt[i]] = values[i, ..., mask[i]]
+            return compacted
+
+        def _per_camera(values, dim):
+            expanded = values.unsqueeze(1).expand(b, c, dim, n).reshape(bc, dim, n)
+            return _compact(expanded)
+
+        means = _per_camera(inputs.means, 3).npu()
+        quats = _per_camera(inputs.quats, 4).npu()
+        scales = _per_camera(inputs.scales, 3).npu()
+        conics = _compact(inputs.conics.reshape(bc, 3, n)).npu()
+        proj_filter = torch.from_numpy(bits.astype(np.float32)).npu()
+        if inputs.compensations is not None:
+            compensations = _compact(inputs.compensations.reshape(bc, n)).npu()
+        else:
+            compensations = None
+
+        rast_ctx = RastCtx()
+        rast_ctx.proj_backward_culling = True
+        rast_ctx.prealloc_if_need(b, c, n, means.device)
+        outputs = rast_ctx.outputs_for_proj_backward()
+        for output in outputs:
+            output.zero_()
+        v_p_w, v_quats, v_scales, v_r, v_colors, v_opacities, *_ = fully_fused_projection_bwd(
+            means, quats, scales, conics,
+            inputs.viewmats.reshape(bc, 16).npu(), inputs.ks.reshape(bc, 9).npu(),
+            inputs.v_means2d.reshape(bc, 2, n).npu(), inputs.v_depths.reshape(bc, n).npu(),
+            inputs.v_conics.reshape(bc, 3, n).npu(), inputs.v_colors_culling.reshape(bc, 3, n).npu(),
+            inputs.v_opacities_culling.reshape(bc, n).npu(), proj_filter, compensations,
+            None, None, None, None, None,
+            dense_indices.npu(), cnt.npu(),
+            width, height, max_compact_count, 1 << 2, outputs)  # bit2: compact layout
+        return ExecResults(
+            v_p_w=v_p_w.detach().float(),
+            v_quats=v_quats.detach().float(),
+            v_scales=v_scales.detach().float(),
+            v_r=v_r.detach().float(),
+            v_colors=v_colors.detach().float(),
+            v_opacities=v_opacities.detach().float(),
+        )
+
     def test_projection_3dgs_bwd(self):
+        arch35 = getattr(gsplat_c, "use_arch35", False)
+
+        def _npu(name, value):
+            tensor = value.cpu()
+            if arch35 and name in ("v_p_w", "v_quats", "v_scales"):
+                # A5 returns (B, dim, N); the CPU reference keeps the (B, N, dim) layout.
+                tensor = tensor.permute(0, 2, 1).contiguous()
+            return tensor.numpy()
+
         for cpu_results, npu_results in self.test_results:
-            self.assertRtolEqual(cpu_results.v_p_w.numpy(), npu_results.v_p_w.cpu().numpy(), prec=1.e-2)
-            self.assertRtolEqual(cpu_results.v_quats.numpy(), npu_results.v_quats.cpu().numpy(), prec=2.e-1)
-            self.assertRtolEqual(cpu_results.v_scales.numpy(), npu_results.v_scales.cpu().numpy(), prec=5.e-1)
-            self.assertRtolEqual(cpu_results.v_colors.numpy(), npu_results.v_colors.cpu().numpy(), prec=1.e-3)
-            self.assertRtolEqual(cpu_results.v_opacities.numpy(), npu_results.v_opacities.cpu().numpy(), prec=1.e-3)
+            self.assertRtolEqual(cpu_results.v_p_w.numpy(), _npu("v_p_w", npu_results.v_p_w), prec=1.e-2)
+            self.assertRtolEqual(cpu_results.v_quats.numpy(), _npu("v_quats", npu_results.v_quats), prec=2.e-1)
+            self.assertRtolEqual(cpu_results.v_scales.numpy(), _npu("v_scales", npu_results.v_scales), prec=5.e-1)
+            self.assertRtolEqual(cpu_results.v_colors.numpy(), _npu("v_colors", npu_results.v_colors), prec=1.e-3)
+            self.assertRtolEqual(cpu_results.v_opacities.numpy(), _npu("v_opacities", npu_results.v_opacities), prec=1.e-3)
 
 class TestProjectionAutogradEndToEnd(unittest.TestCase):
     """Exercise public forward -> filter -> loss.backward with real NPU ops."""

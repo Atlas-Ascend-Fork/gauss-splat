@@ -100,9 +100,8 @@ class RastCtx:
         if outputs["means_culling"] is None or self.last_N != N:
             outputs["means_culling"] = torch.empty((B, C, 3, N), device=device, dtype=torch.float32)
 
-        colors_culling_dim = 7 if self.proj_backward_culling else 3
         if outputs["colors_culling"] is None or self.last_N != N:
-            outputs["colors_culling"] = torch.empty((B, C, colors_culling_dim, N), device=device, dtype=torch.float32)
+            outputs["colors_culling"] = torch.empty((B, C, 3, N), device=device, dtype=torch.float32)
 
         if outputs["means2d_culling"] is None or self.last_N != N:
             outputs["means2d_culling"] = torch.empty((B, C, 2, N), device=device, dtype=torch.float32)

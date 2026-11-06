@@ -83,8 +83,33 @@ gaussian_filter(at::Tensor &means, at::Tensor &colors, at::Tensor &det, at::Tens
     at::Tensor filterFloat = outputs[14];
     at::Tensor denseIndices = outputs[15];
 
+    // The A5 kernel reads these optional inputs unconditionally, so materialize neutral
+    // defaults here (front-end) to guarantee the kernel never sees a nullptr.
+    const int64_t batchNum = det.size(0);
+    const int64_t cameraNum = det.size(1);
+    const int64_t gaussNum = det.size(2);
+    auto optOptions = means.options();
+
+    at::Tensor compensationsTensor =
+        (compensations.has_value() && compensations->defined()) ? *compensations
+                                                                : at::ones({batchNum, cameraNum, gaussNum}, optOptions);
+    const bool hasQuat = quat.has_value() && quat->defined();
+    at::Tensor quatsTensor = hasQuat ? *quat : at::zeros({batchNum, 4, gaussNum}, optOptions);
+    if (!hasQuat) {
+        quatsTensor.select(1, 0).fill_(1.0);
+    }
+    at::Tensor scalesTensor =
+        (scales.has_value() && scales->defined()) ? *scales : at::ones({batchNum, 3, gaussNum}, optOptions);
+    at::Tensor viTensor =
+        (vi.has_value() && vi->defined()) ? *vi : at::ones({batchNum, cameraNum, gaussNum}, optOptions);
+    if ((support_features & 1) != 0 && !(sigma.has_value() && sigma->defined())) {
+        TORCH_CHECK(false, "sigma is required when depth correction is enabled.");
+    }
+    at::Tensor sigmaTensor = (sigma.has_value() && sigma->defined()) ? *sigma : at::ones({1}, optOptions);
+
     EXEC_NPU_CMD(aclnnGaussianFilter, means, colors, det, opacities, means2d, depths, radius, conics, covars2d,
-                compensations, quat, scales, vi, sigma, width, height, near_plane, far_plane, support_features,
+                compensationsTensor, quatsTensor, scalesTensor, viTensor, sigmaTensor, width, height, near_plane,
+                far_plane, support_features,
                 meansCulling, colorsCulling, means2dCulling, depthsCulling, radiusCulling,
                 covars2dCulling, conicsCulling, opacitiesCulling, quatsCulling, scalesCulling,
                 viCulling, compensationsCulling, filter, cntFloat, filterFloat, denseIndices);

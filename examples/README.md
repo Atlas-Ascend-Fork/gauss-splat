@@ -10,10 +10,10 @@
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
 
 # Ascend910B / Atlas A2/A3
-bash build.sh --python=3.9
+bash build.sh --python=3.12
 
 # Ascend950 / Atlas A5
-bash build.sh --python=3.9 --a5
+bash build.sh --python=3.12 --a5
 
 pip install dist/*.whl --force-reinstall
 cd examples

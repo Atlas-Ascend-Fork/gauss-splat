@@ -37,8 +37,52 @@ static const int64_t VSCALES_DIM = 3;
 static const int64_t VR_DIM = 3;
 static const int64_t VCOLOR_DIM = 3;
 static const int64_t VCOLOR_EXT_DIM = 6;
+static const uint32_t SF_DEPTH_CORRECT = (1 << 0);
 static const uint32_t SF_PROJ_BACKWARD_CULLING = (1 << 2);
 constexpr int32_t OUTPUT_NUM = 10;
+
+void AllocOptionalInputs(
+    const at::Tensor &filter, const at::Tensor &means, int32_t support_features,
+    c10::optional<at::Tensor> &compensations, c10::optional<at::Tensor> &v_vi_culling,
+    c10::optional<at::Tensor> &opacities, c10::optional<at::Tensor> &vi,
+    c10::optional<at::Tensor> &sigma, c10::optional<at::Tensor> &depths)
+{
+#ifdef ASCEND_COMPUTE_UNI_A5
+    TORCH_CHECK(filter.scalar_type() == at::kFloat,
+                "A5 requires 'filter' to be a FLOAT mask with shape (B, C, N); "
+                "the packed UINT8 bitmap is only supported on Atlas A2/A3.");
+    const int64_t sliceNum = filter.size(B_IDX) * filter.size(C_IDX);
+    const int64_t gaussNum = means.size(N_IDX);
+    auto optOptions = means.options();
+
+    const bool hasVi = vi.has_value() && vi->defined();
+    const bool hasSigma = sigma.has_value() && sigma->defined();
+    const bool hasDepths = depths.has_value() && depths->defined();
+
+    if (!compensations.has_value() || !compensations->defined()) {
+        compensations = at::ones({sliceNum, gaussNum}, optOptions);
+    }
+    if (!v_vi_culling.has_value() || !v_vi_culling->defined()) {
+        v_vi_culling = at::zeros({sliceNum, gaussNum}, optOptions);
+    }
+    if (!opacities.has_value() || !opacities->defined()) {
+        opacities = at::ones({sliceNum, gaussNum}, optOptions);
+    }
+    if (!hasVi) {
+        vi = at::ones({sliceNum, gaussNum}, optOptions);
+    }
+    if (!hasDepths) {
+        depths = at::zeros({sliceNum, gaussNum}, optOptions);
+    }
+    if ((support_features & SF_DEPTH_CORRECT) != 0) {
+        TORCH_CHECK(hasVi && hasSigma && hasDepths,
+                    "vi, sigma and depths are required when depth correction is enabled.");
+    }
+    if (!hasSigma) {
+        sigma = at::ones({1}, optOptions);
+    }
+#endif
+}
 } // namespace
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
@@ -64,8 +108,6 @@ fully_fused_projection_bwd(
     TORCH_CHECK(v_colors_culling.device() == means.device(), "Inconsistent device.");
     TORCH_CHECK(v_opacities_culling.device() == means.device(), "Inconsistent device.");
     TORCH_CHECK(filter.device() == means.device(), "Inconsistent device.");
-
-    auto device = means.device();
 
     TORCH_CHECK(means.dim() == MEANS_DIM, "means's dim should be 3.");
     TORCH_CHECK(quats.dim() == QUATS_DIM, "quats's dim should be 3.");
@@ -102,10 +144,25 @@ fully_fused_projection_bwd(
     at::Tensor dL_dvi = outputs[8];
     at::Tensor dL_dsigma = outputs[9];
 
+    // Optional inputs stay untouched on arch22 (its tiling records their presence and
+    // the kernel branches accordingly). The A5 kernel has no presence branch and reads
+    // all of them unconditionally, so materialize neutral defaults here (front-end) to
+    // guarantee it never sees a nullptr.
+    c10::optional<at::Tensor> compensationsArg = compensations;
+    c10::optional<at::Tensor> vViCullingArg = v_vi_culling;
+    c10::optional<at::Tensor> opacitiesArg = opacities;
+    c10::optional<at::Tensor> viArg = vi;
+    c10::optional<at::Tensor> sigmaArg = sigma;
+    c10::optional<at::Tensor> depthsArg = depths;
+
+    AllocOptionalInputs(filter, means, support_features, compensationsArg, vViCullingArg, opacitiesArg, viArg,
+                        sigmaArg, depthsArg);
+
     EXEC_NPU_CMD(aclnnFullyFusedProjectionBwd, means, quats, scales, conics, viewmats, Ks, v_means2d, v_depths,
-                 v_conics, v_colors_culling, v_opacities_culling, filter, compensations, v_vi_culling, opacities,
-                 vi, sigma, depths, dense_indices, cnt, width, height, max_compact_count, support_features,
-                 v_pW, v_quats, v_scales, v_R, v_colors, v_opacities, v_viewmats, v_ks, dL_dvi, dL_dsigma);
+                 v_conics, v_colors_culling, v_opacities_culling, filter, compensationsArg, vViCullingArg, opacitiesArg,
+                 viArg, sigmaArg, depthsArg, dense_indices, cnt, width, height, max_compact_count,
+                 support_features, v_pW, v_quats, v_scales, v_R, v_colors, v_opacities, v_viewmats, v_ks, dL_dvi,
+                 dL_dsigma);
 
     return std::tie(v_pW, v_quats, v_scales, v_R, v_colors, v_opacities, v_viewmats, v_ks, dL_dvi, dL_dsigma);
 }

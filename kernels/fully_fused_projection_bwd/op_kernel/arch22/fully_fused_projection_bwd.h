@@ -372,7 +372,7 @@ __aicore__ inline void FullyFusedProjectionBwd::CalcCntPerCore(int32_t i)
         }
         if (lastLoopN_ > 0) {
             LocalTensor<uint8_t> filterLocalIn = copyInTensor.ReinterpretCast<uint8_t>();
-            uint32_t len = lastLoopN_ / FILTER_ALIGNCONST * sizeof(uint8_t);
+            uint32_t len = Ceil(lastLoopN_, FILTER_ALIGNCONST) * sizeof(uint8_t);
             int64_t offsetGm = i * C_ * (Ceil(N_, FILTER_ALIGNCONST)) + j * (Ceil(N_, FILTER_ALIGNCONST)) +
                                perCoreN_ / FILTER_ALIGNCONST * blockIdx + perLoopN_ / FILTER_ALIGNCONST * k;
             DataCopyExtParams dataCopyParams{static_cast<uint16_t>(1), static_cast<uint32_t>(len), 0, 0, 0};

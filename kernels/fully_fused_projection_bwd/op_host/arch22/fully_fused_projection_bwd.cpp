@@ -60,11 +60,21 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     if (maxCoreNum != 0) {
         blockLength = ((gaussNum + maxCoreNum - 1) / maxCoreNum + ONE_BLOCK_FLOAT - 1) /
                         ONE_BLOCK_FLOAT * ONE_BLOCK_FLOAT;
+        // The backward reverse-filter uses a 32-element sort/gather block. Keep every
+        // core chunk at least one full block so small N does not corrupt the compact
+        // index mapping.
+        blockLength = (blockLength + 31) / 32 * 32;
     } else {
         return ge::GRAPH_FAILED;
     }
     if (blockLength != 0) {
-        maxCoreNum = (gaussNum + blockLength - 1) / blockLength;
+        // Use floor so the last core absorbs the remainder. Ceil can create a
+        // 1-element tail core, which is not supported by the 32-element reverse
+        // filter/sort block.
+        maxCoreNum = gaussNum / blockLength;
+        if (maxCoreNum < 1) {
+            maxCoreNum = 1;
+        }
     } else {
         return ge::GRAPH_FAILED;
     }

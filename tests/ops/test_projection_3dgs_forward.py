@@ -492,6 +492,7 @@ def _fully_fused_projection(
 
 class TestProjection3DGSForward(TestCase):
     def setUp(self):
+        torch.manual_seed(13)
         self.test_cases = [
             [1, 1, 1, 64, 64, 0.3, 0.01, 1e10, True, "pinhole"],
             [1, 8, 8, 64, 64, 0.3, 0.01, 1e10, False, "pinhole"],
@@ -502,19 +503,26 @@ class TestProjection3DGSForward(TestCase):
     def gen_inputs(self, shape):
         batch_size, camera_num, gaussian_num = shape
 
-        means = torch.rand(batch_size, gaussian_num, 3).float()
-        covars = torch.rand(batch_size, gaussian_num, 3, 3).float()
+        # Valid geometry: points in front of the camera (with a few behind it / outside
+        # the image so the culling path is exercised), symmetric positive semi-definite
+        # covariances (the A5 kernel relies on covariance symmetry), and intrinsics
+        # matched to the 64x64 image size.
+        means = torch.rand(batch_size, gaussian_num, 3).float() * 3.0 - 1.5
+        means[..., 2] = torch.rand(batch_size, gaussian_num) * 6.0 - 1.0
+        # Keep one gaussian clearly inside every frustum so even the minimal (N=1)
+        # case compares real values instead of an empty compact set.
+        means[:, 0, :] = torch.tensor([0.0, 0.0, 3.0])
+        l = torch.rand(batch_size, gaussian_num, 3, 3).float() * 0.12
+        covars = (l @ l.transpose(-1, -2) + torch.eye(3) * 0.005).float()
         colors = torch.rand(batch_size, gaussian_num, 3).float()
         opacities = torch.rand(batch_size, gaussian_num).float()
-        viewmats = torch.zeros(batch_size, camera_num, 4, 4).float()
-        rotmat = torch.rand(batch_size, camera_num, 3, 3).float()
-        rotmat = torch.matmul(rotmat, rotmat.transpose(-2, -1)).float()
-        t = torch.rand(batch_size, camera_num, 3).float()
-        viewmats[:, :, :3, :3] = rotmat
-        viewmats[:, :, :3, 3] = t
-        viewmats[:, :, 3, 3] = 1
-        fx, fy, s, x0, y0 = 1.611400e3, 1.611400e3, 0, 7.79500e2, 5.19500e2
-        k = torch.tensor([[[[fx, s, x0], [0, fy, y0], [0, 0, 1]]]], dtype=torch.float32)
+
+        viewmats = torch.eye(4).repeat(batch_size, camera_num, 1, 1)
+        viewmats[:, :, 0, 3] = torch.linspace(-0.5, 0.5, camera_num)
+        viewmats[:, :, 1, 3] = torch.linspace(0.5, -0.5, camera_num)
+
+        fx, fy, x0, y0 = 60.0, 60.0, 32.0, 32.0
+        k = torch.tensor([[[[fx, 0.0, x0], [0.0, fy, y0], [0.0, 0.0, 1.0]]]], dtype=torch.float32)
         ks = k.expand(batch_size, camera_num, 3, 3)
 
         return Inputs(means, colors, covars, opacities, viewmats, ks)
@@ -586,14 +594,20 @@ class TestProjection3DGSForward(TestCase):
 
     def test_projection_3dgs_forward(self):
         for cpu_results, npu_results in self.test_results:
-            cnt = cpu_results.cnt.cpu().numpy()
+            cnt_cpu = cpu_results.cnt.cpu().numpy()
+            cnt_npu = npu_results.cnt.cpu().numpy()
+            # A culling-count mismatch shifts the whole compact buffer, so comparing
+            # the values afterwards would be meaningless (and misleading).
+            self.assertTrue(
+                bool((cnt_cpu == cnt_npu).all()),
+                f"culling count mismatch: cpu={cnt_cpu} npu={cnt_npu}")
             for field in ("means2d_culling", "depths_culling"):
                 cpu_value = getattr(cpu_results, field).cpu().numpy()
                 npu_value = getattr(npu_results, field).cpu().numpy()
                 # Compact buffers only define entries [0, cnt); the tail is
                 # unspecified by the operator contract, so ignore it.
                 n = cpu_value.shape[-1]
-                keep = np.arange(n)[None, None, :] < cnt[..., None]
+                keep = np.arange(n)[None, None, :] < cnt_cpu[..., None]
                 if cpu_value.ndim == 4:
                     keep = keep[:, :, None, :]
                 self.assertRtolEqual(np.where(keep, cpu_value, 0).astype(np.float32),

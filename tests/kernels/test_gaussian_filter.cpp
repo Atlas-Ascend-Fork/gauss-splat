@@ -20,6 +20,8 @@ using namespace std;
 
 namespace {
 
+constexpr int64_t kGaussNum = 1024;
+
 struct TensorResources {
     void* meansDeviceAddr = nullptr;
     void* colorsDeviceAddr = nullptr;
@@ -31,6 +33,10 @@ struct TensorResources {
     void* conicsDeviceAddr = nullptr;
     void* covars2dDeviceAddr = nullptr;
     void* compensationsDeviceAddr = nullptr;
+    void* quatDeviceAddr = nullptr;
+    void* scalesDeviceAddr = nullptr;
+    void* viDeviceAddr = nullptr;
+    void* sigmaDeviceAddr = nullptr;
     void* meansCullingDeviceAddr = nullptr;
     void* colorsCullingDeviceAddr = nullptr;
     void* means2dCullingDeviceAddr = nullptr;
@@ -58,6 +64,10 @@ struct TensorResources {
     aclTensor* conicsTensor = nullptr;
     aclTensor* covars2dTensor = nullptr;
     aclTensor* compensationsTensor = nullptr;
+    aclTensor* quatTensor = nullptr;
+    aclTensor* scalesTensor = nullptr;
+    aclTensor* viTensor = nullptr;
+    aclTensor* sigmaTensor = nullptr;
     aclTensor* meansCullingTensor = nullptr;
     aclTensor* colorsCullingTensor = nullptr;
     aclTensor* means2dCullingTensor = nullptr;
@@ -79,7 +89,7 @@ struct TensorResources {
 int InitializeTensors(TensorResources& resources) {
     int64_t batchSize = 1;
     int64_t cameraNum = 1;
-    int64_t gaussNum = 1024;
+    int64_t gaussNum = kGaussNum;
     
     std::vector<int64_t> meansShape = {batchSize, 3, gaussNum};
     std::vector<int64_t> colorsShape = {batchSize, 3, gaussNum};
@@ -90,7 +100,11 @@ int InitializeTensors(TensorResources& resources) {
     std::vector<int64_t> radiusShape = {batchSize, cameraNum, 2, gaussNum};
     std::vector<int64_t> conicsShape = {batchSize, cameraNum, 3, gaussNum};
     std::vector<int64_t> covars2dShape = {batchSize, cameraNum, 3, gaussNum};
-    std::vector<int64_t> compensationsShape = {batchSize, cameraNum, 1, gaussNum};
+    std::vector<int64_t> compensationsShape = {batchSize, cameraNum, gaussNum};
+    std::vector<int64_t> quatShape = {batchSize, 4, gaussNum};
+    std::vector<int64_t> scalesShape = {batchSize, 3, gaussNum};
+    std::vector<int64_t> viShape = {batchSize, cameraNum, gaussNum};
+    std::vector<int64_t> sigmaShape = {1};
     std::vector<int64_t> filterShape = {batchSize, cameraNum, gaussNum};
     std::vector<int64_t> cntShape = {batchSize, cameraNum};
     std::vector<int64_t> quatsCullingShape = {batchSize, cameraNum, 4, gaussNum};
@@ -109,6 +123,18 @@ int InitializeTensors(TensorResources& resources) {
     std::vector<float> radiusHostData(GetShapeSize(radiusShape), 10.0f);
     std::vector<float> conicsHostData(GetShapeSize(conicsShape), 0.1f);
     std::vector<float> covars2dHostData(GetShapeSize(covars2dShape), 0.1f);
+    // A5 reads these optional inputs unconditionally; materialize neutral defaults
+    // instead of passing nullptr (matches the csrc GaussianFilter front-end).
+    std::vector<float> compensationsHostData(GetShapeSize(compensationsShape), 1.0f);
+    std::vector<float> quatHostData(GetShapeSize(quatShape), 0.0f);
+    for (int64_t b = 0; b < batchSize; ++b) {
+        for (int64_t n = 0; n < gaussNum; ++n) {
+            quatHostData[(b * 4 + 0) * gaussNum + n] = 1.0f;   // unit quaternion (w = 1)
+        }
+    }
+    std::vector<float> scalesHostData(GetShapeSize(scalesShape), 1.0f);
+    std::vector<float> viHostData(GetShapeSize(viShape), 1.0f);
+    std::vector<float> sigmaHostData(GetShapeSize(sigmaShape), 1.0f);
     std::vector<uint8_t> filterHostData(GetShapeSize(filterShape), 0);
     std::vector<float> cntHostData(GetShapeSize(cntShape), 0.0f);
     std::vector<float> quatsCullingHostData(GetShapeSize(quatsCullingShape), 0.0f);
@@ -152,6 +178,26 @@ int InitializeTensors(TensorResources& resources) {
 
     ret = CreateAclTensor(covars2dHostData, covars2dShape, &resources.covars2dDeviceAddr,
                           aclDataType::ACL_FLOAT, &resources.covars2dTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(compensationsHostData, compensationsShape, &resources.compensationsDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.compensationsTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(quatHostData, quatShape, &resources.quatDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.quatTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(scalesHostData, scalesShape, &resources.scalesDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.scalesTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(viHostData, viShape, &resources.viDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.viTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(sigmaHostData, sigmaShape, &resources.sigmaDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.sigmaTensor);
     if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
 
     ret = CreateAclTensor(meansHostData, meansShape, &resources.meansCullingDeviceAddr,
@@ -233,7 +279,8 @@ int ExecuteGaussianFilter(TensorResources& resources, aclrtStream stream,
     int ret = aclnnGaussianFilterGetWorkspaceSize(
         resources.meansTensor, resources.colorsTensor, resources.detTensor, resources.opacitiesTensor,
         resources.means2dTensor, resources.depthsTensor, resources.radiusTensor, resources.conicsTensor,
-        resources.covars2dTensor, nullptr, nullptr, nullptr, nullptr, nullptr,
+        resources.covars2dTensor, resources.compensationsTensor, resources.quatTensor,
+        resources.scalesTensor, resources.viTensor, resources.sigmaTensor,
         width, height, nearPlane, farPlane, 0 /* supportFeatures */,
         resources.meansCullingTensor, resources.colorsCullingTensor, resources.means2dCullingTensor,
         resources.depthsCullingTensor, resources.radiusCullingTensor, resources.covars2dCullingTensor,
@@ -273,6 +320,11 @@ void CleanupResources(TensorResources& resources, void* workspaceAddr,
     if (resources.radiusTensor) aclDestroyTensor(resources.radiusTensor);
     if (resources.conicsTensor) aclDestroyTensor(resources.conicsTensor);
     if (resources.covars2dTensor) aclDestroyTensor(resources.covars2dTensor);
+    if (resources.compensationsTensor) aclDestroyTensor(resources.compensationsTensor);
+    if (resources.quatTensor) aclDestroyTensor(resources.quatTensor);
+    if (resources.scalesTensor) aclDestroyTensor(resources.scalesTensor);
+    if (resources.viTensor) aclDestroyTensor(resources.viTensor);
+    if (resources.sigmaTensor) aclDestroyTensor(resources.sigmaTensor);
     if (resources.meansCullingTensor) aclDestroyTensor(resources.meansCullingTensor);
     if (resources.colorsCullingTensor) aclDestroyTensor(resources.colorsCullingTensor);
     if (resources.means2dCullingTensor) aclDestroyTensor(resources.means2dCullingTensor);
@@ -299,6 +351,11 @@ void CleanupResources(TensorResources& resources, void* workspaceAddr,
     if (resources.radiusDeviceAddr) aclrtFree(resources.radiusDeviceAddr);
     if (resources.conicsDeviceAddr) aclrtFree(resources.conicsDeviceAddr);
     if (resources.covars2dDeviceAddr) aclrtFree(resources.covars2dDeviceAddr);
+    if (resources.compensationsDeviceAddr) aclrtFree(resources.compensationsDeviceAddr);
+    if (resources.quatDeviceAddr) aclrtFree(resources.quatDeviceAddr);
+    if (resources.scalesDeviceAddr) aclrtFree(resources.scalesDeviceAddr);
+    if (resources.viDeviceAddr) aclrtFree(resources.viDeviceAddr);
+    if (resources.sigmaDeviceAddr) aclrtFree(resources.sigmaDeviceAddr);
     if (resources.meansCullingDeviceAddr) aclrtFree(resources.meansCullingDeviceAddr);
     if (resources.colorsCullingDeviceAddr) aclrtFree(resources.colorsCullingDeviceAddr);
     if (resources.means2dCullingDeviceAddr) aclrtFree(resources.means2dCullingDeviceAddr);
@@ -330,7 +387,6 @@ int main() {
     TensorResources resources = {};
     void* workspaceAddr = nullptr;
     uint64_t workspaceSize = 0;
-    std::vector<int64_t> cntShape = {1, 1};
     int ret = ACL_SUCCESS;
 
     ret = Init(deviceId, &stream);
@@ -351,9 +407,24 @@ int main() {
     ret = aclrtSynchronizeStream(stream);
     if (!CHECK_RET(ret == ACL_SUCCESS)) {
         LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", ret);
+        CleanupResources(resources, workspaceAddr, stream, deviceId);
+        return ret;
     }
 
-    PrintResult<float>(cntShape, &resources.cntDeviceAddr, "cnt");
+    float cntValue = 0.0f;
+    ret = aclrtMemcpy(&cntValue, sizeof(float), resources.cntDeviceAddr, sizeof(float),
+                      ACL_MEMCPY_DEVICE_TO_HOST);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) {
+        LOG_PRINT("copy cnt from device to host failed. ERROR: %d\n", ret);
+        CleanupResources(resources, workspaceAddr, stream, deviceId);
+        return ret;
+    }
+    LOG_PRINT("cnt[0] is: %f\n", cntValue);
+    if (!(cntValue > 0.0f && cntValue <= static_cast<float>(kGaussNum))) {
+        LOG_PRINT("cnt out of range (0, %ld]: %f\n", kGaussNum, cntValue);
+        CleanupResources(resources, workspaceAddr, stream, deviceId);
+        return -1;
+    }
 
     CleanupResources(resources, workspaceAddr, stream, deviceId);
     return 0;

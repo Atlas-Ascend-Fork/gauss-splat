@@ -16,42 +16,44 @@ gauss-splat是基于[CANN](https://hiascend.com/software/cann)的3D Gaussian Spl
 
 ## 🛠️环境准备
 
-### 系统要求
+### 系统配置(推荐)
 
 | 项目      | 要求                                              |
 | :-------- | :------------------------------------------------ |
 | 硬件      | Atlas A2训练推理系列产品/Atlas A3训练推理系列产品/Ascend 950PR/Ascend 950DT |
-| CANN版本  | 9.0.0及以上                                       |
-| Python    | >=3.9                                           |
-| PyTorch   | 配套CANN版本，>=2.7.1                               |
-| torch_npu | 配套torch版本，>=26.0.0                            |
+| CANN版本  | 9.1.0及以上                                       |
+| Python    | >=3.12                                          |
+| PyTorch   | 配套CANN版本，>=2.12.0                              |
+| torch_npu | 配套torch版本，>=2.12.0                            |
+
+> **说明**: Python/PyTorch/torch_npu 三者版本强关联，详细版本依赖关系请参考官网确认。
 
 CANN环境准备
 
 > **说明**：仅编译本项目不运行（编译态）时，只需安装CANN toolkit包；运行本项目（运行态）时，需安装NPU驱动、CANN toolkit包与CANN ops包。
 
 1. **安装NPU驱动（运行态依赖）**：使用`npu-smi info`检查是否有NPU相关信息，若没有或无法明确识别芯片型号，请参考《[CANN快速安装](https://www.hiascend.com/cann/download)》完成驱动安装。
-2. **安装CANN软件包**：本样例的执行依赖CANN开发套件包（cann-toolkit）与CANN二进制算子包（cann-kernels），使用CANN软件版本为CANN 9.0.0。请参考《[CANN快速安装](https://www.hiascend.com/cann/download)》，选择`稳定版本`，并根据产品系列、CPU架构、操作系统等下载对应软件包（`Ascend-cann-toolkit_${version}_linux-${arch}.run`与`Ascend-cann-${chip_type}-ops_${version}_linux-${arch}.run`），最后参考页面提供的命令完成安装。
+2. **安装CANN软件包**：本样例的执行依赖CANN开发套件包（cann-toolkit）与CANN二进制算子包（cann-kernels），使用CANN软件版本为CANN 9.1.0。请参考《[CANN快速安装](https://www.hiascend.com/cann/download)》，选择`稳定版本`，并根据产品系列、CPU架构、操作系统等下载对应软件包（`Ascend-cann-toolkit_${version}_linux-${arch}.run`与`Ascend-cann-${chip_type}-ops_${version}_linux-${arch}.run`），最后参考页面提供的命令完成安装。
 
    > **说明**：`npu-smi info`输出可能无法直接体现910C芯片型号。910C所属产品系列为Atlas A3训练推理系列产品，对应的CANN Ops安装包SoC代号为`a3`，即`Ascend-cann-a3-ops_${version}_linux-${arch}.run`。
-3. 本样例依赖的**torch与torch_npu版本为2.7.1和v26.0.0**，请从[Ascend Extension for PyTorch插件](https://www.hiascend.com/document/detail/zh/Pytorch/2600/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md)下载并安装torch与torch_npu安装包。
+3. 本样例依赖的**torch与torch_npu版本为2.12.0及以上**，请从[Ascend Extension for PyTorch插件](https://www.hiascend.com/developer/software/ai-frameworks/pytorch/download?versionId=186&ids=bcc87fc38cd74df28cf5c415cf2aea75%2C213%2C6%2C177%2C200%2C1%2C)下载并安装torch与torch_npu安装包，配套版本。
 
 ## ⬇️安装
 
 ```bash
 ``编译安装
-conda create -n 3dgs python=3.9
+conda create -n 3dgs python=3.12
 conda activate 3dgs
 
 git clone -b ${tag_version} https://gitcode.com/cann/gauss-splat.git
 cd gauss-splat
 source ${CAN_INSTALL_PATH}/ascend-toolkit/set_env.sh
 
-pip install numpy==1.23 decorator sympy scipy attrs cloudpickle psutil synr==0.5.0 tornado cmake pyyaml expecttest protobuf
+pip install "numpy>=1.26.0,<2.0.0" decorator sympy scipy attrs cloudpickle psutil synr==0.5.0 tornado cmake pyyaml expecttest protobuf pytest
 
 方法1：
-bash build.sh --python=3.9
-参数`--python`指定编译使用的python版本，支持3.9及以上版本。编译成功后会在当前目录下生成`build`,  `dist`文件夹，生成的whl包在`dist`目录下。
+bash build.sh --python=3.12
+参数`--python`指定编译使用的python版本，支持3.12及以上版本。编译成功后会在当前目录下生成`build`,  `dist`文件夹，生成的whl包在`dist`目录下。
 
 pip install dist/*.whl --force-reinstall
 
@@ -59,7 +61,12 @@ pip install dist/*.whl --force-reinstall
 pip install . --no-build-isolation
 ```
 
-Atlas A5 请在配套的 A5 CANN 环境中使用 `bash build.sh --python=3.9 --a5` 编译，并参考 [A5 训练样例](examples/arch35/README.md)。
+> **numpy/pycolmap 版本说明**: numpy 与 pycolmap 的版本选择与 Python 版本强关联。
+> - **numpy>=1.26.0,<2.0.0**: numpy 1.26.0 是首个支持 Python 3.12 的版本；上限锁定 <2.0.0 是为兼容 3DGS 生态及 rmbrualla 版 pycolmap（该库依赖 numpy 结构化 dtype 解析，未适配 numpy 2.x 中移除的旧 API）。
+> - **pycolmap**: 训练数据解析使用 `examples/requirements.txt` 中的 rmbrualla 分支 fork（纯 Python 实现，`from pycolmap import SceneManager`），Python 3.12 可直接源码安装，无 API 兼容问题；请保持 numpy<2.0.0 配套使用。
+> - 详细版本依赖关系请参考官网确认。
+
+Atlas A5 请在配套的 A5 CANN 环境中使用 `bash build.sh --python=3.12 --a5` 编译，并参考 [训练样例](examples/README.md)。
 
 安装完成后，请将快速开始代码保存到项目源码目录之外，并从源码目录之外运行。例如，将脚本保存为与`gauss-splat`目录同级的`quick_start.py`后执行：
 
@@ -191,11 +198,12 @@ gauss-splat/
 │   ├── fused_ssim_backward/
 │   └── flash_gaussian_build_mask/
 ├── docs/                   # 文档目录
-│   └── kernels/            # ACLNN算子API文档
+│   ├── zh/kernels/         # 中文ACLNN算子API文档
+│   └── en/kernels/         # 英文ACLNN算子API文档
 ├── examples/               # 训练/推理样例
 ├── tests/                  # 测试代码
 │   ├── host/               # host(CPU)测试
-│   └── kernels/            # C++算子测试
+│   ├── kernels/            # C++算子测试
 │   └── ops/                # Python算子测试
 └── README.md               # 本文档
 ```
@@ -204,15 +212,25 @@ gauss-splat/
 
 测试前请先参考上文《安装》完成编译安装，并加载 CANN 环境（`source ${CANN_INSTALL_PATH}/ascend-toolkit/set_env.sh`）。
 
+如需运行 `examples/` 下的训练/数据样例（或引用其中代码的用例），请先安装样例依赖：
+
+```bash
+pip install -r examples/requirements.txt
+```
+
+`examples/requirements.txt` 已声明 `imageio[ffmpeg]`、`opencv-python-headless`（提供 `cv2`）、`tqdm` 等依赖；`examples/gsplat` 为随仓库提供的 gsplat 子集，从 `examples/` 目录运行即可，无需额外安装同名 pip 包。
+
 ### Python 测试
 
-`tests/` 为算子用例，`tests/host/` 为纯 CPU 用例。请从仓库外执行，避免导入源码目录中的 `gauss_splat`：
+`tests/ops/` 为 Python 算子用例（需 NPU），`tests/host/` 为纯 CPU 用例。请从仓库外执行，避免导入源码目录中的 `gauss_splat`：
 
 ```bash
 REPO=<gauss-splat 仓库绝对路径>; cd /tmp
-python -m pytest -v "$REPO/tests"
+python -m pytest -v "$REPO/tests/ops"
 python -B -m unittest discover -s "$REPO/tests/host" -p 'test_*.py' -v
 ```
+
+`tests/ops/` 中的用例也可单独运行，例如 `python "$REPO/tests/ops/test_calc_render_fwd.py"`；该目录下的 `perf_benchmark_rasterization.py` 为性能测试脚本，不属于用例。
 
 ### C++ 算子测试
 
@@ -229,7 +247,9 @@ bash tests/kernels/run_kernel_tests.sh     # 运行并打印结果
 ## 💬更多信息
 
 - [算子API文档](docs/zh/kernels/)：底层ACLNN算子详细说明
-- [算子测试](tests/kernels/)：C++测试代码（运行方式见上文《测试》）
+- [Python算子测试](tests/ops/)：Python测试代码
+- [Host CPU测试](tests/host/)：纯CPU测试代码
+- [C++算子测试](tests/kernels/)：C++测试代码（运行方式见上文《测试》）
 - [贡献指南](CONTRIBUTING.md)：如何参与项目开发
 - [安全声明](SECURITY.md)：安全使用指南
 - [许可证](LICENSE)：CANN Open Software License Agreement Version 2.0

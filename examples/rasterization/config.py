@@ -4,8 +4,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Annotated, List, Optional
 from typing_extensions import Literal
+
+from tyro.conf import Suppress
 
 from gsplat.strategy import ADCStrategy
 
@@ -102,13 +104,13 @@ class Config:
     # Weight for depth loss
     depth_lambda: float = 1e-2
 
-    # --- CBS extensions ---
+    # --- CBS extensions (backend not adapted; hidden from CLI) ---
     # Enable weight loss (CBS Vi weight supervision)
-    use_weight_loss: bool = True
+    use_weight_loss: Annotated[bool, Suppress] = True
     # LCWSR: per-Gaussian view-dependent weight (vi) + depth sigma
-    lc_wsr_enable: bool = False
+    lc_wsr_enable: Annotated[bool, Suppress] = False
     # Depth correction: w(d) = max(0, 1-d/sigma) * vi
-    if_depth_correct: bool = True
+    if_depth_correct: Annotated[bool, Suppress] = True
 
     # Learnable background weight
     learnable_background: bool = False
@@ -123,7 +125,7 @@ class Config:
     # whether profiling
     profiling: bool = False
     # Render backend
-    render_backend: Literal["cbs", "3dgs"] = "3dgs"
+    render_backend: Literal["3dgs"] = "3dgs"
     # Perf profiling steps: >0 = forward+backward, <0 = forward-only, 0 = eval only
     perf_steps: int = 0
 

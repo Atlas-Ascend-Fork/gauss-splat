@@ -255,43 +255,55 @@ public:
                     len = subLen;
                 }
                 uint64_t base = taskStartIndex + static_cast<uint64_t>(subIdx) * subLen;
-                bool isTail = subIdx == numSub - 1 && tailNum != 0 && \
-                              this->blockIndex == blockDim - 1;
+                uint32_t copyLen = CopyTaskNum(subIdx, subLen, len);
                 LocalTensor<DTYPE_COEFFS> coeffsLocal = CoeffsQue.AllocTensor<DTYPE_COEFFS>();
                 LocalTensor<DTYPE_OUTPUT> outputLocal = OutputQue.AllocTensor<DTYPE_OUTPUT>();
-                CopyInDegree0(coeffsLocal, batchIdx, base, len);
+                CopyInDegree0(coeffsLocal, batchIdx, base, len, copyLen);
                 CoeffsQue.EnQue(coeffsLocal);
                 LocalTensor<DTYPE_COEFFS> coeffsIn = CoeffsQue.DeQue<DTYPE_COEFFS>();
                 ComputingDegree0(coeffsIn, outputLocal, len);
                 CoeffsQue.FreeTensor(coeffsIn);
                 OutputQue.EnQue(outputLocal);
                 LocalTensor<DTYPE_OUTPUT> outputOut = OutputQue.DeQue<DTYPE_OUTPUT>();
-                CopyOutDegree0(outputOut, batchIdx, base, len, isTail);
+                CopyOutDegree0(outputOut, batchIdx, base, len, copyLen);
                 OutputQue.FreeTensor(outputOut);
             }
         }
     }
 
     __aicore__ inline void CopyInDegree0(const LocalTensor<DTYPE_COEFFS> &coeffs, uint32_t batchIdx,
-                                         uint64_t taskBase, uint32_t validLen)
+                                         uint64_t taskBase, uint32_t ubLen, uint32_t copyLen)
     {
         uint64_t coeffBatchOffset = batchIdx * coeffNum * channelNum * gaussianNum;
-        // Single cross-channel strided copy (one descriptor for all C channels):
-        // coeffs GM [B, K=1, C, N] -> coeffs UB [C, validLen]; channel rows are
-        // gaussianNum elements apart in GM and packed contiguously in UB.
-        int64_t channelGap = (static_cast<int64_t>(gaussianNum) - static_cast<int64_t>(validLen));
-        if (channelGap < 0) {
-            channelGap = 0;
+        if (copyLen == ubLen) {
+            // Single cross-channel strided copy (one descriptor for all C channels):
+            // coeffs GM [B, K=1, C, N] -> coeffs UB [C, ubLen]; channel rows are
+            // gaussianNum elements apart in GM and packed contiguously in UB.
+            int64_t channelGap = static_cast<int64_t>(gaussianNum) - static_cast<int64_t>(copyLen);
+            DataCopyExtParams copyInParams{
+                static_cast<uint16_t>(channelNum),
+                static_cast<uint32_t>(copyLen * FLOAT_SIZE),
+                static_cast<uint32_t>(channelGap * FLOAT_SIZE),
+                0,
+                0
+            };
+            DataCopyPad(coeffs, coeffsGM[coeffBatchOffset + taskBase], copyInParams,
+                        DataCopyPadExtParams<float>{false, 0, 0, 0});
+        } else {
+            // Partial tail tile: per-channel copies keep the aligned UB rows.
+            DataCopyExtParams rowParams{
+                1,
+                static_cast<uint32_t>(copyLen * FLOAT_SIZE),
+                0,
+                0,
+                0
+            };
+            for (uint32_t ch = 0; ch < channelNum; ch++) {
+                DataCopyPad(coeffs[ch * ubLen], \
+                            coeffsGM[coeffBatchOffset + static_cast<uint64_t>(ch) * gaussianNum + taskBase], \
+                            rowParams, DataCopyPadExtParams<float>{false, 0, 0, 0});
+            }
         }
-        DataCopyExtParams copyInParams{
-            static_cast<uint16_t>(channelNum),
-            static_cast<uint32_t>(validLen * FLOAT_SIZE),
-            channelGap * FLOAT_SIZE,
-            0,
-            0
-        };
-        DataCopyPad(coeffs, coeffsGM[coeffBatchOffset + taskBase], copyInParams,
-                    DataCopyPadExtParams<float>{false, 0, 0, 0});
     }
 
     __aicore__ inline void ComputingDegree0(const LocalTensor<DTYPE_COEFFS> &coeffs,
@@ -306,38 +318,49 @@ public:
     }
 
     __aicore__ inline void CopyOutDegree0(const LocalTensor<DTYPE_OUTPUT> &out, uint32_t batchIdx,
-                                          uint64_t taskBase, uint32_t validLen, bool isTailBlock)
+                                          uint64_t taskBase, uint32_t ubLen, uint32_t copyLen)
     {
         uint64_t batchOffset = batchIdx * channelNum * gaussianNum;
-        if (isTailBlock) {
-            uint32_t validTaskNum = validLen - tailNum;
-            DataCopyExtParams copyOutParams{
-                1,
-                static_cast<uint32_t>(validTaskNum * FLOAT_SIZE),
-                0,
-                0,
-                0
-            };
-            for (uint32_t channelIdx = 0; channelIdx < channelNum; channelIdx++) {
-                DataCopyPad(outputGM[batchOffset + channelIdx * gaussianNum + taskBase], \
-                            out[channelIdx * validLen], copyOutParams);
-            }
-        } else {
+        if (copyLen == ubLen) {
             // Single cross-channel strided copy (one descriptor for all C channels):
-            // output UB [C, validLen] -> output GM [B, C, N].
-            int64_t channelGap = (static_cast<int64_t>(gaussianNum) - static_cast<int64_t>(validLen));
-            if (channelGap < 0) {
-                channelGap = 0;
-            }
+            // output UB [C, ubLen] -> output GM [B, C, N].
+            int64_t channelGap = static_cast<int64_t>(gaussianNum) - static_cast<int64_t>(copyLen);
             DataCopyExtParams copyOutParams{
                 static_cast<uint16_t>(channelNum),
-                static_cast<uint32_t>(validLen * FLOAT_SIZE),
+                static_cast<uint32_t>(copyLen * FLOAT_SIZE),
                 0,
-                channelGap * FLOAT_SIZE,
+                static_cast<uint32_t>(channelGap * FLOAT_SIZE),
                 0
             };
             DataCopyPad(outputGM[batchOffset + taskBase], out, copyOutParams);
+        } else {
+            // Partial tail tile: per-channel copies read the aligned UB rows.
+            DataCopyExtParams rowParams{
+                1,
+                static_cast<uint32_t>(copyLen * FLOAT_SIZE),
+                0,
+                0,
+                0
+            };
+            for (uint32_t ch = 0; ch < channelNum; ch++) {
+                DataCopyPad(outputGM[batchOffset + static_cast<uint64_t>(ch) * gaussianNum + taskBase], \
+                            out[ch * ubLen], rowParams);
+            }
         }
+    }
+
+    // The tiling pads taskNumPerCore up to ALIGN_VALUE while the GM tensors only hold
+    // `gaussianNum` tasks per batch: GM transfers must stop at the real remaining tasks,
+    // while the UB layout keeps the aligned tile length (MTE requires 32B alignment).
+    __aicore__ inline uint32_t CopyTaskNum(uint32_t subIdx, uint32_t subLen, uint32_t alignedLen)
+    {
+        uint64_t base = static_cast<uint64_t>(taskStartIndex) + \
+                        static_cast<uint64_t>(subIdx) * subLen;
+        if (static_cast<uint64_t>(taskNum) <= base) {
+            return 0;
+        }
+        uint64_t remain = static_cast<uint64_t>(taskNum) - base;
+        return (remain < static_cast<uint64_t>(alignedLen)) ? static_cast<uint32_t>(remain) : alignedLen;
     }
 
     __aicore__ inline void ComputingTaskNum(int32_t taskLoopIndex)
@@ -355,43 +378,64 @@ public:
         if (len > degree14SubLen) {
             len = degree14SubLen;
         }
+        uint32_t copyLen = CopyTaskNum(degree14SubIdx, degree14SubLen, len);
         uint64_t base = taskStartIndex + static_cast<uint64_t>(degree14SubIdx) * degree14SubLen;
         uint64_t dirsBatchOffset = static_cast<uint64_t>(batchIdx) * AXIS_NUM * gaussianNum;
-        int64_t channelGap = static_cast<int64_t>(gaussianNum) - static_cast<int64_t>(len);
-        if (channelGap < 0) {
-            channelGap = 0;
-        }
+        uint64_t coeffBatchOffset = static_cast<uint64_t>(batchIdx) * coeffNum * channelNum * gaussianNum;
 
         LocalTensor<DTYPE_DIRS> dirsLocal = DirsQue14.AllocTensor<DTYPE_DIRS>();
-        // dirs GM [B, 3, N] -> UB [3, len]: one cross-axis strided descriptor.
-        DataCopyExtParams dirsParams{
-            static_cast<uint16_t>(AXIS_NUM),
-            static_cast<uint32_t>(len * FLOAT_SIZE),
-            static_cast<uint32_t>(channelGap * FLOAT_SIZE),
-            0,
-            0
-        };
-        DataCopyPad(dirsLocal, dirsGM[dirsBatchOffset + base], dirsParams,
-                    DataCopyPadExtParams<float>{false, 0, 0, 0});
-        DirsQue14.EnQue(dirsLocal);
-
         LocalTensor<DTYPE_COEFFS> coeffsLocal = CoeffsQue14.AllocTensor<DTYPE_COEFFS>();
-        // coeffs GM [B, K, C, N] -> UB [K, C, len]: exactly one merged descriptor
-        // per k (blockCount = channelNum) instead of K * channelNum DataCopy calls.
-        uint64_t coeffBatchOffset = static_cast<uint64_t>(batchIdx) * coeffNum * channelNum * gaussianNum;
-        DataCopyExtParams coeffParams{
-            static_cast<uint16_t>(channelNum),
-            static_cast<uint32_t>(len * FLOAT_SIZE),
-            static_cast<uint32_t>(channelGap * FLOAT_SIZE),
-            0,
-            0
-        };
-        for (uint32_t k = 0; k < degreeNum; k++) {
-            uint64_t srcBase = coeffBatchOffset + \
-                               static_cast<uint64_t>(gaussianNum) * k * channelNum + base;
-            DataCopyPad(coeffsLocal[k * channelNum * len], coeffsGM[srcBase], coeffParams,
+
+        if (copyLen == len) {
+            // Full tile: one merged strided descriptor per tensor.
+            int64_t channelGap = static_cast<int64_t>(gaussianNum) - static_cast<int64_t>(len);
+            DataCopyExtParams dirsParams{
+                static_cast<uint16_t>(AXIS_NUM),
+                static_cast<uint32_t>(len * FLOAT_SIZE),
+                static_cast<uint32_t>(channelGap * FLOAT_SIZE),
+                0,
+                0
+            };
+            DataCopyPad(dirsLocal, dirsGM[dirsBatchOffset + base], dirsParams,
                         DataCopyPadExtParams<float>{false, 0, 0, 0});
+            DataCopyExtParams coeffParams{
+                static_cast<uint16_t>(channelNum),
+                static_cast<uint32_t>(len * FLOAT_SIZE),
+                static_cast<uint32_t>(channelGap * FLOAT_SIZE),
+                0,
+                0
+            };
+            for (uint32_t k = 0; k < degreeNum; k++) {
+                uint64_t srcBase = coeffBatchOffset + \
+                                   static_cast<uint64_t>(gaussianNum) * k * channelNum + base;
+                DataCopyPad(coeffsLocal[k * channelNum * len], coeffsGM[srcBase], coeffParams,
+                            DataCopyPadExtParams<float>{false, 0, 0, 0});
+            }
+        } else {
+            // Partial tail tile: per-row copies keep the aligned UB layout (32B aligned
+            // row starts) while only the real copyLen elements are read from GM.
+            DataCopyExtParams rowParams{
+                1,
+                static_cast<uint32_t>(copyLen * FLOAT_SIZE),
+                0,
+                0,
+                0
+            };
+            for (uint32_t ch = 0; ch < AXIS_NUM; ch++) {
+                DataCopyPad(dirsLocal[ch * len], \
+                            dirsGM[dirsBatchOffset + static_cast<uint64_t>(ch) * gaussianNum + base], \
+                            rowParams, DataCopyPadExtParams<float>{false, 0, 0, 0});
+            }
+            for (uint32_t k = 0; k < degreeNum; k++) {
+                for (uint32_t ch = 0; ch < channelNum; ch++) {
+                    uint64_t srcBase = coeffBatchOffset + \
+                                       static_cast<uint64_t>(gaussianNum) * (k * channelNum + ch) + base;
+                    DataCopyPad(coeffsLocal[k * channelNum * len + ch * len], coeffsGM[srcBase], \
+                                rowParams, DataCopyPadExtParams<float>{false, 0, 0, 0});
+                }
+            }
         }
+        DirsQue14.EnQue(dirsLocal);
         CoeffsQue14.EnQue(coeffsLocal);
     }
 
@@ -793,40 +837,34 @@ public:
         if (len > degree14SubLen) {
             len = degree14SubLen;
         }
+        uint32_t copyLen = CopyTaskNum(degree14SubIdx, degree14SubLen, len);
         uint64_t taskCopyoutIndex = taskStartIndex + static_cast<uint64_t>(degree14SubIdx) * degree14SubLen;
         uint64_t batchOffset = static_cast<uint64_t>(batchIdx) * channelNum * gaussianNum;
-        uint32_t numSub = (taskNumPerCore + degree14SubLen - 1) / degree14SubLen;
-        bool isTailBlock = degree14SubIdx == numSub - 1 && tailNum != 0 && \
-                           this->blockIndex == blockDim - 1;
         LocalTensor<DTYPE_OUTPUT> outLocal = OutputQue14.DeQue<DTYPE_OUTPUT>();
-        if (isTailBlock) {
-            // copy-out only the valid elements per channel (last sub of the last
-            // core), one descriptor per channel as in the original tail path.
-            uint32_t validLen = len - tailNum;
-            DataCopyExtParams copyOutParams{
-                1,
-                static_cast<uint32_t>(validLen * FLOAT_SIZE),
-                0,
-                0,
-                0
-            };
-            for (uint32_t ch = 0; ch < channelNum; ++ch) {
-                DataCopyPad(outputGM[batchOffset + ch * gaussianNum + taskCopyoutIndex], \
-                            outLocal[ch * len], copyOutParams);
-            }
-        } else {
-            int64_t channelGap = static_cast<int64_t>(gaussianNum) - static_cast<int64_t>(len);
-            if (channelGap < 0) {
-                channelGap = 0;
-            }
+        if (copyLen == len) {
+            int64_t channelGap = static_cast<int64_t>(gaussianNum) - static_cast<int64_t>(copyLen);
             DataCopyExtParams copyOutParams{
                 static_cast<uint16_t>(channelNum),
-                static_cast<uint32_t>(len * FLOAT_SIZE),
+                static_cast<uint32_t>(copyLen * FLOAT_SIZE),
                 0,
                 static_cast<uint32_t>(channelGap * FLOAT_SIZE),
                 0
             };
             DataCopyPad(outputGM[batchOffset + taskCopyoutIndex], outLocal, copyOutParams);
+        } else {
+            // Partial tail tile: per-channel copies read the aligned UB rows
+            // (outLocal[ch * len]) and write only the real copyLen elements.
+            DataCopyExtParams rowParams{
+                1,
+                static_cast<uint32_t>(copyLen * FLOAT_SIZE),
+                0,
+                0,
+                0
+            };
+            for (uint32_t ch = 0; ch < channelNum; ++ch) {
+                DataCopyPad(outputGM[batchOffset + static_cast<uint64_t>(ch) * gaussianNum + taskCopyoutIndex], \
+                            outLocal[ch * len], rowParams);
+            }
         }
         OutputQue14.FreeTensor(outLocal);
     }

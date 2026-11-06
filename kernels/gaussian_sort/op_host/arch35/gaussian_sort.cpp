@@ -72,8 +72,11 @@ static ge::graphStatus TilingForGaussianSort(gert::TilingContext* context)
     if (attrsPtr == nullptr) {
         return ge::GRAPH_FAILED;
     }
-
-    uint32_t tileMaxGaussian = static_cast<uint32_t>(*(attrsPtr->GetAttrPointer<int32_t>(TILE_MAX_GAUSSIAN_INDEX)));
+    const int32_t *tileMaxGaussianPtr = attrsPtr->GetAttrPointer<int32_t>(TILE_MAX_GAUSSIAN_INDEX);
+    if (tileMaxGaussianPtr == nullptr) {
+        return ge::GRAPH_FAILED;
+    }
+    uint32_t tileMaxGaussian = static_cast<uint32_t>(*tileMaxGaussianPtr);
     uint32_t maxMaskNum = (tileMaxGaussian % ALIGN_NUM == 0)
                               ? tileMaxGaussian
                               : ((tileMaxGaussian + ALIGN_NUM - 1) / ALIGN_NUM) * ALIGN_NUM;
@@ -172,7 +175,7 @@ public:
             .DataType({ge::DT_INT32})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
-        this->Attr("max_tile_gauss").Int();
+        this->Attr("max_tile_gauss").AttrType(REQUIRED).Int();
 
         this->SetInferShape(ge::InferShape).SetInferDataType(ge::InferDataType);
         this->AICore().SetTiling(optiling::TilingForGaussianSort);

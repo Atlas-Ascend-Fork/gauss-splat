@@ -16,42 +16,44 @@ The source code of this project is released along with CANN software versions. F
 
 ## Environment Preparation
 
-### System Requirements
+### System Configuration (Recommended)
 
 | Item      | Requirement                                              |
 | :-------- | :------------------------------------------------ |
 | Hardware      | Atlas A2 training/inference series products/Atlas A3 training/inference series products/Ascend 950PR/Ascend 950DT |
-| CANN version  | 9.0.0 or later                                       |
-| Python    | >=3.9                                           |
-| PyTorch   | Compatible with CANN version, >=2.7.1                               |
-| torch_npu | Compatible with torch version, >=v26.0.0                             |
+| CANN version  | 9.1.0 or later                                       |
+| Python    | >=3.12                                          |
+| PyTorch   | Compatible with CANN version, >=2.12.0                              |
+| torch_npu | Compatible with torch version, >=2.12.0                            |
+
+> **Note**: The versions of Python, PyTorch, and torch_npu are strongly correlated. For detailed version dependencies, refer to the official website.
 
 CANN Environment Preparation
 
 > **Note**: When only compiling this project without running it (compile-time state), you only need to install the CANN toolkit package. When running this project (run-time state), you need to install the NPU driver, CANN toolkit package, and CANN ops package.
 
 1. **Install the NPU driver (run-time dependency)**: Run `npu-smi info` to check whether NPU information is displayed. If there is no NPU information or the chip model cannot be clearly identified, refer to [CANN Quick Installation](https://www.hiascend.com/cann/download) to install the driver.
-2. **Install CANN software packages**: The execution of this sample depends on the CANN toolkit (cann-toolkit) and CANN binary operator package (cann-kernels). The CANN software version used is CANN 9.0.0. Refer to [CANN Quick Installation](https://www.hiascend.com/cann/download), select the **stable version**, and download the corresponding packages based on the product series, CPU architecture, and OS (`Ascend-cann-toolkit_${version}_linux-${arch}.run` and `Ascend-cann-${chip_type}-ops_${version}_linux-${arch}.run`). Then follow the commands provided on the page to complete the installation.
+2. **Install CANN software packages**: The execution of this sample depends on the CANN toolkit (cann-toolkit) and CANN binary operator package (cann-kernels). The CANN software version used is CANN 9.1.0. Refer to [CANN Quick Installation](https://www.hiascend.com/cann/download), select the **stable version**, and download the corresponding packages based on the product series, CPU architecture, and OS (`Ascend-cann-toolkit_${version}_linux-${arch}.run` and `Ascend-cann-${chip_type}-ops_${version}_linux-${arch}.run`). Then follow the commands provided on the page to complete the installation.
 
    > **Note**: The `npu-smi info` output may not directly indicate the 910C chip model. The 910C chip belongs to the Atlas A3 training/inference series products, and its corresponding SoC code in the CANN ops package is `a3`, that is, `Ascend-cann-a3-ops_${version}_linux-${arch}.run`.
-3. The torch and torch_npu versions required by this sample are **2.7.1 and v26.0.0**. Download and install the torch and torch_npu packages from [Ascend Extension for PyTorch plugin](https://www.hiascend.com/document/detail/zh/Pytorch/2600/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md).
+3. The torch and torch_npu versions required by this sample are **2.12.0 or later**. Download and install the matching torch and torch_npu packages from the [Ascend Extension for PyTorch plugin](https://www.hiascend.com/developer/software/ai-frameworks/pytorch/download?versionId=186&ids=bcc87fc38cd74df28cf5c415cf2aea75%2C213%2C6%2C177%2C200%2C1%2C).
 
 ## Installation
 
 ```bash
 # Compile and install
-conda create -n 3dgs python=3.9
+conda create -n 3dgs python=3.12
 conda activate 3dgs
 
 git clone -b ${tag_version} https://gitcode.com/cann/gauss-splat.git
 cd gauss-splat
 source ${CAN_INSTALL_PATH}/ascend-toolkit/set_env.sh
 
-pip install numpy==1.23 decorator sympy scipy attrs cloudpickle psutil synr==0.5.0 tornado cmake pyyaml expecttest protobuf
+pip install "numpy>=1.26.0,<2.0.0" decorator sympy scipy attrs cloudpickle psutil synr==0.5.0 tornado cmake pyyaml expecttest protobuf pytest
 
 # Method 1:
-bash build.sh --python=3.9
-# The `--python` parameter specifies the Python version used for compilation, supporting version 3.9 and later.
+bash build.sh --python=3.12
+# The `--python` parameter specifies the Python version used for compilation, supporting version 3.12 and later.
 
 # After successful compilation, `build` and `dist` folders are generated in the current directory, and the generated whl package is in the `dist` directory.
 pip install dist/*.whl --force-reinstall
@@ -60,7 +62,12 @@ pip install dist/*.whl --force-reinstall
 pip install . --no-build-isolation
 ```
 
-For Atlas A5, build in a matching A5 CANN environment with `bash build.sh --python=3.9 --a5`. See the [A5 training example](examples/arch35/README.md).
+> **numpy/pycolmap version notes**: The versions of numpy and pycolmap are strongly correlated with the Python version.
+> - **numpy>=1.26.0,<2.0.0**: numpy 1.26.0 is the first version to support Python 3.12; the upper bound of <2.0.0 is set to stay compatible with the 3DGS ecosystem and the rmbrualla fork of pycolmap (which relies on numpy structured dtype parsing and has not been adapted to the legacy APIs removed in numpy 2.x).
+> - **pycolmap**: Training data parsing uses the rmbrualla fork from `examples/requirements.txt` (a pure-Python implementation, `from pycolmap import SceneManager`), which can be installed directly from source on Python 3.12 without API compatibility issues; keep it paired with numpy<2.0.0.
+> - For detailed version dependencies, refer to the official website.
+
+For Atlas A5, build in a matching A5 CANN environment with `bash build.sh --python=3.12 --a5`. See the [training example](examples/README.md).
 
 After installation, save the Quick Start code outside the project source directory and run it from outside that directory. For example, save the script as `quick_start.py` next to the `gauss-splat` directory, then run:
 
@@ -192,11 +199,12 @@ gauss-splat/
 │   ├── fused_ssim_backward/
 │   └── flash_gaussian_build_mask/
 ├── docs/                   # Documentation directory
-│   └── kernels/            # ACLNN operator API documentation
+│   ├── zh/kernels/         # Chinese ACLNN operator API documentation
+│   └── en/kernels/         # English ACLNN operator API documentation
 ├── examples/               # Training/inference samples
 ├── tests/                  # Test code
 │   ├── host/               # Host (CPU) tests
-│   └── kernels/            # C++ operator tests
+│   ├── kernels/            # C++ operator tests
 │   └── ops/                # Python operator tests
 └── README.md               # This document
 ```
@@ -205,15 +213,25 @@ gauss-splat/
 
 Before running the tests, complete the compilation and installation as described in the Installation section above, and load the CANN environment (`source ${CANN_INSTALL_PATH}/ascend-toolkit/set_env.sh`).
 
+To run the training/data samples under `examples/` (or cases that reuse their code), install the sample dependencies first:
+
+```bash
+pip install -r examples/requirements.txt
+```
+
+`examples/requirements.txt` declares `imageio[ffmpeg]`, `opencv-python-headless` (provides `cv2`), `tqdm`, and other dependencies. `examples/gsplat` is the gsplat subset vendored in this repository; run from the `examples/` directory and no separate pip package with the same name is required.
+
 ### Python Tests
 
-`tests/` contains the operator cases and `tests/host/` contains pure CPU cases. Run them outside the repository to avoid importing the source-tree `gauss_splat` package:
+`tests/ops/` contains the Python operator cases (requires NPU) and `tests/host/` contains pure CPU cases. Run them outside the repository to avoid importing the source-tree `gauss_splat` package:
 
 ```bash
 REPO=<absolute path to the gauss-splat repository>; cd /tmp
-python -m pytest -v "$REPO/tests"
+python -m pytest -v "$REPO/tests/ops"
 python -B -m unittest discover -s "$REPO/tests/host" -p 'test_*.py' -v
 ```
+
+The cases in `tests/ops/` can also be run individually, for example `python "$REPO/tests/ops/test_calc_render_fwd.py"`; `perf_benchmark_rasterization.py` in that directory is a performance benchmark script, not a test case.
 
 ### C++ Operator Tests
 
@@ -230,7 +248,9 @@ bash tests/kernels/run_kernel_tests.sh     # Run and print results
 ## More Information
 
 - [Operator API Documentation](docs/en/kernels/): Detailed description of underlying ACLNN operators
-- [Operator Tests](tests/kernels/): C++ test code (see the Testing section above for how to run)
+- [Python Operator Tests](tests/ops/): Python test code
+- [Host CPU Tests](tests/host/): Pure CPU test code
+- [C++ Operator Tests](tests/kernels/): C++ test code (see the Testing section above for how to run)
 - [Contribution Guide](CONTRIBUTING.md): How to participate in project development
 - [Security Statement](SECURITY.md): Security usage guide
 - [License](LICENSE): CANN Open Software License Agreement Version 2.0

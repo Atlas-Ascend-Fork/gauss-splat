@@ -1,8 +1,8 @@
 # Copyright 2026 Huawei Technologies Co., Ltd
 CUR_DIR=$(dirname $(readlink -f $0))
 BUILD_PACKAGES_DIR=${CUR_DIR}/gauss_splat/packages
-SUPPORTED_PY_VERSION=(3.9 3.10 3.11 3.12 3.13 3.14)
-PY_VERSION='3.9'
+SUPPORTED_PY_VERSION=(3.12 3.13 3.14)
+PY_VERSION='3.12'
 SINGLE_OP=''
 BUILD_TYPE='Release'
 USE_ARCH35='false'
@@ -20,7 +20,7 @@ function check_python_version() {
     fi
 }
 function usage() {
-    echo "Usage: $0 --python=3.9 [--debug] [--a5]" 1>&2
+    echo "Usage: $0 --python=3.12 [--debug] [--a5]" 1>&2
 }
 function parse_script_args() {
     while [ "$#" -gt 0 ]; do

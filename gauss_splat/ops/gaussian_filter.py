@@ -33,7 +33,7 @@ def gaussian_filter(means,
     B = det.shape[0]
     C = det.shape[1]
     N = det.shape[2]
-    color_dims = 7 if support_features & (1 << 2) else colors.shape[1]
+    color_dims = colors.shape[1]
     proj_filter_packed_dim = (N + 7) // 8
     dtype = means.dtype
     device = means.device

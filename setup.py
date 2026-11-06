@@ -200,7 +200,7 @@ if not os.getenv("BUILD_WITHOUT_SHA"):
 setup(
     name="gauss_splat",
     version=VERSION,
-    python_requires=">=3.9",
+    python_requires=">=3.12",
     description="A Library of acceleration for autonomous driving systems on Ascend-NPU.",
     keywords="gauss_splat",
     ext_modules=[Extension("gauss_splat", sources=[])],

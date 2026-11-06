@@ -159,7 +159,7 @@ private:
         Duplicate(block2L_, ZERO_F, blockRows_ * wAlign_);
         set_flag(PIPE_V, PIPE_MTE2, EVENT_ID1);
         wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID1);
-        for (int64_t k = 0; k < blockRows_; k++) {
+        for (int64_t k = 0; k < validRows; k++) {
             int64_t gmRow = rowLo + k;
             int64_t ubRow = dstRow + k;
             int64_t row_off = imgBase + gmRow * width_ + lc0_;

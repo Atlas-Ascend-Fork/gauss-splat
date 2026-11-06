@@ -149,6 +149,7 @@ class ProjectionThreeDimsGaussianFused(Function):
     ):
         means, conics, viewmats, quats, scales, ks, proj_filter, compensations, opacities, vi, sigma, depths, cnt, \
         dense_indices = ctx.saved_tensors
+        conics = torch.nan_to_num(conics, nan=0.0, posinf=0.0, neginf=0.0)
         width = ctx.width
         height = ctx.height
         v_means2d, v_depths, v_conics, v_opacities_culling, v_radii, v_covar2d, v_colors_culling, v_cnt, v_proj_filter, v_vi_culling = v_args
@@ -188,12 +189,14 @@ class ProjectionThreeDimsGaussianFused(Function):
             opacities = opacities.reshape(BC, N)
             vi = None if vi is None else vi.reshape(BC, N)
             depths = depths.reshape(BC, N)
-            dense_indices = dense_indices.reshape(BC, N)
             compensations = compensations.reshape(BC, N) if compensations is not None else torch.ones_like(depths)
 
             # Get max compact count from cnt
             cnt_flat = cnt.view(-1).int()
             max_compact_count = max(1, int(cnt.max().item()))
+            # The kernel walks `dense_indices` with a max_compact_count row stride, so merge
+            # (B, C) and trim to the documented (BC, max_compact_count) shape.
+            dense_indices = dense_indices.reshape(BC, N)[:, :max_compact_count].contiguous()
 
         ### alpha max out and grad abs features
         if ctx.rast_ctx.alpha_max is not None and ctx.rast_ctx.grad_abs is not None:

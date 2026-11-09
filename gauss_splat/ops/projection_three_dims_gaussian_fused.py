@@ -41,21 +41,20 @@ class ProjectionThreeDimsGaussianFused(Function):
                 camera_model: str = "pinhole"):
 
         rast_ctx = RastCtx() if rast_ctx is None else rast_ctx
-        rast_ctx.prealloc_if_need(means.shape[0], viewmats.shape[1], means.shape[1], means.device)
+        rast_ctx.prealloc_if_need(means.shape[0], viewmats.shape[1], means.shape[-1], means.device)
         if quat is not None:
             if scales is None:
                 raise ValueError("'quat' and 'scales' are required together.")
             if covars is not None:
                 raise ValueError("Invalid parameter combination: 'covars' \
                                  and ('quat', 'scales')pair are mutually exclusive.")
-            quat = quat.permute((0, 2, 1)).contiguous()
-            scales = scales.permute((0, 2, 1)).contiguous()
+            # Pure channel-first op: quat/scales arrive as [B,4,N]/[B,3,N].
             if not rast_ctx.covars_fused:
                 covars = quat_scales_to_covars(quat, scales)
         else:
             covars = covars.permute((0, 2, 3, 1)).contiguous()
 
-        means = means.permute((0, 2, 1)).contiguous()
+        # Pure channel-first op: means arrive as [B,3,N].
 
         proj_quat, proj_scales, proj_covars = (quat, scales, None) if covars is None else (None, None, covars)
         outputs = rast_ctx.outputs_for_proj_forward()
@@ -241,8 +240,10 @@ class ProjectionThreeDimsGaussianFused(Function):
             ctx.rast_ctx.alpha_max.copy_(v_colors[:, 3:4, :].contiguous().view(B, C, -1))
             ctx.rast_ctx.grad_abs.copy_(v_colors[:, 4:6, :].contiguous().view(B, C, 2, -1))
         
-        ### forward is [B, N, C], so backword need from [B, C, N] transpose to it.
-        if ctx.rast_ctx.use_arch35:
+        ### Pure channel-first autograd: gradients must be [B, D, N].
+        ### The arch22 (A2/A3) backward kernel still emits parameter grads in
+        ### N-first layout, while arch35 emits channel-first directly.
+        if not ctx.rast_ctx.use_arch35:
             v_pw = v_pw.transpose(1, 2).contiguous()
             v_quats = v_quats.transpose(1, 2).contiguous()
             v_scales = v_scales.transpose(1, 2).contiguous()

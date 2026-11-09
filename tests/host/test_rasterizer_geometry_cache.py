@@ -69,12 +69,11 @@ def load_rasterizer():
 
 def render(rasterizer, size, tile_size, device="cpu"):
     splats = {
-        "means": Array(np.zeros((1, 3)), device),
-        "quats": np.zeros((1, 4)),
-        "scales": np.zeros((1, 3)),
+        "means": Array(np.zeros((3, 1)), device),
+        "quats": np.zeros((4, 1)),
+        "scales": np.zeros((3, 1)),
         "opacities": np.zeros(1),
-        "sh0": np.zeros((1, 1, 3)),
-        "shN": np.zeros((1, 0, 3)),
+        "sh": np.zeros((1, 3, 1)),
     }
     camera = (np.eye(4)[None], np.eye(3)[None], "RGB")
 

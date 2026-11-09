@@ -33,23 +33,25 @@ def _assert_shape(test_instance, tensor, expected_shape, msg=""):
 
 
 def _gen_splats(n_gs, sh_degree, device='npu'):
-    means = (torch.rand(n_gs, 3, dtype=torch.float32) - 0.5) * 0.3
+    # Channel-first layout: means/quats/scales [D,N], sh [K,3,N].
+    means = ((torch.rand(n_gs, 3, dtype=torch.float32) - 0.5) * 0.3).t().contiguous()
     quats = torch.randn(n_gs, 4, dtype=torch.float32)
-    quats = quats / quats.norm(dim=-1, keepdim=True)
-    scales = torch.log(torch.ones(n_gs, 3, dtype=torch.float32) * 0.01)
+    quats = (quats / quats.norm(dim=-1, keepdim=True)).t().contiguous()
+    scales = torch.log(torch.ones(n_gs, 3, dtype=torch.float32) * 0.01).t().contiguous()
     opacities = torch.logit(torch.full((n_gs,), 0.5, dtype=torch.float32))
 
     k = (sh_degree + 1) ** 2
-    sh0 = torch.zeros(n_gs, 1, 3, dtype=torch.float32)
-    shN = torch.randn(n_gs, k - 1, 3, dtype=torch.float32) * 0.01
+    sh = torch.zeros(k, 3, n_gs, dtype=torch.float32)
+    sh[0].fill_(0.0)
+    if k > 1:
+        sh[1:] = torch.randn(k - 1, 3, n_gs, dtype=torch.float32) * 0.01
 
     return {
         "means": means.to(device),
         "quats": quats.to(device),
         "scales": scales.to(device),
         "opacities": opacities.to(device),
-        "sh0": sh0.to(device),
-        "shN": shN.to(device),
+        "sh": sh.to(device),
     }
 
 
@@ -76,20 +78,20 @@ def _golden_rasterization(splats, cam, size, tile_size, active_sh_degree, camera
     quats = splats["quats"]
     scales = torch.exp(splats["scales"])
     opacities = torch.sigmoid(splats["opacities"])
-    colors_sh = torch.cat([splats["sh0"], splats["shN"]], 1)
+    colors_sh = splats["sh"]
 
     C = viewmats.shape[0]
-    N = means.shape[0]
+    N = means.shape[-1]
     B = 1
 
     rays_o = camtoworlds[0, :3, 3]
-    rays_d = means - rays_o
-    rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+    rays_d = means - rays_o.unsqueeze(1)
+    rays_d = rays_d / rays_d.norm(dim=0, keepdim=True)
     k = (active_sh_degree + 1) ** 2
     shs = colors_sh.unsqueeze(0).expand(C, -1, -1, -1)
     from gauss_splat import spherical_harmonics
-    colors = spherical_harmonics(active_sh_degree, rays_d.reshape(B, N, 3),
-                                 shs[0, :, :k, :].reshape(B, N, k, 3))
+    colors = spherical_harmonics(active_sh_degree, rays_d.reshape(B, 3, N),
+                                 shs[0, :k, :, :].reshape(B, k, 3, N))
     colors = (colors + 0.5).clip(min=0.0)
 
     from gauss_splat import projection_three_dims_gaussian_fused
@@ -97,8 +99,8 @@ def _golden_rasterization(splats, cam, size, tile_size, active_sh_degree, camera
     sigma = torch.ones((1,), device=means.device)
     means2d, depths, conics, opacities_proj, radius, covars2d, colors_proj, cnt, _proj_filter, _vi_culling = \
         projection_three_dims_gaussian_fused(
-            means.reshape(B, N, 3), colors, None,
-            quats.reshape(B, N, 4), scales.reshape(B, N, 3), opacities.reshape(B, N),
+            means.reshape(B, 3, N), colors, None,
+            quats.reshape(B, 4, N), scales.reshape(B, 3, N), opacities.reshape(B, N),
             viewmats.reshape(B, C, 4, 4).contiguous(), Ks.reshape(B, C, 3, 3),
             vi, sigma, None, width, height, 0.3, 0.01)
 
@@ -361,11 +363,10 @@ class TestRasterizerValidation(TestCase):
         rasterizer = Rasterizer()
         splats = {
             "means": torch.randn(10, 2, device='npu'),
-            "quats": torch.randn(10, 4, device='npu'),
-            "scales": torch.zeros(10, 3, device='npu'),
+            "quats": torch.randn(4, 10, device='npu'),
+            "scales": torch.zeros(3, 10, device='npu'),
             "opacities": torch.zeros(10, device='npu'),
-            "sh0": torch.zeros(10, 1, 3, device='npu'),
-            "shN": torch.zeros(10, 0, 3, device='npu'),
+            "sh": torch.zeros(1, 3, 10, device='npu'),
         }
         cam = _gen_camera(32, 32)
         with self.assertRaises(ValueError):
@@ -377,12 +378,11 @@ class TestRasterizerValidation(TestCase):
     def test_invalid_quats_shape(self):
         rasterizer = Rasterizer()
         splats = {
-            "means": torch.randn(10, 3, device='npu'),
-            "quats": torch.randn(10, 3, device='npu'),
-            "scales": torch.zeros(10, 3, device='npu'),
+            "means": torch.randn(3, 10, device='npu'),
+            "quats": torch.randn(3, 10, device='npu'),
+            "scales": torch.zeros(3, 10, device='npu'),
             "opacities": torch.zeros(10, device='npu'),
-            "sh0": torch.zeros(10, 1, 3, device='npu'),
-            "shN": torch.zeros(10, 0, 3, device='npu'),
+            "sh": torch.zeros(1, 3, 10, device='npu'),
         }
         cam = _gen_camera(32, 32)
         with self.assertRaises(ValueError):
@@ -484,7 +484,7 @@ class TestRasterizerMinimalGaussians(TestCase):
             self.skipTest("A5 dense_indices output is required")
         splats = _gen_splats(3, 0)
         splats["means"] = torch.tensor([[0.0, 0.0, 3.0], [0.0, 0.0, -3.0],
-                                         [0.1, 0.0, 3.0]], device='npu')
+                                         [0.1, 0.0, 3.0]], device='npu').t().contiguous()
         camtoworlds = torch.eye(4, device='npu').unsqueeze(0)
         ks = torch.tensor([[[50.0, 0.0, 16.0], [0.0, 50.0, 16.0],
                             [0.0, 0.0, 1.0]]], device='npu')
@@ -507,17 +507,16 @@ class TestRasterizerMinimalGaussians(TestCase):
 
     def test_gaussian_behind_camera(self):
         rasterizer = Rasterizer()
-        means = torch.tensor([[0.0, 0.0, -100.0]], device='npu')
-        quats = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device='npu')
-        scales = torch.log(torch.ones(1, 3, device='npu') * 0.001)
+        means = torch.tensor([[0.0], [0.0], [-100.0]], device='npu')
+        quats = torch.tensor([[1.0], [0.0], [0.0], [0.0]], device='npu')
+        scales = torch.log(torch.ones(3, 1, device='npu') * 0.001)
         opacities = torch.logit(torch.tensor([0.01], device='npu'))
         splats = {
             "means": means,
             "quats": quats,
             "scales": scales,
             "opacities": opacities,
-            "sh0": torch.zeros(1, 1, 3, device='npu'),
-            "shN": torch.zeros(1, 0, 3, device='npu'),
+            "sh": torch.zeros(1, 3, 1, device='npu'),
         }
         cam = _gen_camera(32, 32)
         render_colors, render_depths, meta = rasterizer.rasterization(

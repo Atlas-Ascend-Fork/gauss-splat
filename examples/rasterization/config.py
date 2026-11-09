@@ -124,6 +124,8 @@ class Config:
 
     # whether profiling
     profiling: bool = False
+    # Channel-first layout for GS params: True uses [D,N]/[K,3,N], False uses [N,D]/[N,K,3]
+    is_channel_first: bool = True
     # Render backend
     render_backend: Literal["3dgs"] = "3dgs"
     # Perf profiling steps: >0 = forward+backward, <0 = forward-only, 0 = eval only

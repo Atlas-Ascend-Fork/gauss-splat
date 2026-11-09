@@ -564,13 +564,15 @@ class TestProjection3DGSForward(TestCase):
 
     # pylint: disable=too-many-arguments,huawei-too-many-arguments,too-many-return-values
     def npu_to_exec(self, inputs, width, height, eps2d, near_plane, far_plane, calc_compensations, camera_model):
-        means = inputs.means.npu()
+        # Pure channel-first op.
+        means = inputs.means.permute(0, 2, 1).contiguous().npu()
         colors = inputs.colors.transpose(1, 2).contiguous().npu()
         covars = inputs.covars.npu()
         opacities = inputs.opacities.npu()
         viewmats = inputs.viewmats.npu()
         ks = inputs.ks.npu()
-        b, n = means.shape[:2]
+        b = means.shape[0]
+        n = means.shape[-1]   # channel-first [B,3,N]
         c = viewmats.shape[1]
         rast_ctx = RastCtx()
         rast_ctx.proj_backward_culling = False

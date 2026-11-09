@@ -64,6 +64,13 @@ class ADCStrategy(Strategy):
     verbose: bool = False
     key_for_gradient: Literal["means2d"] = "means2d"
     lc_wsr_enable=False
+    _is_channel_first: bool = False
+
+    def set_channel_first(self, is_channel_first: bool):
+        self._is_channel_first = is_channel_first
+
+    def _get_n(self, t):
+        return t.shape[1] if (self._is_channel_first and t.dim() == 2 and t.shape[0] == 3) else t.shape[-1] if (self._is_channel_first and t.dim() == 3 and t.shape[1] == 3) else t.shape[0]
 
     def initialize_state(self, scene_scale: float = 1.0, lc_wsr_enable=False) -> Dict[str, Any]:
         state = {"grad2d": None, "count": None, "scene_scale": scene_scale,
@@ -91,7 +98,7 @@ class ADCStrategy(Strategy):
             n_dupli, n_split = self._grow_gs(params, optimizers, state, step, info)
             n_prune = self._prune_gs(params, optimizers, state, step, info)
             # (4) hard cap: grow freely, then if N>cap_max remove the lowest-opacity excess
-            n_cur = len(params["means"])
+            n_cur = self._get_n(params["means"])
             if n_cur > self.cap_max:
                 n_excess = n_cur - self.cap_max
                 if self.lc_wsr_enable:
@@ -102,12 +109,12 @@ class ADCStrategy(Strategy):
                 cap_mask = torch.zeros(n_cur, dtype=torch.bool, device=opa.device)
                 cap_mask[low_ids] = True
                 if self.lc_wsr_enable:
-                    remove(params=params, optimizers=optimizers, state=state, mask=cap_mask, info=info)
+                    remove(params=params, optimizers=optimizers, state=state, mask=cap_mask, info=info, is_channel_first=self._is_channel_first)
                 else:
-                    remove(params=params, optimizers=optimizers, state=state, mask=cap_mask)
+                    remove(params=params, optimizers=optimizers, state=state, mask=cap_mask, is_channel_first=self._is_channel_first)
             if self.verbose:
                 print(f"Step {step}: +{n_dupli} dup +{n_split} split -{n_prune} prune "
-                      f"-> {len(params['means'])} GSs")
+                      f"-> {self._get_n(params['means'])} GSs")
             state["grad2d"].zero_()
             state["count"].zero_()
             state["radii"].zero_()
@@ -131,7 +138,7 @@ class ADCStrategy(Strategy):
         grads[..., 0] *= info["width"] / 2.0 * info["n_cameras"]
         grads[..., 1] *= info["height"] / 2.0 * info["n_cameras"]
 
-        n_gaussian = len(list(params.values())[0])
+        n_gaussian = self._get_n(params["means"])
         device = grads.device
         if state["grad2d"] is None:
             state["grad2d"] = torch.zeros(n_gaussian, device=device)
@@ -200,7 +207,8 @@ class ADCStrategy(Strategy):
 
         is_grad_high = grads > self.grow_grad2d
         # (2) 3D-scale-aware clone vs split
-        is_small = (torch.exp(params["scales"]).max(dim=-1).values
+        _scale_dim = 0 if self._is_channel_first else -1
+        is_small = (torch.exp(params["scales"]).max(dim=_scale_dim).values
                     <= self.grow_scale3d * state["scene_scale"])
         is_dupli = is_grad_high & is_small
         is_large = ~is_small
@@ -212,9 +220,9 @@ class ADCStrategy(Strategy):
         n_dupli = int(is_dupli.sum().item())
         if n_dupli > 0:
             if self.lc_wsr_enable:
-                duplicate(params=params, optimizers=optimizers, state=state, mask=is_dupli, info=info)
+                duplicate(params=params, optimizers=optimizers, state=state, mask=is_dupli, info=info, is_channel_first=self._is_channel_first)
             else:
-                duplicate(params=params, optimizers=optimizers, state=state, mask=is_dupli)
+                duplicate(params=params, optimizers=optimizers, state=state, mask=is_dupli, is_channel_first=self._is_channel_first)
         # new dupli'd GSs are appended; they must not be split this round
         is_split = torch.cat(
             [is_split, torch.zeros(n_dupli, dtype=torch.bool, device=device)])
@@ -222,10 +230,12 @@ class ADCStrategy(Strategy):
         if n_split > 0:
             if self.lc_wsr_enable:
                 split(params=params, optimizers=optimizers, state=state,
-                      mask=is_split, revised_opacity=self.revised_opacity, info=info)
+                      mask=is_split, revised_opacity=self.revised_opacity, info=info,
+                      is_channel_first=self._is_channel_first)
             else:
                 split(params=params, optimizers=optimizers, state=state,
-                      mask=is_split, revised_opacity=self.revised_opacity)
+                      mask=is_split, revised_opacity=self.revised_opacity,
+                      is_channel_first=self._is_channel_first)
         return n_dupli, n_split
 
     @torch.no_grad()
@@ -241,7 +251,7 @@ class ADCStrategy(Strategy):
         n_prune = int(is_prune.sum().item())
         if n_prune > 0:
             if self.lc_wsr_enable:
-                remove(params=params, optimizers=optimizers, state=state, mask=is_prune, info=info)
+                remove(params=params, optimizers=optimizers, state=state, mask=is_prune, info=info, is_channel_first=self._is_channel_first)
             else:
-                remove(params=params, optimizers=optimizers, state=state, mask=is_prune)
+                remove(params=params, optimizers=optimizers, state=state, mask=is_prune, is_channel_first=self._is_channel_first)
         return n_prune

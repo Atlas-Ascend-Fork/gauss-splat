@@ -25,6 +25,62 @@ from torch import Tensor
 
 # Pure-torch replacements for gsplat CUDA extensions (not available in cbs_a5 env).
 
+# Channel-first layout descriptors used by the densification helpers.
+_CF_PARAMS = frozenset({"means", "quats", "scales"})
+_SH_PARAMS = frozenset({"sh"})
+
+
+def _n_dim(name, is_channel_first):
+    if not is_channel_first:
+        return 0
+    if name in _CF_PARAMS:
+        return 1
+    if name in _SH_PARAMS:
+        return 2
+    return 0
+
+
+def _to_n_first(p, name, is_channel_first):
+    """View a parameter in N-first layout for layout-agnostic processing."""
+    if not is_channel_first:
+        return p
+    if name in _CF_PARAMS:
+        return p.t()
+    if name in _SH_PARAMS:
+        return p.permute(2, 0, 1)
+    return p
+
+
+def _from_n_first(p, name, is_channel_first):
+    if not is_channel_first:
+        return p
+    if name in _CF_PARAMS:
+        return p.t().contiguous()
+    if name in _SH_PARAMS:
+        return p.permute(1, 2, 0).contiguous()
+    return p
+
+
+def _register_sh_hook(param: Tensor, is_channel_first: bool):
+    """Re-register the high-order SH /20 hook after a Parameter is rebuilt."""
+    def grad_hook(grad):
+        grad_scaled = grad.clone()
+        if is_channel_first:
+            grad_scaled[1:, :, :] /= 20.0   # [K, 3, N]
+        else:
+            grad_scaled[:, 1:, :] /= 20.0   # [N, K, 3]
+        return grad_scaled
+    param.register_hook(grad_hook)
+
+
+def _refresh_color_hooks(params, is_channel_first: bool):
+    """Re-attach hooks lost when duplicate/split/remove replaces Parameters."""
+    if "sh" in params:
+        _register_sh_hook(params["sh"], is_channel_first)
+    if "features_sh" in params:
+        _register_sh_hook(params["features_sh"], False)  # always N-first [N,K,3]
+
+
 def normalized_quat_to_rotmat(quat):
     """Normalized quaternions [N,4] (wxyz) -> rotation matrices [N,3,3]."""
     w, x, y, z = quat.unbind(-1)
@@ -115,6 +171,7 @@ def _update_param_with_optimizer(
     params: Union[Dict[str, torch.nn.Parameter], torch.nn.ParameterDict],
     optimizers: Dict[str, torch.optim.Optimizer],
     names: Union[List[str], None] = None,
+    is_channel_first: bool = False,
 ):
     """Update the parameters and the state in the optimizers with defined functions.
 
@@ -133,7 +190,7 @@ def _update_param_with_optimizer(
 
     for name in names:
         param = params[name]
-        if param.shape[0] == 1:
+        if name in ("sigma", "weight_background"):
             continue
         new_param = param_fn(name, param)
         params[name] = new_param
@@ -150,7 +207,7 @@ def _update_param_with_optimizer(
             for key in param_state.keys():
                 if key != "step":
                     v = param_state[key]
-                    param_state[key] = optimizer_fn(key, v)
+                    param_state[key] = optimizer_fn(name, key, v)
             optimizer.param_groups[i]["params"] = [new_param]
             optimizer.state[new_param] = param_state
 
@@ -163,6 +220,7 @@ def duplicate(
     mask: Tensor,
     scene: Scene | None = None,
     info = None,
+    is_channel_first: bool = False,
 ):
     """Inplace duplicate the Gaussian with the given mask.
 
@@ -175,13 +233,24 @@ def duplicate(
     sel = torch.where(mask)[0]
 
     def param_fn(name: str, p: Tensor) -> Tensor:
-        return torch.nn.Parameter(torch.cat([p, p[sel]]), requires_grad=p.requires_grad)
+        dim = _n_dim(name, is_channel_first)
+        return torch.nn.Parameter(
+            torch.cat([p, p.index_select(dim, sel)], dim=dim),
+            requires_grad=p.requires_grad,
+        )
 
-    def optimizer_fn(key: str, v: Tensor) -> Tensor:
-        return torch.cat([v, v.new_zeros((len(sel), *v.shape[1:]))])
+    def optimizer_fn(name: str, key: str, v: Tensor) -> Tensor:
+        dim = _n_dim(name, is_channel_first)
+        shape = list(v.shape)
+        shape[dim] = len(sel)
+        return torch.cat([v, v.new_zeros(shape)], dim=dim)
 
     # update the parameters and the state in the optimizers
-    _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
+    _update_param_with_optimizer(
+        param_fn, optimizer_fn, params, optimizers,
+        is_channel_first=is_channel_first,
+    )
+    _refresh_color_hooks(params, is_channel_first)
     # update the extra running state
     for k, v in state.items():
         if isinstance(v, torch.Tensor):
@@ -202,6 +271,7 @@ def split(
     revised_opacity: bool = False,
     scene: Scene | None = None,
     info = None,
+    is_channel_first: bool = False,
 ):
     """Inplace split the Gaussian with the given mask.
 
@@ -216,8 +286,10 @@ def split(
     sel = torch.where(mask)[0]
     rest = torch.where(~mask)[0]
 
-    scales = torch.exp(params["scales"][sel])
-    quats = F.normalize(params["quats"][sel], dim=-1)
+    scales_nf = _to_n_first(params["scales"], "scales", is_channel_first)
+    quats_nf = _to_n_first(params["quats"], "quats", is_channel_first)
+    scales = torch.exp(scales_nf[sel])
+    quats = F.normalize(quats_nf[sel], dim=-1)
     rotmats = normalized_quat_to_rotmat(quats)  # [N, 3, 3]
     samples = torch.einsum(
         "nij,nj,bnj->bni",
@@ -227,26 +299,33 @@ def split(
     )  # [2, N, 3]
 
     def param_fn(name: str, p: Tensor) -> Tensor:
-        repeats = [2] + [1] * (p.dim() - 1)
+        p_nf = _to_n_first(p, name, is_channel_first)
+        repeats = [2] + [1] * (p_nf.dim() - 1)
         if name == "means":
-            p_split = (p[sel] + samples).reshape(-1, 3)  # [2N, 3]
+            p_split = (p_nf[sel] + samples).reshape(-1, 3)  # [2N, 3]
         elif name == "scales":
             p_split = torch.log(scales / 1.6).repeat(2, 1)  # [2N, 3]
         elif name == "opacities" and revised_opacity:
-            new_opacities = 1.0 - torch.sqrt(1.0 - torch.sigmoid(p[sel]))
+            new_opacities = 1.0 - torch.sqrt(1.0 - torch.sigmoid(p_nf[sel]))
             p_split = torch.logit(new_opacities).repeat(repeats)  # [2N]
         else:
-            p_split = p[sel].repeat(repeats)
-        p_new = torch.cat([p[rest], p_split])
-        p_new = torch.nn.Parameter(p_new, requires_grad=p.requires_grad)
-        return p_new
+            p_split = p_nf[sel].repeat(repeats)
+        p_new = torch.cat([p_nf[rest], p_split])
+        p_new = _from_n_first(p_new, name, is_channel_first)
+        return torch.nn.Parameter(p_new, requires_grad=p.requires_grad)
 
-    def optimizer_fn(key: str, v: Tensor) -> Tensor:
-        v_split = v.new_zeros((2 * len(sel), *v.shape[1:]))
-        return torch.cat([v[rest], v_split])
+    def optimizer_fn(name: str, key: str, v: Tensor) -> Tensor:
+        v_nf = _to_n_first(v, name, is_channel_first)
+        v_split = v_nf.new_zeros((2 * len(sel), *v_nf.shape[1:]))
+        v_new = torch.cat([v_nf[rest], v_split])
+        return _from_n_first(v_new, name, is_channel_first)
 
     # update the parameters and the state in the optimizers
-    _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
+    _update_param_with_optimizer(
+        param_fn, optimizer_fn, params, optimizers,
+        is_channel_first=is_channel_first,
+    )
+    _refresh_color_hooks(params, is_channel_first)
     # update the extra running state
     for k, v in state.items():
         if isinstance(v, torch.Tensor):
@@ -269,6 +348,7 @@ def remove(
     mask: Tensor,
     scene: Scene | None = None,
     info = None,
+    is_channel_first: bool = False,
 ):
     """Inplace remove the Gaussian with the given mask.
 
@@ -280,13 +360,19 @@ def remove(
     sel = torch.where(~mask)[0]
 
     def param_fn(name: str, p: Tensor) -> Tensor:
-        return torch.nn.Parameter(p[sel], requires_grad=p.requires_grad)
+        dim = _n_dim(name, is_channel_first)
+        return torch.nn.Parameter(p.index_select(dim, sel), requires_grad=p.requires_grad)
 
-    def optimizer_fn(key: str, v: Tensor) -> Tensor:
-        return v[sel]
+    def optimizer_fn(name: str, key: str, v: Tensor) -> Tensor:
+        dim = _n_dim(name, is_channel_first)
+        return v.index_select(dim, sel)
 
     # update the parameters and the state in the optimizers
-    _update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
+    _update_param_with_optimizer(
+        param_fn, optimizer_fn, params, optimizers,
+        is_channel_first=is_channel_first,
+    )
+    _refresh_color_hooks(params, is_channel_first)
     # update the extra running state
     for k, v in state.items():
         if isinstance(v, torch.Tensor):
@@ -319,7 +405,7 @@ def reset_opa(
         else:
             raise ValueError(f"Unexpected parameter name: {name}")
 
-    def optimizer_fn(key: str, v: Tensor) -> Tensor:
+    def optimizer_fn(name: str, key: str, v: Tensor) -> Tensor:
         return torch.zeros_like(v)
 
     # update the parameters and the state in the optimizers
@@ -373,7 +459,7 @@ def relocate(
         p[dead_indices] = p[sampled_idxs]
         return torch.nn.Parameter(p, requires_grad=p.requires_grad)
 
-    def optimizer_fn(key: str, v: Tensor) -> Tensor:
+    def optimizer_fn(name: str, key: str, v: Tensor) -> Tensor:
         v[sampled_idxs] = 0
         return v
 
@@ -418,7 +504,7 @@ def sample_add(
         p_new = torch.cat([p, p[sampled_idxs]])
         return torch.nn.Parameter(p_new, requires_grad=p.requires_grad)
 
-    def optimizer_fn(key: str, v: Tensor) -> Tensor:
+    def optimizer_fn(name: str, key: str, v: Tensor) -> Tensor:
         v_new = v.new_zeros((len(sampled_idxs), *v.shape[1:]))
         return torch.cat([v, v_new])
 

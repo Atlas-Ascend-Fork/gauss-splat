@@ -561,8 +561,11 @@ class TestProjectionAutogradEndToEnd(unittest.TestCase):
             width, height, 0.01, 100.)
         expected = tuple(expected_filter[i] for i in (2, 3, 6, 7, 4, 5, 1, 9, 8))
         mn, qn, sn, cn, on = device_leaves
+        # Pure channel-first op: transpose gaussian attributes to [B,D,N].
         actual = projection_three_dims_gaussian_fused(
-            mn, cn, None, qn, sn, on, views.npu(), ks.npu(),
+            mn.permute(0, 2, 1).contiguous(), cn, None,
+            qn.permute(0, 2, 1).contiguous(), sn.permute(0, 2, 1).contiguous(),
+            on, views.npu(), ks.npu(),
             torch.ones((b, c, n), device=mn.device), torch.ones((1,), device=mn.device),
             None, width, height, 0.3, 0.01, 100., compensation, 'pinhole')
         # Compact culling buffers only define entries [0, cnt); the operator

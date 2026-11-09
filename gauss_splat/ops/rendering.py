@@ -37,9 +37,10 @@ def _validate_inputs(
 ) -> None:
     means, quats, scales, opacities, colors = gs
     viewmats, Ks, camera_model, render_mode = camera
-    assert_check(means.shape == (N, 3), f"Invalid shape for means: {means.shape}")
-    assert_check(quats.shape == (N, 4), f"Invalid shape for quats: {quats.shape}")
-    assert_check(scales.shape == (N, 3), f"Invalid shape for scales: {scales.shape}")
+    # Pure channel-first op: [D,N] / [K,3,N].
+    assert_check(means.shape == (3, N), f"Invalid shape for means: {means.shape}")
+    assert_check(quats.shape == (4, N), f"Invalid shape for quats: {quats.shape}")
+    assert_check(scales.shape == (3, N), f"Invalid shape for scales: {scales.shape}")
     assert_check(opacities.shape == (N,), f"Invalid shape for opacities: {opacities.shape}")
     assert_check(viewmats.shape == (C, 4, 4), f"Invalid shape for viewmats: {viewmats.shape}")
     assert_check(Ks.shape == (C, 3, 3), f"Invalid shape for Ks: {Ks.shape}")
@@ -47,15 +48,16 @@ def _validate_inputs(
     assert_check(render_mode in ["RGB", "D", "ED", "RGB+D", "RGB+ED"], f"Invalid render_mode: {render_mode}")
 
     if sh_degree is None:
-        assert_check((colors.dim() == 2 and colors.shape[0] == N) or
-                    (colors.dim() == 3 and colors.shape[:2] == (C, N)),
+        assert_check((colors.dim() == 2 and colors.shape[-1] == N) or
+                    (colors.dim() == 3 and colors.shape[0] == C and colors.shape[-1] == N),
                     f"Invalid shape for colors: {colors.shape}")
     else:
-        assert_check((colors.dim() == 3 and colors.shape[0] == N and colors.shape[2] == 3) or
-                    (colors.dim() == 4 and colors.shape[:2] == (C, N) and colors.shape[3] == 3),
+        assert_check((colors.dim() == 3 and colors.shape[1] == 3 and colors.shape[2] == N) or
+                    (colors.dim() == 4 and colors.shape[0] == C and colors.shape[2] == 3 and colors.shape[3] == N),
                     f"Invalid shape for colors: {colors.shape}")
 
-        assert_check((sh_degree + 1) ** 2 <= colors.shape[-2], f"Invalid sh_degree for colors shape: {colors.shape}")
+        assert_check((sh_degree + 1) ** 2 <= colors.shape[-3] if colors.dim() == 3 else (sh_degree + 1) ** 2 <= colors.shape[1],
+                    f"Invalid sh_degree for colors shape: {colors.shape}")
 
 
 class Rasterizer:
@@ -123,12 +125,12 @@ class Rasterizer:
                 torch.arange(self.padded_height), indexing='xy'), dim=-1).to(device)
             self._geometry_key = geometry_key
 
-        means = splats["means"]
-        quats = splats["quats"]
-        scales = torch.exp(splats["scales"])
-        opacities = torch.sigmoid(splats["opacities"])
+        means = splats["means"]          # [3, N]
+        quats = splats["quats"]          # [4, N]
+        scales = torch.exp(splats["scales"])  # [3, N]
+        opacities = torch.sigmoid(splats["opacities"])  # [N]
 
-        colors = torch.cat([splats["sh0"], splats["shN"]], 1)
+        colors = splats["sh"]            # [K, 3, N]
 
         camtoworlds, Ks, render_mode = cam
         viewmats = torch.linalg.inv(camtoworlds)
@@ -155,7 +157,7 @@ class Rasterizer:
         means, quats, scales, opacities, colors = gs
         viewmats, Ks, camera_model, render_mode = camera
 
-        N = means.shape[0]
+        N = means.shape[-1]
         C = viewmats.shape[0]
         B = 1
         _validate_inputs(gs, camera, sh_degree, N, C)
@@ -190,14 +192,19 @@ class Rasterizer:
             meta["n_cameras"] = C
             return torch.cat(rendered, dim=0), torch.cat(depths_per_view, dim=0), meta
         if sh_degree is None:
-            colors = colors.T.unsqueeze(0).contiguous()
+            # Post-activation colors: [3, N] or [C, 3, N].
+            colors = colors.unsqueeze(0) if colors.dim() == 2 else colors
         else:
             shs = colors.unsqueeze(0) if colors.dim() == 3 else colors
             rays_o = camtoworlds[0, :3, 3]
-            rays_d = means - rays_o
-            rays_d = rays_d / rays_d.norm(dim=-1, keepdim=True)
+            rays_d = means - rays_o.unsqueeze(1)   # [3, N] - [3, 1]
+            rays_d = rays_d / rays_d.norm(dim=0, keepdim=True)
             k = (sh_degree + 1) ** 2
-            colors = spherical_harmonics(sh_degree, rays_d.reshape(B, N, 3), shs[0, :, :k, :].reshape(B, N, k, 3))
+            colors = spherical_harmonics(
+                sh_degree,
+                rays_d.reshape(B, 3, N),
+                shs[0, :k, :, :].reshape(B, k, 3, N),
+            )
             colors = (colors + 0.5).clip(min=0.0)
 
         rast_ctx = self.rast_ctx if rast_ctx is None else rast_ctx
@@ -205,11 +212,11 @@ class Rasterizer:
         vi = torch.ones(B, C, N, dtype=torch.float32, device=means.device)
         sigma = torch.tensor([1.0], dtype=torch.float32, device=means.device)
         means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter, vi_culling = projection_three_dims_gaussian_fused(
-            means.reshape(B, N, 3),
+            means.reshape(B, 3, N),
             colors,
             None,
-            quats.reshape(B, N, 4),
-            scales.reshape(B, N, 3),
+            quats.reshape(B, 4, N),
+            scales.reshape(B, 3, N),
             opacities.reshape(B, N),
             viewmats.reshape(B, C, 4, 4).contiguous(),
             Ks.reshape(B, C, 3, 3),

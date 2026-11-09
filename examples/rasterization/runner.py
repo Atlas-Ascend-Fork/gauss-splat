@@ -65,6 +65,9 @@ class Rasterizer:
         splats: dict,
     ) -> Tuple:
         camtoworlds, Ks, render_mode = cam
+        if not self.cfg.is_channel_first:
+            from rasterization.utils import to_channel_first
+            splats = to_channel_first(splats)
         return self._impl.rasterization(
             cam=(camtoworlds, Ks, render_mode),
             size=size,
@@ -91,6 +94,10 @@ class Runner:
 
         # Densify Strategy
         self.strategy_name = "adc" if is_arch35() else "default"
+        if cfg.is_channel_first and not is_arch35() and cfg.densify:
+            print("[layout] is_channel_first requested but DefaultStrategy only "
+                  "supports N-first; falling back to N-first.", flush=True)
+            cfg.is_channel_first = False
         self.strategy = None
 
         # Where to dump results.
@@ -147,8 +154,10 @@ class Runner:
             world_size=world_size,
             learnable_background=cfg.learnable_background,
             lc_wsr_enable=cfg.lc_wsr_enable,
+            is_channel_first=cfg.is_channel_first,
         )
-        print("Model initialized. Number of GS:", len(self.splats["means"]))
+        self._N_dim = 1 if cfg.is_channel_first else 0
+        print("Model initialized. Number of GS:", self.splats["means"].shape[self._N_dim])
 
         # Losses & Metrics.
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
@@ -171,9 +180,11 @@ class Runner:
         if cfg.densify:
             if self.strategy_name == "adc":
                 self.strategy = cfg.strategy
+                if hasattr(self.strategy, "set_channel_first"):
+                    self.strategy.set_channel_first(cfg.is_channel_first)
                 if cfg.lc_wsr_enable:
                     self.strategy.initialize_state(0.01, torch.log,
-                        self.splats["means"].shape[0], self.scene_scale, self.device)
+                        self.splats["means"].shape[self._N_dim], self.scene_scale, self.device)
                 else:
                     self.strategy.check_sanity(self.splats, self.optimizers)
                     self.strategy_state = self.strategy.initialize_state(
@@ -418,7 +429,7 @@ class Runner:
                 self.writer.add_scalar("train/loss", loss.item(), step)
                 self.writer.add_scalar("train/l1loss", l1loss.item(), step)
                 self.writer.add_scalar("train/ssimloss", ssimloss.item(), step)
-                self.writer.add_scalar("train/num_GS", len(self.splats["means"]), step)
+                self.writer.add_scalar("train/num_GS", self.splats["means"].shape[self._N_dim], step)
                 self.writer.add_scalar("train/mem", mem, step)
                 if cfg.depth_loss:
                     self.writer.add_scalar("train/depthloss", depthloss.item(), step)
@@ -430,7 +441,7 @@ class Runner:
                 stats = {
                     "mem": mem,
                     "ellipse_time": time.time() - global_tic,
-                    "num_GS": len(self.splats["means"]),
+                    "num_GS": self.splats["means"].shape[self._N_dim],
                 }
                 print("Step: ", step, stats)
                 with open(
@@ -438,7 +449,11 @@ class Runner:
                     "w",
                 ) as f:
                     json.dump(stats, f)
-                data = {"step": step, "splats": self.splats.state_dict()}
+                splats_state = self.splats.state_dict()
+                if cfg.is_channel_first:
+                    from rasterization.utils import to_n_first
+                    splats_state = to_n_first(splats_state)
+                data = {"step": step, "splats": splats_state}
                 torch.save(
                     data, f"{self.ckpt_dir}/ckpt_{step}_rank{self.world_rank}.pt"
                 )
@@ -527,7 +542,7 @@ class Runner:
             stats.update(
                 {
                     "ellipse_time": ellipse_time,
-                    "num_GS": len(self.splats["means"]),
+                    "num_GS": self.splats["means"].shape[self._N_dim],
                 }
             )
             print(

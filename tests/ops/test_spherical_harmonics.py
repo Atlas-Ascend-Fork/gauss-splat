@@ -178,12 +178,13 @@ class TestSphericalHarmonicsForward(TestCase):
         batch_size, task_num = shape
         k = random.randint(0, 5)
 
-        dirs = torch.rand(batch_size, task_num, 3).float()
-        coeffs0 = torch.rand(batch_size, task_num, k + 1, 3).float()
-        coeffs1 = torch.rand(batch_size, task_num, k + 4, 3).float()
-        coeffs2 = torch.rand(batch_size, task_num, k + 9, 3).float()
-        coeffs3 = torch.rand(batch_size, task_num, k + 16, 3).float()
-        coeffs4 = torch.rand(batch_size, task_num, k + 25, 3).float()
+        # Pure channel-first layout: dirs [B,3,N], coeffs [B,K,3,N].
+        dirs = torch.rand(batch_size, 3, task_num).float()
+        coeffs0 = torch.rand(batch_size, k + 1, 3, task_num).float()
+        coeffs1 = torch.rand(batch_size, k + 4, 3, task_num).float()
+        coeffs2 = torch.rand(batch_size, k + 9, 3, task_num).float()
+        coeffs3 = torch.rand(batch_size, k + 16, 3, task_num).float()
+        coeffs4 = torch.rand(batch_size, k + 25, 3, task_num).float()
 
         return Inputs(dirs, coeffs0), Inputs(dirs, coeffs1), \
                Inputs(dirs, coeffs2), Inputs(dirs, coeffs3), Inputs(dirs, coeffs4)
@@ -217,10 +218,11 @@ class TestSphericalHarmonicsForward(TestCase):
         dirs = inputs.dirs
         coeffs = inputs.coeffs
 
+        # Convert CF -> N-first for the PyTorch reference, then return CF.
         output = _spherical_harmonics(
-            degree, dirs, coeffs
+            degree, dirs.permute(0, 2, 1), coeffs.permute(0, 3, 1, 2)
         )
-        
+
         return ExecResults(
             output=output.permute(0, 2, 1).detach().float()
         )
@@ -245,9 +247,9 @@ class TestSphericalHarmonicsForward(TestCase):
         # The A5 degree 1-4 tail path used to read/write past the padded task range, so
         # the same input could produce different results depending on the memory layout.
         torch.manual_seed(0)
-        dirs = torch.randn(1, 2, 3)
-        dirs = dirs / dirs.norm(dim=-1, keepdim=True)
-        coeffs = torch.randn(1, 2, 4, 3)
+        dirs = torch.randn(1, 3, 2)
+        dirs = dirs / dirs.norm(dim=1, keepdim=True)
+        coeffs = torch.randn(1, 4, 3, 2)
         out1 = spherical_harmonics(1, dirs.npu(), coeffs.npu()).cpu().numpy()
         out2 = spherical_harmonics(1, dirs.npu(), coeffs.npu()).cpu().numpy()
         self.assertRtolEqual(out1, out2, prec=0.0)

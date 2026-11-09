@@ -69,23 +69,23 @@ def parse_args():
 # ============================================================================
 
 def gen_splats(n_gs, sh_degree, device='npu'):
-    means = (torch.rand(n_gs, 3, dtype=torch.float32) - 0.5) * 0.3
+    means = ((torch.rand(n_gs, 3, dtype=torch.float32) - 0.5) * 0.3).t().contiguous()
     quats = torch.randn(n_gs, 4, dtype=torch.float32)
-    quats = quats / quats.norm(dim=-1, keepdim=True)
-    scales = torch.log(torch.ones(n_gs, 3, dtype=torch.float32) * 0.01)
+    quats = (quats / quats.norm(dim=-1, keepdim=True)).t().contiguous()
+    scales = torch.log(torch.ones(n_gs, 3, dtype=torch.float32) * 0.01).t().contiguous()
     opacities = torch.logit(torch.full((n_gs,), 0.5, dtype=torch.float32))
 
     k = (sh_degree + 1) ** 2
-    sh0 = torch.zeros(n_gs, 1, 3, dtype=torch.float32)
-    shN = torch.randn(n_gs, k - 1, 3, dtype=torch.float32) * 0.01
+    sh = torch.zeros(k, 3, n_gs, dtype=torch.float32)
+    if k > 1:
+        sh[1:] = torch.randn(k - 1, 3, n_gs, dtype=torch.float32) * 0.01
 
     return {
         "means": means.to(device),
         "quats": quats.to(device),
         "scales": scales.to(device),
         "opacities": opacities.to(device),
-        "sh0": sh0.to(device),
-        "shN": shN.to(device),
+        "sh": sh.to(device),
     }
 
 

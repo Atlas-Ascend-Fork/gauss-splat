@@ -13,6 +13,26 @@ from rasterization.config import Config
 from rasterization.runner import Runner
 
 
+def migrate_legacy_splats(splats):
+    """Migrate legacy checkpoint keys to the current single-parameter schema.
+
+    - sh0/shN        -> sh          (old 3DGS split SH)
+    - features_do/ro -> features_sh (old CBS appearance features)
+    """
+    if "sh" not in splats and "sh0" in splats and "shN" in splats:
+        splats["sh"] = torch.cat([splats.pop("sh0"), splats.pop("shN")], dim=1)
+    if (
+        "features_sh" not in splats
+        and "features_do" in splats
+        and "features_ro" in splats
+    ):
+        # features_do: [N,1,3], features_ro: [N,K-1,3] -> features_sh: [N,K,3]
+        splats["features_sh"] = torch.cat(
+            [splats.pop("features_do"), splats.pop("features_ro")], dim=1
+        )
+    return splats
+
+
 def main(local_rank: int, world_rank, world_size: int, cfg: Config):
 
     runner = Runner(local_rank, world_rank, world_size, cfg)
@@ -61,48 +81,54 @@ def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     # ===== [Profiling 修改] 结束 =====
 
     if cfg.ckpt is not None:
+        from rasterization.utils import to_channel_first
+
         # load checkpoint splats into the model
         ckpts = [
             torch.load(file, map_location=runner.device, weights_only=True)
             for file in cfg.ckpt
         ]
-        # Determine checkpoint N (from means)
+        # Checkpoints are always saved in N-first [N,D]/[N,K,3] format.
+        # Backward compatibility for older sh0/shN and features_do/ro schemas.
+        for ckpt in ckpts:
+            migrate_legacy_splats(ckpt["splats"])
+
+        # Determine checkpoint N (from means) and concatenate along N (dim=0).
         ckpt_N = ckpts[0]["splats"]["means"].shape[0]
+        loaded = {}
+        current_layout_keys = set()
         for k in runner.splats.keys():
             if k in ckpts[0]["splats"]:
-                new_data = torch.cat([ckpt["splats"][k] for ckpt in ckpts])
-                # Replace the Parameter (not just .data) so autograd tracks
-                # the correct checkpoint shape — SfM init size may differ.  
-                runner.splats[k] = torch.nn.Parameter(
-                    new_data.to(runner.device),
-                    requires_grad=runner.splats[k].requires_grad,
-                )
+                loaded[k] = torch.cat([ckpt["splats"][k] for ckpt in ckpts], dim=0)
             else:
-                # CBS-specific keys (features_do, features_ro, sigma) absent
-                # from 3DGS checkpoints — re-initialize to match checkpoint N.
+                # CBS-specific keys (features_sh, sigma) absent from 3DGS
+                # checkpoints — re-initialize to match checkpoint N.
                 init_N = runner.splats[k].shape[0]
-                if init_N != ckpt_N and k in ("features_do", "features_ro"):
+                if init_N != ckpt_N and k == "features_sh":
                     C0 = 0.28209479177387814
                     camera_sh_degree = 4
-                    features_o = torch.zeros(
-                        (ckpt_N, 3, (camera_sh_degree + 1) ** 2),
-                        dtype=torch.float32,
-                    )
-                    features_o[:, :, 0] = 0.1 * torch.ones(
+                    K = (camera_sh_degree + 1) ** 2
+                    new_data = torch.zeros((ckpt_N, K, 3), dtype=torch.float32)
+                    new_data[:, 0, :] = 0.1 * torch.ones(
                         (ckpt_N, 3), dtype=torch.float32
                     ) / C0
-                    if k == "features_do":
-                        new_data = features_o[:, :, 0:1].transpose(1, 2).contiguous()
-                    else:
-                        new_data = features_o[:, :, 1:].transpose(1, 2).contiguous()
-                    runner.splats[k] = torch.nn.Parameter(
-                        new_data.to(runner.device), requires_grad=True
-                    )
+                    loaded[k] = new_data
                     print(f"  [ckpt] key '{k}' resized {init_N} -> {ckpt_N}",
                           flush=True)
                 else:
+                    # Already in the runner's current layout; do not convert again.
+                    loaded[k] = runner.splats[k].data.detach().clone()
+                    current_layout_keys.add(k)
                     print(f"  [ckpt] key '{k}' not in checkpoint, using init value",
                           flush=True)
+        if cfg.is_channel_first:
+            for k in list(loaded.keys()):
+                if k not in current_layout_keys:
+                    loaded[k] = to_channel_first({k: loaded[k]})[k]
+        for k, v in loaded.items():
+            # Assign .data (not a new Parameter) so registered gradient hooks
+            # (e.g. the SH high-order /20 hook) survive checkpoint loading.
+            runner.splats[k].data = v.to(runner.device)
         step = ckpts[0]["step"]
         if cfg.perf_steps > 0:
             # perf mode: enable grad on splats, run forward+backward

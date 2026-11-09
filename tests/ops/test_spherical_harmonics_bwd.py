@@ -273,13 +273,14 @@ class TestSphericalHarmonicsForward(TestCase):
     def gen_inputs(self, shape):
         task_num = shape
 
-        dirs = torch.rand(1, task_num, 3).float()
+        # Pure channel-first layout: dirs [B,3,N], coeffs [B,K,3,N].
+        dirs = torch.rand(1, 3, task_num).float()
         v_colors = torch.rand(1, 3, task_num).float()
-        coeffs0 = torch.rand(1, task_num, 1, 3).float()
-        coeffs1 = torch.rand(1, task_num, 4, 3).float()
-        coeffs2 = torch.rand(1, task_num, 9, 3).float()
-        coeffs3 = torch.rand(1, task_num, 16, 3).float()
-        coeffs4 = torch.rand(1, task_num, 25, 3).float()
+        coeffs0 = torch.rand(1, 1, 3, task_num).float()
+        coeffs1 = torch.rand(1, 4, 3, task_num).float()
+        coeffs2 = torch.rand(1, 9, 3, task_num).float()
+        coeffs3 = torch.rand(1, 16, 3, task_num).float()
+        coeffs4 = torch.rand(1, 25, 3, task_num).float()
  
         return Inputs(dirs, coeffs0, v_colors), Inputs(dirs, coeffs1, v_colors), Inputs(dirs, coeffs2, v_colors),\
                Inputs(dirs, coeffs3, v_colors), Inputs(dirs, coeffs4, v_colors)
@@ -313,10 +314,13 @@ class TestSphericalHarmonicsForward(TestCase):
         dirs = inputs.dirs
         coeffs = inputs.coeffs
         v_colors = inputs.v_colors
-        output1, output2 = _spherical_harmonics_bwd(degree, dirs, coeffs, v_colors)
+        # Convert CF -> N-first for the PyTorch reference, then return CF.
+        v_dirs, v_coeffs = _spherical_harmonics_bwd(
+            degree, dirs.permute(0, 2, 1), coeffs.permute(0, 3, 1, 2), v_colors
+        )
         return ExecResults(
-            output1=output1.detach().float(),
-            output2=output2.detach().float()
+            output1=v_dirs.permute(0, 2, 1).detach().float(),
+            output2=v_coeffs.permute(0, 2, 3, 1).detach().float()
         )
  
  

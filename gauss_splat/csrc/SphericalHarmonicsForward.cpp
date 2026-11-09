@@ -28,20 +28,17 @@ at::Tensor spherical_harmonics_forward(at::Tensor& dirs, at::Tensor& coeffs, int
     TORCH_CHECK(coeffs.scalar_type() == at::kFloat,
         "coeffs: float32 tensor expected but got a tensor with dtype: ", coeffs.scalar_type());
 
-    uint32_t coeffsDim = coeffs.dim();
-    uint32_t coeffsNum = coeffs.sizes()[coeffsDim - 2];
+    TORCH_CHECK(dirs.dim() == 3, "dirs's dim should be 3.");
+    TORCH_CHECK(coeffs.dim() == 4, "coeffs's dim should be 4.");
+
+    // Pure channel-first op: dirs [B,3,N], coeffs [B,K,3,N].
+    uint32_t coeffsNum = coeffs.sizes()[1];
     if ((degrees_to_use + 1) * (degrees_to_use + 1) > coeffsNum) {
         AT_ERROR("Coeffs doesn't provide enough spherical harmonics bases functions to compute spherical harmonics.");
     }
 
     auto batchSize = dirs.sizes()[0];
-    auto gaussianNum = dirs.sizes()[1];
-
-    // Keep the batch dim so tensor shapes match the arch35 host tiling
-    // contract ([B,3,N] / [B,K,C,N]) and the kernel GM addressing:
-    // dirs [B,N,3] -> [B,3,N], coeffs [B,N,K,3] -> [B,K,3,N].
-    dirs = dirs.permute({0, 2, 1}).contiguous();
-    coeffs = coeffs.permute({0, 2, 3, 1}).contiguous();
+    auto gaussianNum = dirs.sizes()[2];
 
     TORCH_CHECK(dirs.sizes()[1] == SH_TAIL_DIM,
         "The second dimension of Dirs Tensor Must be 3.");

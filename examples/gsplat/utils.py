@@ -28,9 +28,20 @@ def save_ply(splats: torch.nn.ParameterDict, dir: str, colors: torch.Tensor = No
     scales = numpy_data["scales"]
     quats = numpy_data["quats"]
     opacities = numpy_data["opacities"]
+    sh = numpy_data["sh"]
 
-    sh0 = numpy_data["sh0"].transpose(0, 2, 1).reshape(means.shape[0], -1)
-    shN = numpy_data["shN"].transpose(0, 2, 1).reshape(means.shape[0], -1)
+    # Accept both N-first [N,D]/[N,K,3] and channel-first [D,N]/[K,3,N].
+    if means.ndim == 2 and means.shape[0] == 3 and means.shape[1] != 3:
+        means = means.T
+    if scales.ndim == 2 and scales.shape[0] == 3 and scales.shape[1] != 3:
+        scales = scales.T
+    if quats.ndim == 2 and quats.shape[0] == 4 and quats.shape[1] != 4:
+        quats = quats.T
+    if sh.ndim == 3 and sh.shape[-1] != 3:
+        sh = sh.transpose(2, 0, 1)  # [K,3,N] -> [N,K,3]
+
+    sh0 = sh[:, :1, :].transpose(0, 2, 1).reshape(means.shape[0], -1)
+    shN = sh[:, 1:, :].transpose(0, 2, 1).reshape(means.shape[0], -1)
 
     # Create a mask to identify rows with NaN or Inf in any of the numpy_data arrays
     invalid_mask = (

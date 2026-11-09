@@ -101,7 +101,8 @@ def create_splats_with_optimizers(
     world_rank: int = 0,
     world_size: int = 1,
     learnable_background: bool = False,
-    lc_wsr_enable: bool = False
+    lc_wsr_enable: bool = False,
+    is_channel_first: bool = True,
 ) -> Tuple[torch.nn.ParameterDict, Dict[str, torch.optim.Optimizer]]:
     if init_type == "sfm":
         points = torch.from_numpy(parser.points).float()
@@ -128,9 +129,9 @@ def create_splats_with_optimizers(
 
     params = [
         # name, value, lr
-        ("means", torch.nn.Parameter(points), 1.6e-4 * scene_scale),
-        ("scales", torch.nn.Parameter(scales), 5e-3),
-        ("quats", torch.nn.Parameter(quats), 1e-3),
+        ("means", torch.nn.Parameter(points.t().contiguous() if is_channel_first else points.contiguous()), 1.6e-4 * scene_scale),
+        ("scales", torch.nn.Parameter(scales.t().contiguous() if is_channel_first else scales.contiguous()), 5e-3),
+        ("quats", torch.nn.Parameter(quats.t().contiguous() if is_channel_first else quats.contiguous()), 1e-3),
         ("opacities", torch.nn.Parameter(opacities), 1e-2),
     ]
 
@@ -138,8 +139,21 @@ def create_splats_with_optimizers(
         # color is SH coefficients.
         colors = torch.zeros((N, (sh_degree + 1) ** 2, 3))  # [N, K, 3]
         colors[:, 0, :] = rgb_to_sh(rgbs)
-        params.append(("sh0", torch.nn.Parameter(colors[:, :1, :]), 2.5e-3))
-        params.append(("shN", torch.nn.Parameter(colors[:, 1:, :]), 2.5e-3 / 20))
+        if is_channel_first:
+            colors = colors.permute(1, 2, 0).contiguous()  # [N,K,3] -> [K,3,N]
+
+        colors_param = torch.nn.Parameter(colors)
+
+        def sh_grad_hook(grad):
+            grad_scaled = grad.clone()
+            if is_channel_first:
+                grad_scaled[1:, :, :] /= 20.0  # [K,3,N]
+            else:
+                grad_scaled[:, 1:, :] /= 20.0  # [N,K,3]
+            return grad_scaled
+
+        colors_param.register_hook(sh_grad_hook)
+        params.append(("sh", colors_param, 2.5e-3))
     else:
         # features will be used for appearance and view-dependent shading
         features = torch.rand(N, feature_dim)  # [N, feature_dim]
@@ -155,12 +169,19 @@ def create_splats_with_optimizers(
         camera_sh_degree = 4
         sigma = torch.nn.Parameter(torch.tensor([1.0], dtype=torch.float32))
         params.append(("sigma", sigma, 0.1 * scene_scale))
-        features_o = torch.zeros((N, 3, (camera_sh_degree + 1) ** 2)).float()
-        features_o[:, :, 0] = 0.1 * torch.ones((N, 3), dtype=torch.float) / C0
-        features_do = torch.nn.Parameter(features_o[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
-        params.append(("features_do", features_do, 5e-2))
-        features_ro = torch.nn.Parameter(features_o[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
-        params.append(("features_ro", features_ro, 5e-2 / 20))
+        K = (camera_sh_degree + 1) ** 2
+        features = torch.zeros((N, K, 3)).float()
+        features[:, 0, :] = 0.1 * torch.ones((N, 3), dtype=torch.float) / C0
+
+        features_param = torch.nn.Parameter(features)
+
+        def features_grad_hook(grad):
+            grad_scaled = grad.clone()
+            grad_scaled[:, 1:, :] /= 20.0
+            return grad_scaled
+
+        features_param.register_hook(features_grad_hook)
+        params.append(("features_sh", features_param, 5e-2))
 
     splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
     # Scale learning rate based on batch size, reference:
@@ -184,6 +205,40 @@ def create_splats_with_optimizers(
     return splats, optimizers
 
 
+# Parameter groups by layout:
+#   Channel-first [D,N]: means, quats, scales
+#   SH channel-first [K,3,N]: sh
+#   N-first [N,...]: opacities, features_sh, sigma, weight_background
+_CF_PARAMS = frozenset({"means", "quats", "scales"})
+_SH_PARAMS = frozenset({"sh"})
+
+
+def to_n_first(splats: dict) -> dict:
+    """Convert channel-first splats to N-first [N,D]/[N,K,3] for checkpoint saving."""
+    out = {}
+    for k, v in splats.items():
+        if k in _CF_PARAMS:
+            out[k] = v.t().contiguous()   # [D,N] -> [N,D]
+        elif k in _SH_PARAMS:
+            out[k] = v.permute(2, 0, 1).contiguous()  # [K,3,N] -> [N,K,3]
+        else:
+            out[k] = v
+    return out
+
+
+def to_channel_first(splats: dict) -> dict:
+    """Convert N-first splats [N,D]/[N,K,3] to channel-first [D,N]/[K,3,N] for training."""
+    out = {}
+    for k, v in splats.items():
+        if k in _CF_PARAMS:
+            out[k] = v.t().contiguous()   # [N,D] -> [D,N]
+        elif k in _SH_PARAMS:
+            out[k] = v.permute(1, 2, 0).contiguous()  # [N,K,3] -> [K,3,N]
+        else:
+            out[k] = v
+    return out
+
+
 def assert_check(condition, message):
     if not condition:
         raise ValueError(message)
@@ -198,9 +253,10 @@ def validate_inputs(
 ) -> None:
     means, quats, scales, opacities, colors = gs
     viewmats, Ks, camera_model, render_mode = camera
-    assert_check(means.shape == (N, 3), f"Invalid shape for means: {means.shape}")
-    assert_check(quats.shape == (N, 4), f"Invalid shape for quats: {quats.shape}")
-    assert_check(scales.shape == (N, 3), f"Invalid shape for scales: {scales.shape}")
+    # means/quats/scales are [D, N] (channel-first) or [N, D] (N-first)
+    assert_check(means.shape[-1] == N or means.shape[0] == N, f"Invalid shape for means: {means.shape}")
+    assert_check(quats.shape[-1] == N or quats.shape[0] == N, f"Invalid shape for quats: {quats.shape}")
+    assert_check(scales.shape[-1] == N or scales.shape[0] == N, f"Invalid shape for scales: {scales.shape}")
     assert_check(opacities.shape == (N,), f"Invalid shape for opacities: {opacities.shape}")
     assert_check(viewmats.shape == (C, 4, 4), f"Invalid shape for viewmats: {viewmats.shape}")
     assert_check(Ks.shape == (C, 3, 3), f"Invalid shape for Ks: {Ks.shape}")
@@ -208,16 +264,23 @@ def validate_inputs(
     assert_check(render_mode in ["RGB", "D", "ED", "RGB+D", "RGB+ED"], f"Invalid render_mode: {render_mode}")
 
     if sh_degree is None:
-        # treat colors as post-activation values, should be in shape [ N, D] or [C, N, D]
         assert_check((colors.dim() == 2 and colors.shape[0] == N) or
                     (colors.dim() == 3 and colors.shape[:2] == (C, N)),
                     f"Invalid shape for colors: {colors.shape}")
     else:
-        # treat colors as SH coefficients, should be in shape [N, K, 3] or [C, N, K, 3]
-        # Allowing for activating partial SH bands
-        assert_check((colors.dim() == 3 and colors.shape[0] == N and colors.shape[2] == 3) or
-                    (colors.dim() == 4 and colors.shape[:2] == (C, N) and colors.shape[3] == 3),
+        assert_check((colors.dim() == 3 and (
+                        (colors.shape[0] == N and colors.shape[-1] == 3) or
+                        (colors.shape[1] == 3 and colors.shape[-1] == N))) or
+                    (colors.dim() == 4 and colors.shape[0] == C and (
+                        (colors.shape[1] == N and colors.shape[-1] == 3) or
+                        (colors.shape[2] == 3 and colors.shape[-1] == N))),
                     f"Invalid shape for colors: {colors.shape}")
-
-        assert_check((sh_degree + 1) ** 2 <= colors.shape[-2], f"Invalid sh_degree for colors shape: {colors.shape}")
+        if colors.dim() == 4:
+            sh_k = colors.shape[-3]
+        elif colors.dim() == 3:
+            sh_k = colors.shape[1] if colors.shape[-1] == 3 else colors.shape[0]
+        else:
+            sh_k = 0
+        assert_check((sh_degree + 1) ** 2 <= sh_k,
+                    f"Invalid sh_degree for colors shape: {colors.shape}")
 

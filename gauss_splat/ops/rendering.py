@@ -16,6 +16,7 @@ from torch import Tensor
 import acl
 
 from .spherical_harmonics import spherical_harmonics
+from .sh_preprocess import sh_preprocess
 from .projection_three_dims_gaussian_fused import projection_three_dims_gaussian_fused
 from .flash_gaussian_build_mask import flash_gaussian_build_mask
 from .gaussian_sort import gaussian_sort
@@ -196,9 +197,7 @@ class Rasterizer:
             colors = colors.unsqueeze(0) if colors.dim() == 2 else colors
         else:
             shs = colors.unsqueeze(0) if colors.dim() == 3 else colors
-            rays_o = camtoworlds[0, :3, 3]
-            rays_d = means - rays_o.unsqueeze(1)   # [3, N] - [3, 1]
-            rays_d = rays_d / rays_d.norm(dim=0, keepdim=True)
+            rays_d = sh_preprocess(camtoworlds, means)   # [B, 3, N] unit dirs
             k = (sh_degree + 1) ** 2
             colors = spherical_harmonics(
                 sh_degree,

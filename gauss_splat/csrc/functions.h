@@ -47,6 +47,10 @@ fully_fused_projection_bwd(
 
 at::Tensor spherical_harmonics_forward(at::Tensor& dirs, at::Tensor& coeffs, int32_t degrees_to_use);
 
+at::Tensor sh_preprocess_fwd(const at::Tensor& camtoworlds, const at::Tensor& means);
+at::Tensor sh_preprocess_bwd(const at::Tensor& means, const at::Tensor& camtoworlds,
+                             const at::Tensor& rays_d, const at::Tensor& v_rays_d);
+
 std::tuple<at::Tensor, at::Tensor> spherical_harmonics_bwd(at::Tensor &dirs, at::Tensor &coeffs,
                                                            at::Tensor &v_colors, int degree);
 

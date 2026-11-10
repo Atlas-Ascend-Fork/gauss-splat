@@ -13,6 +13,7 @@ __all__ = [
     "gaussian_sort",
     "get_render_schedule_cpp",
     "spherical_harmonics",
+    "sh_preprocess",
     "flash_gaussian_build_mask",
     "gaussian_filter",
     "Rasterizer",
@@ -29,6 +30,7 @@ from .ops.calc_render import calc_render
 from .ops.gaussian_sort import gaussian_sort
 from .ops.get_render_schedule import get_render_schedule_cpp
 from .ops.spherical_harmonics import spherical_harmonics
+from .ops.sh_preprocess import sh_preprocess
 from .ops.flash_gaussian_build_mask import flash_gaussian_build_mask
 from .ops.gaussian_filter import gaussian_filter
 from .ops.rendering import Rasterizer

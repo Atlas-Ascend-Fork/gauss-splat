@@ -15,6 +15,8 @@ set(ASCEND_OPS
     gaussian_sort
     projection_three_dims_gaussian_forward
     quat_scales_to_covars
+    sh_preprocess
+    sh_preprocess_bwd
     spherical_harmonics_bwd
     spherical_harmonics_forward
 )

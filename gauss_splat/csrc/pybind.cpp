@@ -52,6 +52,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 
     m.def("spherical_harmonics_forward", &spherical_harmonics_forward);
 
+    m.def("sh_preprocess_fwd", &sh_preprocess_fwd);
+    m.def("sh_preprocess_bwd", &sh_preprocess_bwd);
+
     m.def("spherical_harmonics_bwd", &spherical_harmonics_bwd);
 
     m.def("flash_gaussian_build_mask", &flash_gaussian_build_mask);

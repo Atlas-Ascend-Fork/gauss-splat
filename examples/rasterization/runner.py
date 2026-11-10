@@ -156,8 +156,8 @@ class Runner:
             lc_wsr_enable=cfg.lc_wsr_enable,
             is_channel_first=cfg.is_channel_first,
         )
-        self._N_dim = 1 if cfg.is_channel_first else 0
-        print("Model initialized. Number of GS:", self.splats["means"].shape[self._N_dim])
+        self._n_dim = 1 if cfg.is_channel_first else 0
+        print("Model initialized. Number of GS:", self.splats["means"].shape[self._n_dim])
 
         # Losses & Metrics.
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
@@ -184,7 +184,7 @@ class Runner:
                     self.strategy.set_channel_first(cfg.is_channel_first)
                 if cfg.lc_wsr_enable:
                     self.strategy.initialize_state(0.01, torch.log,
-                        self.splats["means"].shape[self._N_dim], self.scene_scale, self.device)
+                        self.splats["means"].shape[self._n_dim], self.scene_scale, self.device)
                 else:
                     self.strategy.check_sanity(self.splats, self.optimizers)
                     self.strategy_state = self.strategy.initialize_state(
@@ -429,7 +429,7 @@ class Runner:
                 self.writer.add_scalar("train/loss", loss.item(), step)
                 self.writer.add_scalar("train/l1loss", l1loss.item(), step)
                 self.writer.add_scalar("train/ssimloss", ssimloss.item(), step)
-                self.writer.add_scalar("train/num_GS", self.splats["means"].shape[self._N_dim], step)
+                self.writer.add_scalar("train/num_GS", self.splats["means"].shape[self._n_dim], step)
                 self.writer.add_scalar("train/mem", mem, step)
                 if cfg.depth_loss:
                     self.writer.add_scalar("train/depthloss", depthloss.item(), step)
@@ -441,7 +441,7 @@ class Runner:
                 stats = {
                     "mem": mem,
                     "ellipse_time": time.time() - global_tic,
-                    "num_GS": self.splats["means"].shape[self._N_dim],
+                    "num_GS": self.splats["means"].shape[self._n_dim],
                 }
                 print("Step: ", step, stats)
                 with open(
@@ -542,7 +542,7 @@ class Runner:
             stats.update(
                 {
                     "ellipse_time": ellipse_time,
-                    "num_GS": self.splats["means"].shape[self._N_dim],
+                    "num_GS": self.splats["means"].shape[self._n_dim],
                 }
             )
             print(

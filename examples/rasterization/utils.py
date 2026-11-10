@@ -129,7 +129,9 @@ def create_splats_with_optimizers(
 
     params = [
         # name, value, lr
-        ("means", torch.nn.Parameter(points.t().contiguous() if is_channel_first else points.contiguous()), 1.6e-4 * scene_scale),
+        ("means", torch.nn.Parameter(
+            points.t().contiguous() if is_channel_first else points.contiguous()
+        ), 1.6e-4 * scene_scale),
         ("scales", torch.nn.Parameter(scales.t().contiguous() if is_channel_first else scales.contiguous()), 5e-3),
         ("quats", torch.nn.Parameter(quats.t().contiguous() if is_channel_first else quats.contiguous()), 1e-3),
         ("opacities", torch.nn.Parameter(opacities), 1e-2),
@@ -169,8 +171,8 @@ def create_splats_with_optimizers(
         camera_sh_degree = 4
         sigma = torch.nn.Parameter(torch.tensor([1.0], dtype=torch.float32))
         params.append(("sigma", sigma, 0.1 * scene_scale))
-        K = (camera_sh_degree + 1) ** 2
-        features = torch.zeros((N, K, 3)).float()
+        num_coeffs = (camera_sh_degree + 1) ** 2
+        features = torch.zeros((N, num_coeffs, 3)).float()
         features[:, 0, :] = 0.1 * torch.ones((N, 3), dtype=torch.float) / C0
 
         features_param = torch.nn.Parameter(features)

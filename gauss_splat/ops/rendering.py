@@ -57,7 +57,9 @@ def _validate_inputs(
                     (colors.dim() == 4 and colors.shape[0] == C and colors.shape[2] == 3 and colors.shape[3] == N),
                     f"Invalid shape for colors: {colors.shape}")
 
-        assert_check((sh_degree + 1) ** 2 <= colors.shape[-3] if colors.dim() == 3 else (sh_degree + 1) ** 2 <= colors.shape[1],
+        max_coeffs = (sh_degree + 1) ** 2
+        num_coeffs = colors.shape[-3] if colors.dim() == 3 else colors.shape[1]
+        assert_check(max_coeffs <= num_coeffs,
                     f"Invalid sh_degree for colors shape: {colors.shape}")
 
 
@@ -158,10 +160,10 @@ class Rasterizer:
         means, quats, scales, opacities, colors = gs
         viewmats, Ks, camera_model, render_mode = camera
 
-        N = means.shape[-1]
+        num_gs = means.shape[-1]
         C = viewmats.shape[0]
         B = 1
-        _validate_inputs(gs, camera, sh_degree, N, C)
+        _validate_inputs(gs, camera, sh_degree, num_gs, C)
         width, height = size
 
         if camtoworlds is None:
@@ -201,22 +203,22 @@ class Rasterizer:
             k = (sh_degree + 1) ** 2
             colors = spherical_harmonics(
                 sh_degree,
-                rays_d.reshape(B, 3, N),
-                shs[0, :k, :, :].reshape(B, k, 3, N),
+                rays_d.reshape(B, 3, num_gs),
+                shs[0, :k, :, :].reshape(B, k, 3, num_gs),
             )
             colors = (colors + 0.5).clip(min=0.0)
 
         rast_ctx = self.rast_ctx if rast_ctx is None else rast_ctx
-        rast_ctx.prealloc_if_need(B, C, N, means.device)
-        vi = torch.ones(B, C, N, dtype=torch.float32, device=means.device)
+        rast_ctx.prealloc_if_need(B, C, num_gs, means.device)
+        vi = torch.ones(B, C, num_gs, dtype=torch.float32, device=means.device)
         sigma = torch.tensor([1.0], dtype=torch.float32, device=means.device)
         means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter, vi_culling = projection_three_dims_gaussian_fused(
-            means.reshape(B, 3, N),
+            means.reshape(B, 3, num_gs),
             colors,
             None,
-            quats.reshape(B, 4, N),
-            scales.reshape(B, 3, N),
-            opacities.reshape(B, N),
+            quats.reshape(B, 4, num_gs),
+            scales.reshape(B, 3, num_gs),
+            opacities.reshape(B, num_gs),
             viewmats.reshape(B, C, 4, 4).contiguous(),
             Ks.reshape(B, C, 3, 3),
             vi, sigma,
@@ -328,6 +330,6 @@ class Rasterizer:
             "height": height,
             "n_cameras": C,
             "proj_filter": proj_filter,
-            "n_gaussians": N,
+            "n_gaussians": num_gs,
         }
         return render_colors, render_depths, meta

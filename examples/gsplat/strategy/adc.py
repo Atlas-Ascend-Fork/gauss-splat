@@ -69,9 +69,6 @@ class ADCStrategy(Strategy):
     def set_channel_first(self, is_channel_first: bool):
         self._is_channel_first = is_channel_first
 
-    def _get_n(self, t):
-        return t.shape[1] if (self._is_channel_first and t.dim() == 2 and t.shape[0] == 3) else t.shape[-1] if (self._is_channel_first and t.dim() == 3 and t.shape[1] == 3) else t.shape[0]
-
     def initialize_state(self, scene_scale: float = 1.0, lc_wsr_enable=False) -> Dict[str, Any]:
         state = {"grad2d": None, "count": None, "scene_scale": scene_scale,
                  "radii": None}  # (3) always track screen-space radii
@@ -109,9 +106,13 @@ class ADCStrategy(Strategy):
                 cap_mask = torch.zeros(n_cur, dtype=torch.bool, device=opa.device)
                 cap_mask[low_ids] = True
                 if self.lc_wsr_enable:
-                    remove(params=params, optimizers=optimizers, state=state, mask=cap_mask, info=info, is_channel_first=self._is_channel_first)
+                    remove(params=params, optimizers=optimizers, state=state,
+                           mask=cap_mask, info=info,
+                           is_channel_first=self._is_channel_first)
                 else:
-                    remove(params=params, optimizers=optimizers, state=state, mask=cap_mask, is_channel_first=self._is_channel_first)
+                    remove(params=params, optimizers=optimizers, state=state,
+                           mask=cap_mask,
+                           is_channel_first=self._is_channel_first)
             if self.verbose:
                 print(f"Step {step}: +{n_dupli} dup +{n_split} split -{n_prune} prune "
                       f"-> {self._get_n(params['means'])} GSs")
@@ -125,6 +126,13 @@ class ADCStrategy(Strategy):
             # cap opacities at reset_value (prevents saturation; NOT a force-low reset)
             reset_opa(params=params, optimizers=optimizers, state=state,
                       value=self.reset_value)
+
+    def _get_n(self, t):
+        if self._is_channel_first and t.dim() == 2 and t.shape[0] == 3:
+            return t.shape[1]
+        if self._is_channel_first and t.dim() == 3 and t.shape[1] == 3:
+            return t.shape[-1]
+        return t.shape[0]
 
     def _update_state(self, params, state, info, packed: bool = False):
         for key in ["width", "height", "n_cameras", "radii", "gaussian_ids",
@@ -220,9 +228,13 @@ class ADCStrategy(Strategy):
         n_dupli = int(is_dupli.sum().item())
         if n_dupli > 0:
             if self.lc_wsr_enable:
-                duplicate(params=params, optimizers=optimizers, state=state, mask=is_dupli, info=info, is_channel_first=self._is_channel_first)
+                duplicate(params=params, optimizers=optimizers, state=state,
+                          mask=is_dupli, info=info,
+                          is_channel_first=self._is_channel_first)
             else:
-                duplicate(params=params, optimizers=optimizers, state=state, mask=is_dupli, is_channel_first=self._is_channel_first)
+                duplicate(params=params, optimizers=optimizers, state=state,
+                          mask=is_dupli,
+                          is_channel_first=self._is_channel_first)
         # new dupli'd GSs are appended; they must not be split this round
         is_split = torch.cat(
             [is_split, torch.zeros(n_dupli, dtype=torch.bool, device=device)])
@@ -251,7 +263,11 @@ class ADCStrategy(Strategy):
         n_prune = int(is_prune.sum().item())
         if n_prune > 0:
             if self.lc_wsr_enable:
-                remove(params=params, optimizers=optimizers, state=state, mask=is_prune, info=info, is_channel_first=self._is_channel_first)
+                remove(params=params, optimizers=optimizers, state=state,
+                       mask=is_prune, info=info,
+                       is_channel_first=self._is_channel_first)
             else:
-                remove(params=params, optimizers=optimizers, state=state, mask=is_prune, is_channel_first=self._is_channel_first)
+                remove(params=params, optimizers=optimizers, state=state,
+                       mask=is_prune,
+                       is_channel_first=self._is_channel_first)
         return n_prune

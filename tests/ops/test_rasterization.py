@@ -81,7 +81,7 @@ def _golden_rasterization(splats, cam, size, tile_size, active_sh_degree, camera
     colors_sh = splats["sh"]
 
     C = viewmats.shape[0]
-    N = means.shape[-1]
+    num_gs = means.shape[-1]
     B = 1
 
     rays_o = camtoworlds[0, :3, 3]
@@ -90,17 +90,18 @@ def _golden_rasterization(splats, cam, size, tile_size, active_sh_degree, camera
     k = (active_sh_degree + 1) ** 2
     shs = colors_sh.unsqueeze(0).expand(C, -1, -1, -1)
     from gauss_splat import spherical_harmonics
-    colors = spherical_harmonics(active_sh_degree, rays_d.reshape(B, 3, N),
-                                 shs[0, :k, :, :].reshape(B, k, 3, N))
+    colors = spherical_harmonics(active_sh_degree, rays_d.reshape(B, 3, num_gs),
+                                 shs[0, :k, :, :].reshape(B, k, 3, num_gs))
     colors = (colors + 0.5).clip(min=0.0)
 
     from gauss_splat import projection_three_dims_gaussian_fused
-    vi = torch.ones((B, C, N), device=means.device)
+    vi = torch.ones((B, C, num_gs), device=means.device)
     sigma = torch.ones((1,), device=means.device)
     means2d, depths, conics, opacities_proj, radius, covars2d, colors_proj, cnt, _proj_filter, _vi_culling = \
         projection_three_dims_gaussian_fused(
-            means.reshape(B, 3, N), colors, None,
-            quats.reshape(B, 4, N), scales.reshape(B, 3, N), opacities.reshape(B, N),
+            means.reshape(B, 3, num_gs), colors, None,
+            quats.reshape(B, 4, num_gs), scales.reshape(B, 3, num_gs),
+            opacities.reshape(B, num_gs),
             viewmats.reshape(B, C, 4, 4).contiguous(), Ks.reshape(B, C, 3, 3),
             vi, sigma, None, width, height, 0.3, 0.01)
 

@@ -96,12 +96,9 @@ def create_splats_with_optimizers(
     sh_degree: int = 3,
     sparse_grad: bool = False,
     batch_size: int = 1,
-    feature_dim: Optional[int] = None,
     device: str = "npu",
     world_rank: int = 0,
     world_size: int = 1,
-    learnable_background: bool = False,
-    lc_wsr_enable: bool = False,
     is_channel_first: bool = True,
 ) -> Tuple[torch.nn.ParameterDict, Dict[str, torch.optim.Optimizer]]:
     if init_type == "sfm":
@@ -137,53 +134,24 @@ def create_splats_with_optimizers(
         ("opacities", torch.nn.Parameter(opacities), 1e-2),
     ]
 
-    if feature_dim is None:
-        # color is SH coefficients.
-        colors = torch.zeros((N, (sh_degree + 1) ** 2, 3))  # [N, K, 3]
-        colors[:, 0, :] = rgb_to_sh(rgbs)
+    # color is SH coefficients.
+    colors = torch.zeros((N, (sh_degree + 1) ** 2, 3))  # [N, K, 3]
+    colors[:, 0, :] = rgb_to_sh(rgbs)
+    if is_channel_first:
+        colors = colors.permute(1, 2, 0).contiguous()  # [N,K,3] -> [K,3,N]
+
+    colors_param = torch.nn.Parameter(colors)
+
+    def sh_grad_hook(grad):
+        grad_scaled = grad.clone()
         if is_channel_first:
-            colors = colors.permute(1, 2, 0).contiguous()  # [N,K,3] -> [K,3,N]
+            grad_scaled[1:, :, :] /= 20.0  # [K,3,N]
+        else:
+            grad_scaled[:, 1:, :] /= 20.0  # [N,K,3]
+        return grad_scaled
 
-        colors_param = torch.nn.Parameter(colors)
-
-        def sh_grad_hook(grad):
-            grad_scaled = grad.clone()
-            if is_channel_first:
-                grad_scaled[1:, :, :] /= 20.0  # [K,3,N]
-            else:
-                grad_scaled[:, 1:, :] /= 20.0  # [N,K,3]
-            return grad_scaled
-
-        colors_param.register_hook(sh_grad_hook)
-        params.append(("sh", colors_param, 2.5e-3))
-    else:
-        # features will be used for appearance and view-dependent shading
-        features = torch.rand(N, feature_dim)  # [N, feature_dim]
-        params.append(("features", torch.nn.Parameter(features), 2.5e-3))
-        colors = torch.logit(rgbs)  # [N, 3]
-        params.append(("colors", torch.nn.Parameter(colors), 2.5e-3))
-
-    if learnable_background:
-        weight_background = torch.nn.Parameter(torch.tensor([0.02], dtype=torch.float32))
-        params.append(("weight_background", weight_background, 0.01))
-
-    if lc_wsr_enable:
-        camera_sh_degree = 4
-        sigma = torch.nn.Parameter(torch.tensor([1.0], dtype=torch.float32))
-        params.append(("sigma", sigma, 0.1 * scene_scale))
-        num_coeffs = (camera_sh_degree + 1) ** 2
-        features = torch.zeros((N, num_coeffs, 3)).float()
-        features[:, 0, :] = 0.1 * torch.ones((N, 3), dtype=torch.float) / C0
-
-        features_param = torch.nn.Parameter(features)
-
-        def features_grad_hook(grad):
-            grad_scaled = grad.clone()
-            grad_scaled[:, 1:, :] /= 20.0
-            return grad_scaled
-
-        features_param.register_hook(features_grad_hook)
-        params.append(("features_sh", features_param, 5e-2))
+    colors_param.register_hook(sh_grad_hook)
+    params.append(("sh", colors_param, 2.5e-3))
 
     splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
     # Scale learning rate based on batch size, reference:
@@ -210,7 +178,7 @@ def create_splats_with_optimizers(
 # Parameter groups by layout:
 #   Channel-first [D,N]: means, quats, scales
 #   SH channel-first [K,3,N]: sh
-#   N-first [N,...]: opacities, features_sh, sigma, weight_background
+#   N-first [N,...]: opacities
 _CF_PARAMS = frozenset({"means", "quats", "scales"})
 _SH_PARAMS = frozenset({"sh"})
 

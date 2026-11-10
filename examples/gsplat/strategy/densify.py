@@ -9,8 +9,6 @@ import torch
 import torch.nn as nn
 from typing_extensions import Literal
 
-_SKIP_PARAMS = frozenset({"sigma", "weight_background"})
-_COLOR_PARAMS = frozenset({"sh", "features", "features_sh"})
 
 
 def build_rotation(r):
@@ -38,7 +36,7 @@ def build_rotation(r):
 
 
 def register_sh_hook(param, start_idx=1, scale=20.0, is_channel_first=False):
-    """为 sh 或 features 的高阶项注册梯度缩放 hook（支持通道优先布局）"""
+    """为 sh 的高阶项注册梯度缩放 hook（支持通道优先布局）"""
     def grad_hook(grad):
         grad_scaled = grad.clone()
         if is_channel_first:
@@ -89,7 +87,7 @@ class CBSADCStrategy:
 
     # Layout groups:
     #   channel-first [D,N]: means, quats, scales; [K,3,N]: sh
-    #   N-first [N,...]: opacities, features_sh
+    #   N-first [N,...]: opacities
     _channel_first_params = frozenset()
     _sh_params = frozenset()
 
@@ -126,6 +124,7 @@ class CBSADCStrategy:
         self.max_radii2D = torch.zeros((total_pts), device=self.device)
         self.scene_scale = scene_scale
 
+
     def set_channel_first(self, is_channel_first: bool):
         """Set layout mode: channel-first [D,N]/[K,3,N] or N-first [N,D]/[N,K,3]."""
         if is_channel_first:
@@ -150,12 +149,9 @@ class CBSADCStrategy:
     def cat_tensors_to_optimizer(self, optimizers, tensors_dict):
         optimizable_tensors = {}
         for name, optimizer in optimizers.items():
-            if name in _SKIP_PARAMS:
-                continue
-
             for group in optimizer.param_groups:
                 group_name = group.get("name", name)
-                if group_name in _SKIP_PARAMS or group_name not in tensors_dict:
+                if group_name not in tensors_dict:
                     continue
                 extension_tensor = tensors_dict[group_name]
                 stored_state = _state_get(optimizer, group['params'][0])
@@ -166,7 +162,7 @@ class CBSADCStrategy:
 
                 cat_param = self._cat_n(group["params"][0], extension_tensor, group_name)
                 new_param = nn.Parameter(cat_param.requires_grad_(True))
-                if group_name in _COLOR_PARAMS:
+                if group_name == "sh":
                     self._register_color_hook(group_name, new_param)
 
                 group["params"][0] = new_param
@@ -221,9 +217,7 @@ class CBSADCStrategy:
             "scales": self._from_n_first(new_scaling, "scales"),
             "quats": self._from_n_first(new_rotation, "quats"),
         }
-        if "features_sh" in params_dict:
-            repeated = params_dict["features_sh"][selected_pts_mask].repeat(n_split, 1, 1)
-            new_tensors["features_sh"] = repeated / n_split
+
 
         self.densification_postfix(optimizer, params_dict, stats_dict, new_tensors)
 
@@ -245,12 +239,6 @@ class CBSADCStrategy:
         new_features = self._select(params_dict["sh"], "sh", selected_pts_mask)
         new_opacities = params_dict["opacities"][selected_pts_mask]
 
-        if "features_sh" in params_dict:
-            params_dict["features_sh"] = torch.where(
-                selected_pts_mask.unsqueeze(-1).unsqueeze(-1),
-                params_dict["features_sh"] / 2,
-                params_dict["features_sh"]
-            )
 
         new_scaling = self._select(params_dict["scales"], "scales", selected_pts_mask)
         new_rotation = self._select(params_dict["quats"], "quats", selected_pts_mask)
@@ -260,8 +248,7 @@ class CBSADCStrategy:
             "opacities": new_opacities,
             "scales": new_scaling, "quats": new_rotation
         }
-        if "features_sh" in params_dict:
-            new_tensors["features_sh"] = params_dict["features_sh"][selected_pts_mask]
+
 
         self.densification_postfix(optimizer, params_dict, stats_dict, new_tensors)
 
@@ -301,13 +288,9 @@ class CBSADCStrategy:
         """Re-register the high-order /20 hook with the correct layout axis.
 
         - sh: layout follows _sh_params
-        - features_sh: always N-first [N, K, 3]
-        - features: 2D [N, D], no SH-style hook
         """
         if name == "sh":
             register_sh_hook(param, is_channel_first=bool(self._sh_params))
-        elif name == "features_sh" and param.dim() == 3:
-            register_sh_hook(param, is_channel_first=False)
 
     def _select(self, tensor, name, mask):
         """Select elements along N dimension for [D,N], [K,3,N] or [N,...]."""
@@ -357,12 +340,8 @@ class CBSADCStrategy:
         """Slice every optimizer parameter and its state along the N dimension."""
         optimizable_tensors = {}
         for name, optimizer in optimizers.items():
-            if name in _SKIP_PARAMS:
-                continue
             for group in optimizer.param_groups:
                 group_name = group.get("name", name)
-                if group_name in _SKIP_PARAMS:
-                    continue
                 original = group["params"][0]
                 stored_state = _state_get(optimizer, original)
 
@@ -372,7 +351,7 @@ class CBSADCStrategy:
 
                 pruned = self._select(original, group_name, mask)
                 new_param = nn.Parameter(pruned.requires_grad_(True))
-                if group_name in _COLOR_PARAMS:
+                if group_name == "sh":
                     self._register_color_hook(group_name, new_param)
 
                 group["params"][0] = new_param

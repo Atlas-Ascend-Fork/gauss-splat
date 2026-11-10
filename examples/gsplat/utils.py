@@ -124,8 +124,8 @@ def save_ply(splats: torch.nn.ParameterDict, dir: str, colors: torch.Tensor = No
     sh0, sh_n = _split_sh_coeffs(numpy_data["sh"], num_points)
     invalid_mask = _invalid_mask(numpy_data, sh0, sh_n)
 
-    # Only point-level parameters are indexed by gaussian count. Global parameters
-    # such as sigma / weight_background have length 1 and must be kept as-is.
+    # Only point-level parameters are indexed by gaussian count and need masking;
+    # any global parameters must be kept as-is.
     for key in ("means", "scales", "quats", "opacities", "sh"):
         if key in numpy_data:
             numpy_data[key] = numpy_data[key][~invalid_mask]

@@ -107,13 +107,10 @@ class Config:
     # --- CBS extensions (backend not adapted; hidden from CLI) ---
     # Enable weight loss (CBS Vi weight supervision)
     use_weight_loss: Annotated[bool, Suppress] = True
-    # LCWSR: per-Gaussian view-dependent weight (vi) + depth sigma
-    lc_wsr_enable: Annotated[bool, Suppress] = False
+
     # Depth correction: w(d) = max(0, 1-d/sigma) * vi
     if_depth_correct: Annotated[bool, Suppress] = True
 
-    # Learnable background weight
-    learnable_background: bool = False
 
     # Dump information to tensorboard every this steps
     tb_every: int = 100

@@ -136,7 +136,7 @@ class Runner:
         self.raserizer = Rasterizer(cfg)
 
         # Model
-        feature_dim = None
+
         self.splats, self.optimizers = create_splats_with_optimizers(
             self.parser,
             init_type=cfg.init_type,
@@ -148,12 +148,9 @@ class Runner:
             sh_degree=cfg.sh_degree,
             sparse_grad=cfg.sparse_grad,
             batch_size=cfg.batch_size,
-            feature_dim=feature_dim,
             device=self.device,
             world_rank=world_rank,
             world_size=world_size,
-            learnable_background=cfg.learnable_background,
-            lc_wsr_enable=cfg.lc_wsr_enable,
             is_channel_first=cfg.is_channel_first,
         )
         self._n_dim = 1 if cfg.is_channel_first else 0
@@ -182,15 +179,10 @@ class Runner:
                 self.strategy = cfg.strategy
                 if hasattr(self.strategy, "set_channel_first"):
                     self.strategy.set_channel_first(cfg.is_channel_first)
-                if cfg.lc_wsr_enable:
-                    self.strategy.initialize_state(0.01, torch.log,
-                        self.splats["means"].shape[self._n_dim], self.scene_scale, self.device)
-                else:
-                    self.strategy.check_sanity(self.splats, self.optimizers)
-                    self.strategy_state = self.strategy.initialize_state(
-                        scene_scale=self.scene_scale,
-                        lc_wsr_enable=cfg.lc_wsr_enable
-                    )
+                self.strategy.check_sanity(self.splats, self.optimizers)
+                self.strategy_state = self.strategy.initialize_state(
+                    scene_scale=self.scene_scale
+                )
             else:
                 self.strategy = DefaultStrategy(
                     prune_opa=cfg.prune_opa,
@@ -257,15 +249,7 @@ class Runner:
                 self.optimizers["means"], gamma=0.01 ** (1.0 / max_steps)
             ),
         ]
-        if cfg.lc_wsr_enable and "sigma" in self.optimizers:
-            sigma_lr_init = 0.1 * self.scene_scale
-            sigma_lr_final = 0.001 * self.scene_scale
-            sigma_gamma = (sigma_lr_final / sigma_lr_init) ** (1.0 / max_steps)
-            schedulers.append(
-                torch.optim.lr_scheduler.ExponentialLR(
-                    self.optimizers["sigma"], gamma=sigma_gamma
-                )
-            )
+
 
         trainloader = torch.utils.data.DataLoader(
             self.trainset,
@@ -383,10 +367,7 @@ class Runner:
             if cfg.densify and self.strategy_name == "adc":
                 means2d_grad = info["means2d"].grad.permute(0, 1, 3, 2)[0, 0]  # [N,2]
                 strategy_info = dict(info)
-                if cfg.lc_wsr_enable:
-                    strategy_info["means2d"] = means2d_grad
-                else:
-                    strategy_info["means2d"] = SimpleNamespace(grad=means2d_grad)
+                strategy_info["means2d"] = SimpleNamespace(grad=means2d_grad)
                 strategy_info["radii"] = info["radii"].permute(0, 1, 3, 2)[0, 0]
                 strategy_info["proj_filter"] = info["proj_filter"][0, 0]
                 self.strategy.step_post_backward(

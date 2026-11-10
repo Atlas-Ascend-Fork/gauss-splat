@@ -77,8 +77,7 @@ def _refresh_color_hooks(params, is_channel_first: bool):
     """Re-attach hooks lost when duplicate/split/remove replaces Parameters."""
     if "sh" in params:
         _register_sh_hook(params["sh"], is_channel_first)
-    if "features_sh" in params:
-        _register_sh_hook(params["features_sh"], False)  # always N-first [N,K,3]
+
 
 
 def normalized_quat_to_rotmat(quat):
@@ -190,8 +189,7 @@ def _update_param_with_optimizer(
 
     for name in names:
         param = params[name]
-        if name in ("sigma", "weight_background"):
-            continue
+
         new_param = param_fn(name, param)
         params[name] = new_param
         if name not in optimizers:

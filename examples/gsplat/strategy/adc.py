@@ -63,16 +63,18 @@ class ADCStrategy(Strategy):
     revised_opacity: bool = False
     verbose: bool = False
     key_for_gradient: Literal["means2d"] = "means2d"
-    lc_wsr_enable=False
+
     _is_channel_first: bool = False
 
     def set_channel_first(self, is_channel_first: bool):
         self._is_channel_first = is_channel_first
 
-    def initialize_state(self, scene_scale: float = 1.0, lc_wsr_enable=False) -> Dict[str, Any]:
+    def _get_n(self, t):
+        return t.shape[1] if (self._is_channel_first and t.dim() == 2 and t.shape[0] == 3) else t.shape[-1] if (self._is_channel_first and t.dim() == 3 and t.shape[1] == 3) else t.shape[0]
+
+    def initialize_state(self, scene_scale: float = 1.0) -> Dict[str, Any]:
         state = {"grad2d": None, "count": None, "scene_scale": scene_scale,
                  "radii": None}  # (3) always track screen-space radii
-        self.lc_wsr_enable = lc_wsr_enable
         return state
 
     def check_sanity(self, params, optimizers):
@@ -98,21 +100,11 @@ class ADCStrategy(Strategy):
             n_cur = self._get_n(params["means"])
             if n_cur > self.cap_max:
                 n_excess = n_cur - self.cap_max
-                if self.lc_wsr_enable:
-                    opa = info["opacities"].flatten()
-                else:
-                    opa = torch.sigmoid(params["opacities"].flatten())
+                opa = torch.sigmoid(params["opacities"].flatten())
                 _, low_ids = torch.topk(opa, k=n_excess, largest=False)
                 cap_mask = torch.zeros(n_cur, dtype=torch.bool, device=opa.device)
                 cap_mask[low_ids] = True
-                if self.lc_wsr_enable:
-                    remove(params=params, optimizers=optimizers, state=state,
-                           mask=cap_mask, info=info,
-                           is_channel_first=self._is_channel_first)
-                else:
-                    remove(params=params, optimizers=optimizers, state=state,
-                           mask=cap_mask,
-                           is_channel_first=self._is_channel_first)
+                remove(params=params, optimizers=optimizers, state=state, mask=cap_mask, is_channel_first=self._is_channel_first)
             if self.verbose:
                 print(f"Step {step}: +{n_dupli} dup +{n_split} split -{n_prune} prune "
                       f"-> {self._get_n(params['means'])} GSs")
@@ -122,7 +114,7 @@ class ADCStrategy(Strategy):
             torch.npu.empty_cache()
 
         # (5) periodic opacity reset (reset_opa also zeros the opacity optimizer state)
-        if self.reset_opacity and step % self.reset_every == 0 and step > 0 and self.lc_wsr_enable is False:
+        if self.reset_opacity and step % self.reset_every == 0 and step > 0:
             # cap opacities at reset_value (prevents saturation; NOT a force-low reset)
             reset_opa(params=params, optimizers=optimizers, state=state,
                       value=self.reset_value)
@@ -204,8 +196,6 @@ class ADCStrategy(Strategy):
             include_self=True,
         )
 
-        if self.lc_wsr_enable:
-            info["opacities"] = info["opacities"].flatten()
 
     @torch.no_grad()
     def _grow_gs(self, params, optimizers, state, step, info) -> Tuple[int, int]:
@@ -227,47 +217,25 @@ class ADCStrategy(Strategy):
 
         n_dupli = int(is_dupli.sum().item())
         if n_dupli > 0:
-            if self.lc_wsr_enable:
-                duplicate(params=params, optimizers=optimizers, state=state,
-                          mask=is_dupli, info=info,
-                          is_channel_first=self._is_channel_first)
-            else:
-                duplicate(params=params, optimizers=optimizers, state=state,
-                          mask=is_dupli,
-                          is_channel_first=self._is_channel_first)
+            duplicate(params=params, optimizers=optimizers, state=state, mask=is_dupli, is_channel_first=self._is_channel_first)
         # new dupli'd GSs are appended; they must not be split this round
         is_split = torch.cat(
             [is_split, torch.zeros(n_dupli, dtype=torch.bool, device=device)])
         n_split = int(is_split.sum().item())
         if n_split > 0:
-            if self.lc_wsr_enable:
-                split(params=params, optimizers=optimizers, state=state,
-                      mask=is_split, revised_opacity=self.revised_opacity, info=info,
-                      is_channel_first=self._is_channel_first)
-            else:
-                split(params=params, optimizers=optimizers, state=state,
-                      mask=is_split, revised_opacity=self.revised_opacity,
-                      is_channel_first=self._is_channel_first)
+            split(params=params, optimizers=optimizers, state=state,
+                  mask=is_split, revised_opacity=self.revised_opacity,
+                  is_channel_first=self._is_channel_first)
         return n_dupli, n_split
 
     @torch.no_grad()
     def _prune_gs(self, params, optimizers, state, step, info) -> int:
         # (4) remove lowest-opacity GSs
-        if self.lc_wsr_enable:
-            is_prune = state["radii"] > self.prune_scale2d
-        else:
-            is_prune = torch.sigmoid(params["opacities"].flatten()) < self.prune_opa
-            # (3) screen-space pruning, off by default (refine_scale2d_stop_iter == 0).
-            if step < self.refine_scale2d_stop_iter:
-                is_prune = is_prune | (state["radii"] > self.prune_scale2d)
+        is_prune = torch.sigmoid(params["opacities"].flatten()) < self.prune_opa
+        # (3) screen-space pruning, off by default (refine_scale2d_stop_iter == 0).
+        if step < self.refine_scale2d_stop_iter:
+            is_prune = is_prune | (state["radii"] > self.prune_scale2d)
         n_prune = int(is_prune.sum().item())
         if n_prune > 0:
-            if self.lc_wsr_enable:
-                remove(params=params, optimizers=optimizers, state=state,
-                       mask=is_prune, info=info,
-                       is_channel_first=self._is_channel_first)
-            else:
-                remove(params=params, optimizers=optimizers, state=state,
-                       mask=is_prune,
-                       is_channel_first=self._is_channel_first)
+            remove(params=params, optimizers=optimizers, state=state, mask=is_prune, is_channel_first=self._is_channel_first)
         return n_prune

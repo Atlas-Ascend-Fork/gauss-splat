@@ -16,42 +16,19 @@ from rasterization.runner import Runner
 def migrate_legacy_splats(splats):
     """Migrate legacy checkpoint keys to the current single-parameter schema.
 
-    - sh0/shN        -> sh          (old 3DGS split SH)
-    - features_do/ro -> features_sh (old CBS appearance features)
+    - sh0/shN -> sh (old 3DGS split SH)
     """
     if "sh" not in splats and "sh0" in splats and "shN" in splats:
         splats["sh"] = torch.cat([splats.pop("sh0"), splats.pop("shN")], dim=1)
-    if (
-        "features_sh" not in splats
-        and "features_do" in splats
-        and "features_ro" in splats
-    ):
-        # features_do: [N,1,3], features_ro: [N,K-1,3] -> features_sh: [N,K,3]
-        splats["features_sh"] = torch.cat(
-            [splats.pop("features_do"), splats.pop("features_ro")], dim=1
-        )
     return splats
 
 
-def _init_missing_key(key, runner, ckpt_n, loaded, current_layout_keys):
+def _init_missing_key(key, runner, loaded, current_layout_keys):
     """Initialize a splat key that is absent from the checkpoint."""
-    init_n = runner.splats[key].shape[0]
-    if init_n == ckpt_n or key != "features_sh":
-        # Already in the runner's current layout; do not convert again.
-        loaded[key] = runner.splats[key].data.detach().clone()
-        current_layout_keys.add(key)
-        print(f"  [ckpt] key '{key}' not in checkpoint, using init value", flush=True)
-        return
-
-    # CBS-specific keys (features_sh, sigma) absent from 3DGS checkpoints —
-    # re-initialize to match checkpoint N.
-    sh0_to_dc = 0.28209479177387814
-    camera_sh_degree = 4
-    num_coeffs = (camera_sh_degree + 1) ** 2
-    new_data = torch.zeros((ckpt_n, num_coeffs, 3), dtype=torch.float32)
-    new_data[:, 0, :] = 0.1 * torch.ones((ckpt_n, 3), dtype=torch.float32) / sh0_to_dc
-    loaded[key] = new_data
-    print(f"  [ckpt] key '{key}' resized {init_n} -> {ckpt_n}", flush=True)
+    # Already in the runner's current layout; do not convert again.
+    loaded[key] = runner.splats[key].data.detach().clone()
+    current_layout_keys.add(key)
+    print(f"  [ckpt] key '{key}' not in checkpoint, using init value", flush=True)
 
 
 def _load_checkpoint_splats(cfg, runner):
@@ -63,19 +40,17 @@ def _load_checkpoint_splats(cfg, runner):
         for file in cfg.ckpt
     ]
     # Checkpoints are always saved in N-first [N,D]/[N,K,3] format.
-    # Backward compatibility for older sh0/shN and features_do/ro schemas.
+    # Backward compatibility for older sh0/shN schemas.
     for ckpt in ckpts:
         migrate_legacy_splats(ckpt["splats"])
 
-    # Determine checkpoint N (from means) and concatenate along N (dim=0).
-    ckpt_n = ckpts[0]["splats"]["means"].shape[0]
     loaded = {}
     current_layout_keys = set()
     for key in runner.splats.keys():
         if key in ckpts[0]["splats"]:
             loaded[key] = torch.cat([ckpt["splats"][key] for ckpt in ckpts], dim=0)
         else:
-            _init_missing_key(key, runner, ckpt_n, loaded, current_layout_keys)
+            _init_missing_key(key, runner, loaded, current_layout_keys)
 
     if cfg.is_channel_first:
         for key in list(loaded.keys()):

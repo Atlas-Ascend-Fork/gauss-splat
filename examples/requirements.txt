@@ -19,6 +19,6 @@ tensorly
 pyyaml
 matplotlib
 fsspec==2024.10.0
-# torchvision version must match the installed torch (>=2.13); sees the official
-# compatibility matrix: https://github.com/pytorch/vision#installation
-torchvision
+# torchvision 0.27.0 is built against torch 2.12.0, keep the versions in sync
+# (compatibility matrix: https://github.com/pytorch/vision#installation)
+torchvision==0.27.0

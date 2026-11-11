@@ -48,8 +48,9 @@ class ProjectionThreeDimsGaussianFused(Function):
             if covars is not None:
                 raise ValueError("Invalid parameter combination: 'covars' \
                                  and ('quat', 'scales')pair are mutually exclusive.")
+
             # Pure channel-first op: quat/scales arrive as [B,4,N]/[B,3,N].
-            if not rast_ctx.covars_fused:
+            if not rast_ctx.features.covars_fused:
                 covars = quat_scales_to_covars(quat, scales)
         else:
             covars = covars.permute((0, 2, 3, 1)).contiguous()
@@ -79,11 +80,16 @@ class ProjectionThreeDimsGaussianFused(Function):
         depths = depths.squeeze(-2)
         if calc_compensations:
             compensations = compensations.squeeze(-2)
+        elif rast_ctx.features.use_arch35:
+            compensations = torch.ones(det.shape, dtype=torch.float32, device=det.device)
         else:
-            compensations = torch.ones(det.shape, dtype=torch.float32, device=det.device) if rast_ctx.use_arch35 else None
+            compensations = None
         
-        support_features = ((1 << 1) | int(rast_ctx.if_depth_correct)) if rast_ctx.backend == "cbs" else 0
-        if rast_ctx.proj_backward_culling :
+        support_features = 0
+        if rast_ctx.features.backend == "cbs":
+            support_features = ((1 << 1) | int(rast_ctx.features.if_depth_correct))
+
+        if rast_ctx.features.proj_backward_culling:
             support_features |= (1 << 2)
             if  quat is None or scales is None :
                 raise RuntimeError(
@@ -118,18 +124,21 @@ class ProjectionThreeDimsGaussianFused(Function):
             )
 
         cnt = cnt_float.to(torch.int32)
-        if rast_ctx.proj_backward_culling:
+        outputs = rast_ctx.outputs_for_proj_backward()
+        if rast_ctx.features.proj_backward_culling:
             colors_culling = colors_culling[..., :3, :].contiguous()
             ctx.save_for_backward(means_culling, conics_culling, viewmats, quats_culling, scales_culling, ks, 
                 filter_float, compensations_culling if calc_compensations else None, opacities_culling,
-                vi_culling, sigma, depths_culling, cnt, dense_indices)
+                vi_culling, sigma, depths_culling, cnt, dense_indices, *outputs)
         else:
             ctx.save_for_backward(means, conics, viewmats, quat, scales, ks, proj_filter, compensations, None, None,
-                None, None, None, None)
+                None, None, None, None, *outputs)
         ctx.width = width
         ctx.height = height
-        ctx.rast_ctx = rast_ctx
-        filter = filter_float if rast_ctx.proj_backward_culling else proj_filter
+        ctx.alpha_max = rast_ctx.alpha_max
+        ctx.grad_abs = rast_ctx.grad_abs
+        ctx.features = rast_ctx.features
+        filter_ret = filter_float if rast_ctx.features.proj_backward_culling else proj_filter
         # `means2d_culling` is a long-lived buffer cached in `rast_ctx` and rewritten in
         # place on every call. Returning that same tensor object from this
         # autograd.Function makes `retain_grad()`/hooks on it effectively one-shot:
@@ -139,18 +148,21 @@ class ProjectionThreeDimsGaussianFused(Function):
         # gradient. Hand autograd a fresh tensor each call so the retained gradient
         # tracks the current step.
         return means2d_culling.clone(), depths_culling, conics_culling, opacities_culling,\
-            radius_culling, covars2d_culling, colors_culling, cnt, filter, vi_culling
+            radius_culling, covars2d_culling, colors_culling, cnt, filter_ret, vi_culling
 
     @staticmethod
     # pylint: disable=too-many-arguments,huawei-too-many-arguments,too-many-return-values
     def backward(
         ctx, *v_args
     ):
+        outputs = []
         means, conics, viewmats, quats, scales, ks, proj_filter, compensations, opacities, vi, sigma, depths, cnt, \
-        dense_indices = ctx.saved_tensors
+        dense_indices, *outputs = ctx.saved_tensors
         conics = torch.nan_to_num(conics, nan=0.0, posinf=0.0, neginf=0.0)
         width = ctx.width
         height = ctx.height
+        alpha_max = ctx.alpha_max
+        grad_abs = ctx.grad_abs
         v_means2d, v_depths, v_conics, v_opacities_culling, v_radii, v_covar2d, v_colors_culling, v_cnt, v_proj_filter, v_vi_culling = v_args
         
         B, C, N = means.shape[0], viewmats.shape[1], means.shape[-1]
@@ -160,11 +172,11 @@ class ProjectionThreeDimsGaussianFused(Function):
 
         ### cbs and depth correct features.
         support_features = 0
-        if ctx.rast_ctx.backend == "cbs":
-            support_features |= ((1 << 1) | int(ctx.rast_ctx.if_depth_correct))
+        if ctx.features.backend == "cbs":
+            support_features |= ((1 << 1) | int(ctx.features.if_depth_correct))
 
         ### reshape the culling data from [B, C, ...] --> [BC, ...]
-        if ctx.rast_ctx.proj_backward_culling:
+        if ctx.features.proj_backward_culling:
             if quats is None or quats.numel() == 0:
                 raise RuntimeError(
                     "covars-direct path does not support backward (no quat/scales "
@@ -198,15 +210,14 @@ class ProjectionThreeDimsGaussianFused(Function):
             dense_indices = dense_indices.reshape(BC, N)[:, :max_compact_count].contiguous()
 
         ### alpha max out and grad abs features
-        if ctx.rast_ctx.alpha_max is not None and ctx.rast_ctx.grad_abs is not None:
+        if alpha_max is not None and grad_abs is not None:
             support_features |= (1 << 3)
-            alpha_max_out_stried = torch.as_strided(ctx.rast_ctx.alpha_max, size=(BC, 1, N), stride=(N, N, 1))
-            v_means2d_abs_stried = torch.as_strided(ctx.rast_ctx.grad_abs, size=(BC, 2, N), stride=(N*2, N, 1))
+            alpha_max_out_stried = torch.as_strided(alpha_max, size=(BC, 1, N), stride=(N, N, 1))
+            v_means2d_abs_stried = torch.as_strided(grad_abs, size=(BC, 2, N), stride=(N * 2, N, 1))
             v_colors_culling = torch.cat((v_colors_culling, alpha_max_out_stried, v_means2d_abs_stried), dim=1)
 
-        outputs = ctx.rast_ctx.outputs_for_proj_backward()
         [output.zero_() for output in outputs if output is not None]
-        v_pw, v_quats, v_scales, v_r, v_colors, v_opacities, v_viewmats, v_ks, dL_dvi, dL_dsigma = \
+        v_pw, v_quats, v_scales, v_r, v_colors, v_opacities, v_viewmats, v_ks, v_vi, v_sigma = \
             fully_fused_projection_bwd(
                 means,
                 quats,
@@ -236,14 +247,14 @@ class ProjectionThreeDimsGaussianFused(Function):
         )
 
         ### copy alpha max and grad abs out.
-        if ctx.rast_ctx.alpha_max is not None and ctx.rast_ctx.grad_abs is not None:
-            ctx.rast_ctx.alpha_max.copy_(v_colors[:, 3:4, :].contiguous().view(B, C, -1))
-            ctx.rast_ctx.grad_abs.copy_(v_colors[:, 4:6, :].contiguous().view(B, C, 2, -1))
+        if alpha_max is not None and grad_abs is not None:
+            ctx.alpha_max.copy_(v_colors[:, 3:4, :].contiguous().view(B, C, -1))
+            ctx.grad_abs.copy_(v_colors[:, 4:6, :].contiguous().view(B, C, 2, -1))
         
         ### Pure channel-first autograd: gradients must be [B, D, N].
         ### The arch22 (A2/A3) backward kernel still emits parameter grads in
         ### N-first layout, while arch35 emits channel-first directly.
-        if not ctx.rast_ctx.use_arch35:
+        if not ctx.features.use_arch35:
             v_pw = v_pw.transpose(1, 2).contiguous()
             v_quats = v_quats.transpose(1, 2).contiguous()
             v_scales = v_scales.transpose(1, 2).contiguous()
@@ -253,11 +264,11 @@ class ProjectionThreeDimsGaussianFused(Function):
         v_ks = None if v_ks is None else v_ks.view(B, C, 3, 3)
 
         ### vi and sigma
-        dL_dvi = dL_dvi.reshape(B, C, N) if dL_dvi is not None else None
-        dL_dsigma = dL_dsigma[0, 0].unsqueeze(0) if dL_dsigma is not None and ctx.rast_ctx.if_depth_correct else None
+        v_vi = v_vi.reshape(B, C, N) if v_vi is not None else None
+        v_sigma = v_sigma[0, 0].unsqueeze(0) if v_sigma is not None and ctx.features.if_depth_correct else None
 
         return v_pw, v_colors, None, v_quats, v_scales, v_opacities, \
-            v_viewmats, v_ks, dL_dvi, dL_dsigma, \
+            v_viewmats, v_ks, v_vi, v_sigma, \
                 None, None, None, None, None, None, None, None
 
 projection_three_dims_gaussian_fused = ProjectionThreeDimsGaussianFused.apply

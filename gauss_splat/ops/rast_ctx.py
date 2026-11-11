@@ -1,15 +1,22 @@
 import torch
 from gauss_splat import gsplat_c as _C
 
-class RastCtx:
+
+# Features
+class Features:
     def __init__(self):
-        # features
         self.backend = '3dgs'
         self.if_depth_correct = False
         self.use_arch35 = getattr(_C, "use_arch35", False)
         self.proj_backward_culling = getattr(_C, "use_arch35", False)
         self.pose_refine = getattr(_C, "use_arch35", False)
         self.covars_fused = getattr(_C, "sf_covars_fused", False)
+
+
+class RastCtx:
+    def __init__(self):
+        # features
+        self.features = Features()
 
         # alpha max and grad abs
         self.alpha_max = None
@@ -64,7 +71,7 @@ class RastCtx:
     def prealloc_if_need(self, B, C, N, device):
         """Pre-allocate all filter/culling tensors used by the forward
         (and required for the backward) of projection_three_dims_gaussian_fused."""
-        config = (B, C, N, device, self.proj_backward_culling,
+        config = (B, C, N, device, self.features.proj_backward_culling,
                   self.alpha_max is not None and self.grad_abs is not None)
         if getattr(self, "_allocation_config", None) != config:
             for outputs in (self.proj_forward_outputs, self.filter_outputs,
@@ -149,15 +156,15 @@ class RastCtx:
         outputs = self.proj_backward_outputs
         if outputs["v_pw"] is None or self.last_N != N:
             outputs["v_pw"] = torch.zeros((B, 3, N), device=device, dtype=torch.float32) \
-                if self.use_arch35 else torch.zeros((B, N, 3), device=device, dtype=torch.float32)
+                if self.features.use_arch35 else torch.zeros((B, N, 3), device=device, dtype=torch.float32)
 
         if outputs["v_quats"] is None or self.last_N != N:
             outputs["v_quats"] = torch.zeros((B, 4, N), device=device, dtype=torch.float32) \
-                if self.use_arch35 else torch.zeros((B, N, 4), device=device, dtype=torch.float32)
+                if self.features.use_arch35 else torch.zeros((B, N, 4), device=device, dtype=torch.float32)
 
         if outputs["v_scales"] is None or self.last_N != N:
             outputs["v_scales"] = torch.zeros((B, 3, N), device=device, dtype=torch.float32) \
-                if self.use_arch35 else torch.zeros((B, N, 3), device=device, dtype=torch.float32)
+                if self.features.use_arch35 else torch.zeros((B, N, 3), device=device, dtype=torch.float32)
 
         if outputs["v_r"] is None or self.last_N != N:
             outputs["v_r"] = torch.zeros((B, C, 3, 3), device=device, dtype=torch.float32)

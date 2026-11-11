@@ -318,7 +318,7 @@ class Rasterizer:
         render_depths = torch.stack(render_depths)
 
         gaussian_ids = None
-        if C == 1 and rast_ctx.use_arch35:
+        if C == 1 and rast_ctx.features.use_arch35:
             compact_count = int(cnt[0, 0].item())
             gaussian_ids = rast_ctx.filter_outputs["dense_indices"][0, 0, :compact_count].long()
 

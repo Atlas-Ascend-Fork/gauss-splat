@@ -19,6 +19,7 @@ set(ASCEND_OPS
     sh_preprocess_bwd
     spherical_harmonics_bwd
     spherical_harmonics_forward
+    fused_adam_multi_lr
 )
 
 set(ASCEND_HOST_SRC "")

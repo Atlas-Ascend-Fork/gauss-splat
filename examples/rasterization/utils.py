@@ -163,7 +163,12 @@ def create_splats_with_optimizers(
     if sparse_grad:
         optimizer_class = torch.optim.SparseAdam
     else:
-        optimizer_class = torch.optim.Adam
+        import gauss_splat.gsplat_c as _gsplat_c
+        if getattr(_gsplat_c, "use_arch35", False):
+            from gauss_splat import NpuFusedAdamMultiLrOptimizer
+            optimizer_class = NpuFusedAdamMultiLrOptimizer
+        else:
+            optimizer_class = torch.optim.Adam
     optimizers = {
         name: optimizer_class(
             [{"params": splats[name], "lr": lr * math.sqrt(BS), "name": name}],

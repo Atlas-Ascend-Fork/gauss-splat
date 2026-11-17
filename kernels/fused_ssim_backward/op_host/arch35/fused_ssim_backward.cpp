@@ -238,7 +238,6 @@ public:
         // tiling key. Both are required (the Python wrapper sets need_grad_img2 from
         // ctx.needs_input_grad[1]).
         this->Attr("window_size").AttrType(REQUIRED).Int();
-        // need_grad_img2 用 Int (0/1) 而非 Bool: CANN 8.5 Bool attr 编码不稳, fused_adam 同坑.
         this->Attr("need_grad_img2").AttrType(REQUIRED).Int();
 
         this->SetInferShape(ge::InferShape).SetInferDataType(ge::InferDataType);

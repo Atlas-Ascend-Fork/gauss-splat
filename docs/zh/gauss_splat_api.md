@@ -350,6 +350,28 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 
 ---
 
+### 10. color_exposure
+
+**功能**: 高斯球颜色曝光处理。
+
+**位置**: `gauss_splat.color_exposure`
+
+**参数**:
+
+- `colors` (Tensor): 高斯球颜色，形状 (B, C, N)，float32
+- `means2d` (Tensor): 高斯球投影后的平面坐标，形状 (B, C, N)，float32
+- `exposure` (tensor): 曝光矩阵，全局曝光[12], 网格曝光[W, H, D, 12]
+- `width` (int): 渲染图像宽度
+- `height` (int): 渲染图像高度
+- `clamp` (bool): 是否对输出钳制到0, 默认值: True
+- `calc_exp_grad` (bool): 是否算曝光矩阵的梯度, 默认值: True
+
+**返回值**:
+
+- `output` (Tensor): 转换后的高斯球颜色，形状[B, C, N]
+
+---
+
 ## 数据类型说明
 
 ### 张量设备要求

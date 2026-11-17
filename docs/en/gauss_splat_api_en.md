@@ -349,6 +349,27 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 - `ssim` (Tensor): A scalar for "mean" or "sum"; shape (B,) for "none"
 
 ---
+### 10. color_exposure
+
+**Function**: Applies exposure processing to gaussian colors.
+
+**Location**: `gauss_splat.color_exposure`
+
+**Parameters**:
+
+- `colors` (Tensor): Gaussian colors, shape (B, 3, N), float32
+- `means2d` (Tensor): Projected 2D coordinates of the gaussians, shape (B, 2, N), float32
+- `exposure` (Tensor): Exposure matrix; global exposure [12], grid exposure [W, H, D, 12]
+- `width` (int): Width of the rendered image
+- `height` (int): Height of the rendered image
+- `clamp` (bool): Whether to clamp the output to zero, default: True
+- `calc_exp_grad` (bool): Whether to compute the gradient of the exposure matrix, default: True
+
+**Return Values**:
+
+- `output` (Tensor): Transformed gaussian colors, shape [B, 3, N]
+
+---
 
 ## Data Type Description
 

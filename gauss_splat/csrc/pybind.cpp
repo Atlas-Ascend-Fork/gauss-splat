@@ -33,6 +33,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 
     m.def("calc_render_fwd_clip_last_ids", &calc_render_fwd_clip_last_ids);
     m.def("calc_render_bwd_clip_last_ids", &calc_render_bwd_clip_last_ids);
+    m.def("color_exposure_fwd", &color_exposure_fwd);
+    m.def("color_exposure_bwd", &color_exposure_bwd);
     m.def("fused_adam_multi_lr", &fused_adam_multi_lr);
 #else
     m.def("calc_render_fwd_double_clip_gsids", &calc_render_fwd_double_clip_gsids);

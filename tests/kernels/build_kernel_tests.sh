@@ -55,7 +55,7 @@ fi
 # arch-specific: A2/A3 uses calc_render_fwd_double_clip_gsids /
 # calc_render_bwd_var_clip_gsids, A5 uses calc_render_fwd_clip_last_ids.
 A2A3_ONLY_TESTS="test_calc_render_fwd_double_clip_gsids test_calc_render_bwd_var_clip_gsids"
-A5_ONLY_TESTS="test_calc_render_fwd_clip_last_ids"
+A5_ONLY_TESTS="test_calc_render_fwd_clip_last_ids test_color_exposure_fwd test_color_exposure_bwd"
 if [ "${VENDOR_NAME}" = "customize_arch35" ]; then
     SKIP_TESTS="${A2A3_ONLY_TESTS}"
 else

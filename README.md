@@ -140,6 +140,7 @@ print(f"渲染深度形状: {render_depths.shape}")  # (1, 1080, 1920, 1)
 | `fused_ssim`                           | 融合SSIM（结构相似度）前向/反向计算，用于训练损失，支持自动反向传播                              |
 | `Rasterizer`                           | 完整渲染器（推荐），封装完整渲染流水线（投影+排序+Tile构建+渲染计算）                            |
 | `get_render_schedule_cpp`              | 渲染调度辅助，获取渲染调度信息（内部辅助函数）                                                   |
+| `color_exposure`                       | 高斯球颜色做曝光处理，支持自动反向传播 |
 
 **详细接口说明**： 各API的具体参数和返回值见[API参考文档](docs/zh/gauss_splat_api.md)
 
@@ -163,6 +164,8 @@ print(f"渲染深度形状: {render_depths.shape}")  # (1, 1080, 1920, 1)
 |  12  | CalcRenderBwdClipLastids       | `gauss_splat.gsplat_c.calc_render_bwd_clip_last_ids`          |    A5     | [API文档](docs/zh/kernels/aclnnCalcRenderBwdClipLastids.md)           |
 |  13  | FusedSsimForward                   | `gauss_splat.gsplat_c.fused_ssim_forward`                     | A2/A3/A5  | [API文档](docs/zh/kernels/aclnnFusedSsimForward.md)                   |
 |  14  | FusedSsimBackward                  | `gauss_splat.gsplat_c.fused_ssim_backward`                    | A2/A3/A5  | [API文档](docs/zh/kernels/aclnnFusedSsimBackward.md)                  |
+|  15  | ColorExposureFwd                  | `gauss_splat.gsplat_c.color_exposure_fwd`                    | A5  | [API文档](docs/zh/kernels/aclnnColorExposureFwd.md)                  |
+|  16  | ColorExposureBwd                  | `gauss_splat.gsplat_c.color_exposure_bwd`                    | A5  | [API文档](docs/zh/kernels/aclnnColorExposureBwd.md)                  |
 
 **注意**：直接调用底层算子需要手动处理shape变换和内存管理，推荐使用高层Python API。
 
@@ -181,6 +184,7 @@ gauss-splat/
 │   │   ├── fused_ssim.py                # 融合SSIM（训练损失）
 │   │   ├── rendering.py                 # Rasterizer类
 │   │   └── get_render_schedule.py       # 辅助函数
+│   │   └── color_exposure.py            # 颜色曝光算子
 │   ├── csrc/               # C++ binding实现
 ├── kernels/                # Ascend C算子实现（底层）
 │   ├── spherical_harmonics_forward/
@@ -197,6 +201,8 @@ gauss-splat/
 │   ├── fused_ssim_forward/
 │   ├── fused_ssim_backward/
 │   └── flash_gaussian_build_mask/
+│   └── color_exposure_fwd/
+│   └── color_exposure_bwd/
 ├── docs/                   # 文档目录
 │   ├── zh/kernels/         # 中文ACLNN算子API文档
 │   └── en/kernels/         # 英文ACLNN算子API文档

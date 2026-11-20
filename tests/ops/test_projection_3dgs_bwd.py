@@ -510,7 +510,7 @@ class TestProjection3DGSBackward(TestCase):
 class TestProjectionAutogradEndToEnd(unittest.TestCase):
     """Exercise public forward -> filter -> loss.backward with real NPU ops."""
 
-    def check_projection(self, n, compensation=False, all_culled=False):
+    def check_projection(self, n, compensation=False, all_culled=False, refine_camera=False):
         from gauss_splat import projection_three_dims_gaussian_fused
         from test_gaussian_filter import _gaussian_filter
         from test_projection_3dgs_forward import _world_to_cam, _persp_proj
@@ -534,6 +534,15 @@ class TestProjectionAutogradEndToEnd(unittest.TestCase):
         views[:, 1, 0, 3] = 1.5
         views[1, :, 1, 3] = 0.2
         ks = torch.tensor([[40., 0., 32.], [0., 40., 32.], [0., 0., 1.]]).repeat(b, c, 1, 1)
+        if refine_camera:
+            # Camera gradients (viewmats / ks) are only produced by the arch35
+            # backward kernel through support_features bit4; A2/A3 leaves them zeroed.
+            if not getattr(gsplat_c, "use_arch35", False):
+                self.skipTest("camera gradients require the arch35 backward kernel")
+            views.requires_grad_()
+            ks.requires_grad_()
+        views_npu = views.detach().npu().requires_grad_(refine_camera)
+        ks_npu = ks.detach().npu().requires_grad_(refine_camera)
 
         # Independent differentiable CPU reference; no native/NPU calls.
         covars, _ = _quat_scale_to_covar_preci(quats, scales, True, False)
@@ -565,7 +574,7 @@ class TestProjectionAutogradEndToEnd(unittest.TestCase):
         actual = projection_three_dims_gaussian_fused(
             mn.permute(0, 2, 1).contiguous(), cn, None,
             qn.permute(0, 2, 1).contiguous(), sn.permute(0, 2, 1).contiguous(),
-            on, views.npu(), ks.npu(),
+            on, views_npu, ks_npu,
             torch.ones((b, c, n), device=mn.device), torch.ones((1,), device=mn.device),
             None, width, height, 0.3, 0.01, 100., compensation, 'pinhole')
         # Compact culling buffers only define entries [0, cnt); the operator
@@ -598,6 +607,22 @@ class TestProjectionAutogradEndToEnd(unittest.TestCase):
             self.assertIsNotNone(npu.grad, name)
             torch.testing.assert_close(npu.grad.cpu(), cpu.grad, atol=2e-4, rtol=2e-3,
                                        msg=lambda message: f'{name} gradient: {message}')
+        if refine_camera:
+            self.assertIsNotNone(views_npu.grad, 'viewmats')
+            torch.testing.assert_close(views_npu.grad.cpu(), views.grad, atol=1e-2, rtol=5e-3,
+                                       msg=lambda message: f'viewmats gradient: {message}')
+            # The arch35 kernel publishes only fx/fy/cx/cy of v_ks (see
+            # _publish_camera_grad.h): the skew entries are structurally zero, which
+            # matches pose refine optimizing pair [fx, fy, cx, cy] only.
+            npu_ks = ks_npu.grad.cpu()
+            cpu_ks = ks.grad
+            self.assertEqual(float(npu_ks[..., 0, 1].abs().sum()), 0.0)
+            self.assertEqual(float(npu_ks[..., 1, 0].abs().sum()), 0.0)
+            keep = torch.ones_like(cpu_ks, dtype=torch.bool)
+            keep[..., 0, 1] = False
+            keep[..., 1, 0] = False
+            torch.testing.assert_close(npu_ks[keep], cpu_ks[keep], atol=1e-2, rtol=5e-3,
+                                       msg=lambda message: f'ks gradient: {message}')
 
     def test_public_autograd_tail(self):
         self.check_projection(65)
@@ -610,6 +635,12 @@ class TestProjectionAutogradEndToEnd(unittest.TestCase):
 
     def test_public_autograd_all_culled(self):
         self.check_projection(65, all_culled=True)
+
+    def test_public_autograd_camera_grad(self):
+        self.check_projection(65, refine_camera=True)
+
+    def test_public_autograd_camera_grad_multiple_tiles(self):
+        self.check_projection(769, refine_camera=True)
 
 
 if __name__ == "__main__":

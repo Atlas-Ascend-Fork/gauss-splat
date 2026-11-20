@@ -46,6 +46,8 @@ $$
 
 where $L$ is the loss, $R$ is the rotation part of the view transformation matrix, $\sigma$ is the depth-correction scale (`sigma`), and $vi$ is the per-view depth-correction weight.
 
+> Note: the camera pose gradients (`vViewmats`, `vKs`) are written only on the A5 (Ascend 950) path when `supportFeatures` bit4 is set; the Atlas A2/A3 path does not write them (the caller-provided values are kept). `vKs` only writes the fx/fy/cx/cy entries; skew is not supported.
+
 ## Function Prototype
 
 Each operator is divided into a two-stage interface. You must first call the "aclnnFullyFusedProjectionBwdGetWorkspaceSize" interface to obtain the required workspace size and the executor that contains the operator computation process, and then call the "aclnnFullyFusedProjectionBwd" interface to execute the computation.
@@ -349,7 +351,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>supportFeatures</td>
       <td>Input</td>
       <td>Feature switch bitmask.</td>
-      <td>Default is 0; bit0: enable depth correction; bit1: cbs backend; bit2: projection backward is culled (inputs use the compact layout with the batch/camera dimensions merged into batch_size*camera_num); bit3: additionally output alpha max and gradient absolute value (color_dims changes from 3 to 6).</td>
+      <td>Default is 0; bit0: enable depth correction; bit1: cbs backend; bit2: projection backward is culled (inputs use the compact layout with the batch/camera dimensions merged into batch_size*camera_num); bit3: additionally output alpha max and gradient absolute value (color_dims changes from 3 to 6); bit4: output camera pose gradients (A5 path only), writing `vViewmats` and `vKs`.</td>
       <td>INT64</td>
       <td>-</td>
       <td>-</td>
@@ -418,21 +420,21 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
     <tr>
       <td>vViewmats</td>
       <td>Output</td>
-      <td>Gradient of the view transformation matrices (for pose optimization).</td>
-      <td>Empty tensors are not supported. (Reserved output.)</td>
+      <td>Gradient of the view transformation matrices (for pose optimization). Row-major 4x4: the first three entries of each row are the gradient of the corresponding rotation row and the fourth is the translation gradient component (`v[3]`/`v[7]`/`v[11]`); the fourth row is not written (it stays 0 after the caller pre-zeroes the tensor).</td>
+      <td>Empty tensors are not supported. Written on A5 (Ascend 950) when `supportFeatures` bit4 is set; reserved output (not written) on the Atlas A2/A3 path. The caller must zero the tensor beforehand.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, 4, 4)</td>
+      <td>(batch_size, camera_num, 4, 4) or (batch_size, camera_num, 16) (row-major)</td>
       <td>Yes</td>
     </tr>
     <tr>
       <td>vKs</td>
       <td>Output</td>
-      <td>Gradient of the camera intrinsic matrices.</td>
-      <td>Empty tensors are not supported. (Reserved output.)</td>
+      <td>Gradient of the camera intrinsic matrices. Row-major 3x3; only (0,0)=fx, (1,1)=fy, (0,2)=cx and (1,2)=cy are written, all other positions are not written (they stay 0 after pre-zeroing; skew is not supported).</td>
+      <td>Empty tensors are not supported. Written on A5 (Ascend 950) when `supportFeatures` bit4 is set; reserved output (not written) on the Atlas A2/A3 path. The caller must zero the tensor beforehand.</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, 3, 3)</td>
+      <td>(batch_size, camera_num, 3, 3) or (batch_size, camera_num, 9) (row-major)</td>
       <td>Yes</td>
     </tr>
     <tr>
@@ -551,10 +553,11 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
   - bit1 (2): cbs backend.
   - bit2 (4): projection backward is culled; the inputs (`means`, `quats`, `scales`, `conics`, `viewmats`, `Ks`, and the gradients) use the culled compact layout with the (batch, camera) dimensions merged into `batch_size*camera_num`, and `denseIndices` and `cnt` must be provided.
   - bit3 (8): additionally output alpha max and gradient absolute value; the channel count (color_dims) of `vColorsCulling` and `vColors` changes from 3 to 6.
+  - bit4 (16): outputs the camera pose gradients (supported on the A5/Ascend 950 path only). When set, `vViewmats` (view transformation matrix gradient) and `vKs` (intrinsic gradient, only the fx/fy/cx/cy entries) are written; when it is not set, or on the A2/A3 path, nothing is written and the outputs keep whatever the caller passed in (normally pre-zeroed to 0).
 - When bit2 is set, `denseIndices` and `cnt` are used to map the compact positions back to the original dense Gaussian sphere indices; the value range of each `cnt` element is `[0, gaussian_num]`, and `maxCompactCount` must be no less than the maximum value of `cnt`.
 - The outputs actually written (valid) differ by product path:
   - Atlas A2/A3: outputs `vPW`, `vQuats`, `vScales`, `vR`, `vColors`, `vOpacities`; `vViewmats`, `vKs`, `dLdvi`, `dLdsigma` are reserved outputs (not written).
-  - A5 (Ascend 950): outputs `vPW`, `vQuats`, `vScales`, `vColors`, `vOpacities`, `dLdvi`, `dLdsigma`; `vR`, `vViewmats`, `vKs` are reserved outputs (not written).
+  - A5 (Ascend 950): outputs `vPW`, `vQuats`, `vScales`, `vColors`, `vOpacities`, `dLdvi`, `dLdsigma`; `vR` is a reserved output (not written). `vViewmats` and `vKs` are written when `supportFeatures` bit4 is set, so this path requires the caller to pass already zeroed `vViewmats` and `vKs` (the kernel accumulates into them with `AtomicAdd`); cameras with no visible Gaussian (`cnt` == 0) are not written.
 - All outputs are required outputs; the first-stage interface must be passed valid tensors for all of them.
 
 **Dimension Variable Description:**
@@ -566,4 +569,4 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
 
 ## Calling Example
 
-See tests/kernel_tests/test_fully_fused_projection_bwd.cpp
+See `tests/kernels/test_fully_fused_projection_bwd.cpp`

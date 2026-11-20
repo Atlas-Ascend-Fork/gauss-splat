@@ -11,7 +11,7 @@
 #pragma once
 #include "tensorutils.h"
 
-__aicore__ inline void _compute_projection_covar_mean_intermediates_vf(__ubuf__ float* means_ub, __ubuf__ float* conics_ub, __ubuf__ float* vconics_ub, __ubuf__ float* vmeans2d_ub, __ubuf__ float* vdepths_ub, __ubuf__ float* opacity_ub, __ubuf__ float* opacities_in_ub, __ubuf__ float* compensation_ub, __ubuf__ float* vi_ub, __ubuf__ float* sigma_ub, __ubuf__ float* depths_ub, __ubuf__ float* view_ub, __ubuf__ float* k_ub, __ubuf__ float* accum_ub, __ubuf__ float* proj_covar_ub, const int &width, const int &height, const int &if_depth_correct){
+__aicore__ inline void _compute_projection_covar_mean_intermediates_vf(__ubuf__ float* means_ub, __ubuf__ float* conics_ub, __ubuf__ float* vconics_ub, __ubuf__ float* vmeans2d_ub, __ubuf__ float* vdepths_ub, __ubuf__ float* opacity_ub, __ubuf__ float* opacities_in_ub, __ubuf__ float* compensation_ub, __ubuf__ float* vi_ub, __ubuf__ float* sigma_ub, __ubuf__ float* depths_ub, __ubuf__ float* view_ub, __ubuf__ float* k_ub, __ubuf__ float* accum_ub, __ubuf__ float* proj_covar_ub, __ubuf__ float* camera_vmean_ub, const int &width, const int &height, const int &if_depth_correct){
     __VEC_SCOPE__
     {
         MicroAPI::MaskReg _tmp_maskreg_0 = MicroAPI::CreateMask<float, MicroAPI::MaskPattern::ALL>();
@@ -179,6 +179,8 @@ __aicore__ inline void _compute_projection_covar_mean_intermediates_vf(__ubuf__ 
         MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(proj_covar_ub + 10 * 64, inv_z, 1, _tmp_maskreg_0);
         MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(proj_covar_ub + 11 * 64, xmask, 1, _tmp_maskreg_0);
         MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(proj_covar_ub + 12 * 64, ymask, 1, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(proj_covar_ub + 13 * 64, norm_x, 1, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(proj_covar_ub + 14 * 64, norm_y, 1, _tmp_maskreg_0);
         MicroAPI::RegTensor<float> vmx;
         MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(vmx, vmeans2d_ub, 1, _tmp_maskreg_0);
         MicroAPI::RegTensor<float> vmy;
@@ -208,6 +210,9 @@ __aicore__ inline void _compute_projection_covar_mean_intermediates_vf(__ubuf__ 
         MicroAPI::Add(_tmp_reg_1, vdepth, _tmp_reg_1, _tmp_maskreg_0);
         MicroAPI::Mul(_tmp_reg_2, raw_j12, vmy, _tmp_maskreg_0);
         MicroAPI::Add(vpc_z, _tmp_reg_1, _tmp_reg_2, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(camera_vmean_ub, vpc_x, 1, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(camera_vmean_ub + 1 * 64, vpc_y, 1, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(camera_vmean_ub + 2 * 64, vpc_z, 1, _tmp_maskreg_0);
         MicroAPI::RegTensor<float> acc_x;
         MicroAPI::Mul(_tmp_reg_1, r00, vpc_x, _tmp_maskreg_0);
         MicroAPI::Mul(_tmp_reg_2, r10, vpc_y, _tmp_maskreg_0);

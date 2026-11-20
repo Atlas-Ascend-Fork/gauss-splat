@@ -11,7 +11,7 @@
 #pragma once
 #include "tensorutils.h"
 
-__aicore__ inline void _accumulate_covariance_mean_no_vr_from_intermediates_vf(__ubuf__ float* proj_covar_ub, __ubuf__ float* cam_covar_ub, __ubuf__ float* view_ub, __ubuf__ float* k_ub, __ubuf__ float* accum_ub, __ubuf__ float* vpw_stage_ub){
+__aicore__ inline void _accumulate_covariance_mean_no_vr_from_intermediates_vf(__ubuf__ float* proj_covar_ub, __ubuf__ float* cam_covar_ub, __ubuf__ float* view_ub, __ubuf__ float* k_ub, __ubuf__ float* accum_ub, __ubuf__ float* vpw_stage_ub, __ubuf__ float* camera_vmean_ub){
     __VEC_SCOPE__
     {
         MicroAPI::MaskReg _tmp_maskreg_0 = MicroAPI::CreateMask<float, MicroAPI::MaskPattern::ALL>();
@@ -135,6 +135,10 @@ __aicore__ inline void _accumulate_covariance_mean_no_vr_from_intermediates_vf(_
         MicroAPI::Mul(_tmp_reg_2, p12, cc22, _tmp_maskreg_0);
         MicroAPI::Add(_tmp_reg_1, _tmp_reg_1, _tmp_reg_2, _tmp_maskreg_0);
         MicroAPI::Mul(vj12, two, _tmp_reg_1, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(proj_covar_ub + 15 * 64, vj00, 1, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(proj_covar_ub + 16 * 64, vj11, 1, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(proj_covar_ub + 17 * 64, vj02, 1, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(proj_covar_ub + 18 * 64, vj12, 1, _tmp_maskreg_0);
         MicroAPI::RegTensor<float> fx_inv_z2;
         MicroAPI::Mul(fx_inv_z2, j00, inv_z, _tmp_maskreg_0);
         MicroAPI::RegTensor<float> fy_inv_z2;
@@ -166,6 +170,16 @@ __aicore__ inline void _accumulate_covariance_mean_no_vr_from_intermediates_vf(_
         MicroAPI::Add(_tmp_reg_1, _tmp_reg_1, _tmp_reg_2, _tmp_maskreg_0);
         MicroAPI::Mul(_tmp_reg_2, _tmp_reg_3, _tmp_reg_4, _tmp_maskreg_0);
         MicroAPI::Add(vpc_z, _tmp_reg_1, _tmp_reg_2, _tmp_maskreg_0);
+        MicroAPI::RegTensor<float> cv_prev;
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(cv_prev, camera_vmean_ub, 1, _tmp_maskreg_0);
+        MicroAPI::Add(cv_prev, cv_prev, vpc_x, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(camera_vmean_ub, cv_prev, 1, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(cv_prev, camera_vmean_ub + 1 * 64, 1, _tmp_maskreg_0);
+        MicroAPI::Add(cv_prev, cv_prev, vpc_y, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(camera_vmean_ub + 1 * 64, cv_prev, 1, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(cv_prev, camera_vmean_ub + 2 * 64, 1, _tmp_maskreg_0);
+        MicroAPI::Add(cv_prev, cv_prev, vpc_z, _tmp_maskreg_0);
+        MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(camera_vmean_ub + 2 * 64, cv_prev, 1, _tmp_maskreg_0);
         MicroAPI::RegTensor<float> acc_x;
         MicroAPI::DataCopy<float, MicroAPI::DataCopyMode::DATA_BLOCK_COPY>(acc_x, accum_ub, 1, _tmp_maskreg_0);
         MicroAPI::RegTensor<float> acc_y;

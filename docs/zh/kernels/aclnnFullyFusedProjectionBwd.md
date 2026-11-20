@@ -46,6 +46,8 @@ $$
 
 其中 $L$ 为损失，$R$ 为视图变换矩阵的旋转部分，$\sigma$ 为深度修正尺度（`sigma`），$vi$ 为逐视图深度修正权重。
 
+> 说明：相机位姿梯度（`vViewmats`、`vKs`）仅在 A5（Ascend 950）路径且 `supportFeatures` bit4 置位时写出；Atlas A2/A3 路径不写出（保持调用方传入值）。`vKs` 只写出 fx/fy/cx/cy 四项，不支持 skew。
+
 ## 函数原型
 
 每个算子分为两段式接口，必须先调用"aclnnFullyFusedProjectionBwdGetWorkspaceSize"接口获取计算所需workspace大小以及包含了算子计算流程的执行器，再调用"aclnnFullyFusedProjectionBwd"接口执行计算。
@@ -349,7 +351,7 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
       <td>supportFeatures</td>
       <td>输入</td>
       <td>功能开关位掩码。</td>
-      <td>默认为0；bit0：启用深度修正；bit1：cbs 后端；bit2：投影反向已筛选（输入为紧凑排布，batch/camera 维合并为 batch_size*camera_num）；bit3：额外输出 alpha max 与梯度绝对值（color_dims 由3变为6）。</td>
+      <td>默认为0；bit0：启用深度修正；bit1：cbs 后端；bit2：投影反向已筛选（输入为紧凑排布，batch/camera 维合并为 batch_size*camera_num）；bit3：额外输出 alpha max 与梯度绝对值（color_dims 由3变为6）；bit4：输出相机位姿梯度（仅 A5 路径），写出 `vViewmats`、`vKs`。</td>
       <td>INT64</td>
       <td>-</td>
       <td>-</td>
@@ -418,21 +420,21 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
     <tr>
       <td>vViewmats</td>
       <td>输出</td>
-      <td>视图变换矩阵的梯度（用于位姿优化）。</td>
-      <td>不支持空tensor。（预留输出）</td>
+      <td>视图变换矩阵的梯度（用于位姿优化）。按行主序展开的 4×4：每行前三项为旋转矩阵对应行梯度，第四项为平移梯度分量（`v[3]`/`v[7]`/`v[11]`）；第 4 行不写出（调用方预清零后为 0）。</td>
+      <td>不支持空tensor。A5（Ascend 950）在 `supportFeatures` bit4 置位时写出；Atlas A2/A3 路径为预留输出（不写出）。调用方需提前将tensor清零。</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, 4, 4)</td>
+      <td>(batch_size, camera_num, 4, 4) 或 (batch_size, camera_num, 16)（行主序）</td>
       <td>√</td>
     </tr>
     <tr>
       <td>vKs</td>
       <td>输出</td>
-      <td>相机内参矩阵的梯度。</td>
-      <td>不支持空tensor。（预留输出）</td>
+      <td>相机内参矩阵的梯度。按行主序展开的 3×3，仅写出 (0,0)=fx、(1,1)=fy、(0,2)=cx、(1,2)=cy 四项，其余位置不写出（预清零后为 0；不支持 skew）。</td>
+      <td>不支持空tensor。A5（Ascend 950）在 `supportFeatures` bit4 置位时写出；Atlas A2/A3 路径为预留输出（不写出）。调用方需提前将tensor清零。</td>
       <td>FLOAT</td>
       <td>ND</td>
-      <td>(batch_size, camera_num, 3, 3)</td>
+      <td>(batch_size, camera_num, 3, 3) 或 (batch_size, camera_num, 9)（行主序）</td>
       <td>√</td>
     </tr>
     <tr>
@@ -551,10 +553,11 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
   - bit1（2）：cbs 后端。
   - bit2（4）：投影反向已筛选，输入（`means`、`quats`、`scales`、`conics`、`viewmats`、`Ks` 及各梯度）为筛选后的紧凑排布，(batch, camera) 维合并为 `batch_size*camera_num`，并需提供 `denseIndices`、`cnt`。
   - bit3（8）：额外输出 alpha max 与梯度绝对值，`vColorsCulling` 与 `vColors` 的通道数（color_dims）由3变为6。
+  - bit4（16）：输出相机位姿梯度（仅 A5/Ascend 950 路径支持）。置位时写出 `vViewmats`（视图变换矩阵梯度）与 `vKs`（内参梯度，仅 fx/fy/cx/cy 四项）；未置位或 A2/A3 路径不写出，对应输出保持调用方传入的值（通常预清零为0）。
 - 当 bit2 置位时，`denseIndices` 与 `cnt` 用于将紧凑位置映射回原始密集高斯球下标；`cnt` 元素的取值范围为 `[0, gaussian_num]`，`maxCompactCount` 应不小于 `cnt` 的最大值。
 - 各产品路径实际写出（有效）的输出不同：
   - Atlas A2/A3：输出 `vPW`、`vQuats`、`vScales`、`vR`、`vColors`、`vOpacities`；`vViewmats`、`vKs`、`dLdvi`、`dLdsigma` 为预留输出（不写出）。
-  - A5（Ascend 950）：输出 `vPW`、`vQuats`、`vScales`、`vColors`、`vOpacities`、`dLdvi`、`dLdsigma`；`vR`、`vViewmats`、`vKs` 为预留输出（不写出）。
+  - A5（Ascend 950）：输出 `vPW`、`vQuats`、`vScales`、`vColors`、`vOpacities`、`dLdvi`、`dLdsigma`；`vR` 为预留输出（不写出）。`vViewmats`、`vKs` 在 `supportFeatures` bit4 置位时写出，因此该路径要求调用方传入已清零的 `vViewmats`、`vKs`（kernel 以 `AtomicAdd` 累加写入）；完全被筛除（`cnt` 为0）的相机不写出。
 - 所有输出均为必选输出，第一段接口需全部传入有效tensor。
 
 **维度变量说明：**
@@ -566,4 +569,4 @@ aclnnStatus aclnnFullyFusedProjectionBwd(
 
 ## 调用示例
 
-见tests/kernel_tests/test_fully_fused_projection_bwd.cpp
+见 `tests/kernels/test_fully_fused_projection_bwd.cpp`

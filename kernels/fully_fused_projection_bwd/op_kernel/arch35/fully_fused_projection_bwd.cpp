@@ -40,15 +40,17 @@ fully_fused_projection_bwd(GM_ADDR means, GM_ADDR quats, GM_ADDR scales, GM_ADDR
     int view_cols = tiling_data.view_cols;
     int k_cols = tiling_data.k_cols;
     const uint32_t SF_DEPTH_CORRECT = 1;
+    const uint32_t SF_CAMERA_GRAD = (1 << 4);
     int if_depth_correct = (tiling_data.support_features & SF_DEPTH_CORRECT);
+    int need_camera_grad = (tiling_data.support_features & SF_CAMERA_GRAD) != 0;
     int image_width = tiling_data.image_width;
     int image_height = tiling_data.image_height;
     int color_dims = tiling_data.color_dims;
     if ASCEND_IS_AIC{
-        fully_fused_projection_bwd_cube(means, quats, scales, conics, viewmats, Ks, vMeans2d, vDepths, vConics, vColorsCulling, vOpacitiesCulling, vViCulling, opacities, vi, sigma, depths, compensations, denseIndices, cnt, vPW, vQuats, vScales, vColors, vOpacities, dLdvi, dLdsigma, workspace, dense_g, slice_count, batch_count, camera_count, max_compact_count, chunk_stride, total_tasks, scalar_one, feature2, feature3, feature4, view_cols, k_cols, if_depth_correct, image_width, image_height, color_dims);
+        fully_fused_projection_bwd_cube(means, quats, scales, conics, viewmats, Ks, vMeans2d, vDepths, vConics, vColorsCulling, vOpacitiesCulling, vViCulling, opacities, vi, sigma, depths, compensations, denseIndices, cnt, vPW, vQuats, vScales, vColors, vOpacities, dLdvi, dLdsigma, vViewmats, vKs, workspace, dense_g, slice_count, batch_count, camera_count, max_compact_count, chunk_stride, total_tasks, scalar_one, feature2, feature3, feature4, view_cols, k_cols, if_depth_correct, image_width, image_height, color_dims);
     }
     if ASCEND_IS_AIV{
-        fully_fused_projection_bwd_vec(means, quats, scales, conics, viewmats, Ks, vMeans2d, vDepths, vConics, vColorsCulling, vOpacitiesCulling, vViCulling, opacities, vi, sigma, depths, compensations, denseIndices, cnt, vPW, vQuats, vScales, vColors, vOpacities, dLdvi, dLdsigma, workspace, dense_g, slice_count, batch_count, camera_count, max_compact_count, chunk_stride, total_tasks, scalar_one, feature2, feature3, feature4, view_cols, k_cols, if_depth_correct, image_width, image_height, color_dims);
+        fully_fused_projection_bwd_vec(means, quats, scales, conics, viewmats, Ks, vMeans2d, vDepths, vConics, vColorsCulling, vOpacitiesCulling, vViCulling, opacities, vi, sigma, depths, compensations, denseIndices, cnt, vPW, vQuats, vScales, vColors, vOpacities, dLdvi, dLdsigma, vViewmats, vKs, workspace, dense_g, slice_count, batch_count, camera_count, max_compact_count, chunk_stride, total_tasks, scalar_one, need_camera_grad, feature2, feature3, feature4, view_cols, k_cols, if_depth_correct, image_width, image_height, color_dims);
     }
 
 }

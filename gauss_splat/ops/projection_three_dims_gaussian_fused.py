@@ -182,6 +182,9 @@ class ProjectionThreeDimsGaussianFused(Function):
                     "covars-direct path does not support backward (no quat/scales "
                     "to differentiate); use the quat/scales path for training.")
             support_features |= (1 << 2)
+            # bit4: camera gradients are needed (pose_refine / test refine).
+            if ctx.needs_input_grad[6] or ctx.needs_input_grad[7]:
+                support_features |= (1 << 4)
             means = means.reshape(BC, 3, N)
             quats = quats.reshape(BC, 4, N)
             scales = scales.reshape(BC, 3, N)

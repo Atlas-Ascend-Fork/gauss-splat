@@ -575,7 +575,7 @@ class TestProjection3DGSForward(TestCase):
         n = means.shape[-1]   # channel-first [B,3,N]
         c = viewmats.shape[1]
         rast_ctx = RastCtx()
-        rast_ctx.proj_backward_culling = False
+        rast_ctx.features.proj_backward_culling = False
         means2d_culling, depths_culling, conics_culling, opacities_culling, \
         radius_culling, covars2d_culling, colors_culling, cnt, _proj_filter, _vi_culling = \
             projection_three_dims_gaussian_fused(

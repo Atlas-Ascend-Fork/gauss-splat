@@ -123,11 +123,37 @@ int InitializeTensors(TensorResources& resources) {
     std::vector<int64_t> dL_dsigmaShape = {batchSize * cameraNum, gaussNum};
 
     std::vector<float> meansHostData(GetShapeSize(meansShape), 0.0f);
-    std::vector<float> quatsHostData(GetShapeSize(quatsShape), 0.707f);
-    std::vector<float> scalesHostData(GetShapeSize(scalesShape), 1.0f);
+    std::vector<float> quatsHostData(GetShapeSize(quatsShape), 0.0f);
+    std::vector<float> scalesHostData(GetShapeSize(scalesShape), 0.0f);
     std::vector<float> conicsHostData(GetShapeSize(conicsShape), 0.1f);
-    std::vector<float> viewmatsHostData(GetShapeSize(viewmatsShape), 1.0f);
-    std::vector<float> ksHostData(GetShapeSize(ksShape), 500.0f);
+    std::vector<float> viewmatsHostData(GetShapeSize(viewmatsShape), 0.0f);
+    std::vector<float> ksHostData(GetShapeSize(ksShape), 0.0f);
+    // Deterministic, non-degenerate attributes: the camera VJP (support_features
+    // bit4) is only meaningful when gaussians project inside the image through a
+    // valid pose and a proper pinhole intrinsic.
+    for (int64_t i = 0; i < GetShapeSize(meansShape); ++i) {
+        meansHostData[i] = 0.1f * static_cast<float>(i % 7) - 0.3f;
+    }
+    for (int64_t n = 0; n < gaussNum; ++n) {
+        quatsHostData[n] = 1.0f;  // w component of the identity quaternion, channel-first [B, 4, N]
+    }
+    for (int64_t i = 0; i < GetShapeSize(scalesShape); ++i) {
+        scalesHostData[i] = 0.1f + 0.01f * static_cast<float>(i % 5);
+    }
+    for (int64_t cam = 0; cam < cameraNum; ++cam) {
+        float* viewmat = viewmatsHostData.data() + cam * 16;
+        viewmat[0] = 1.0f;
+        viewmat[5] = 1.0f;
+        viewmat[10] = 1.0f;
+        viewmat[11] = 2.0f;  // translate the camera along +z
+        viewmat[15] = 1.0f;
+        float* intrinsic = ksHostData.data() + cam * 9;
+        intrinsic[0] = 500.0f;  // fx
+        intrinsic[2] = 400.0f;  // cx = width / 2
+        intrinsic[4] = 500.0f;  // fy
+        intrinsic[5] = 300.0f;  // cy = height / 2
+        intrinsic[8] = 1.0f;
+    }
     std::vector<float> v_means2dHostData(GetShapeSize(v_means2dShape), 1.0f);
     std::vector<float> v_depthsHostData(GetShapeSize(v_depthsShape), 1.0f);
     std::vector<float> v_conicsHostData(GetShapeSize(v_conicsShape), 1.0f);
@@ -286,7 +312,8 @@ int InitializeTensors(TensorResources& resources) {
 }
 
 int ExecuteFullyFusedProjectionBwd(TensorResources& resources, aclrtStream stream,
-                                   void** workspaceAddr, uint64_t* workspaceSize) {
+                                   void** workspaceAddr, uint64_t* workspaceSize,
+                                   int32_t supportFeatures) {
     int64_t width = 800;
     int64_t height = 600;
     aclOpExecutor* executor;
@@ -322,7 +349,7 @@ int ExecuteFullyFusedProjectionBwd(TensorResources& resources, aclrtStream strea
         resources.v_colors_cullingTensor, resources.v_opacities_cullingTensor,
         resources.filterTensor,
         compensations, vViCulling, opacities, vi, sigma, depths, denseIndices, cnt,
-        width, height, maxCompactCount, 0 /* supportFeatures */,
+        width, height, maxCompactCount, supportFeatures,
         resources.v_pWTensor, resources.v_quatsTensor, resources.v_scalesTensor,
         resources.v_RTensor, resources.v_colorsTensor, resources.v_opacitiesTensor,
         resources.v_viewmatsTensor, resources.v_ksTensor,
@@ -418,6 +445,38 @@ void CleanupResources(TensorResources& resources, void* workspaceAddr,
     aclFinalize();
 }
 
+#ifdef ASCEND_COMPUTE_UNI_A5
+/*
+ * Camera gradients are produced by the arch35 kernel only when support_features
+ * bit4 is set. Verify the outputs were actually written: every value finite and
+ * at least one value non-zero (an unwritten buffer stays zero-initialized).
+ */
+bool CheckCameraGrad(const std::vector<int64_t>& shape, void** deviceAddr, const char* name) {
+    auto size = GetShapeSize(shape);
+    std::vector<float> resultData(size, 0.0f);
+    auto ret = aclrtMemcpy(resultData.data(), resultData.size() * sizeof(float),
+                           *deviceAddr, size * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) {
+        LOG_PRINT("%s: copy result from device to host failed. ERROR: %d\n", name, ret);
+        return false;
+    }
+    bool nonZero = false;
+    for (int64_t i = 0; i < size; ++i) {
+        if (!std::isfinite(resultData[i])) {
+            LOG_PRINT("%s contains a non-finite value %f at index %ld\n", name, resultData[i], i);
+            return false;
+        }
+        nonZero = nonZero || (std::fabs(resultData[i]) > 1e-6f);
+        LOG_PRINT("%s[%ld] is: %f\n", name, i, resultData[i]);
+    }
+    if (!nonZero) {
+        LOG_PRINT("%s is all zeros: the camera gradient was not written\n", name);
+        return false;
+    }
+    return true;
+}
+#endif
+
 } // namespace
 
 int main() {
@@ -428,6 +487,13 @@ int main() {
     uint64_t workspaceSize = 0;
     std::vector<int64_t> v_pWShape = {1, 3, 256};
     int ret = ACL_SUCCESS;
+    // arch35: bit4 requests the camera VJP outputs (v_viewmats / v_ks).
+    // A2/A3 has no camera-gradient implementation, so the flag stays off.
+#ifdef ASCEND_COMPUTE_UNI_A5
+    const int32_t supportFeatures = 1 << 4;
+#else
+    const int32_t supportFeatures = 0;
+#endif
 
     ret = Init(deviceId, &stream);
     if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
@@ -438,7 +504,8 @@ int main() {
         return ret;
     }
 
-    ret = ExecuteFullyFusedProjectionBwd(resources, stream, &workspaceAddr, &workspaceSize);
+    ret = ExecuteFullyFusedProjectionBwd(resources, stream, &workspaceAddr, &workspaceSize,
+                                         supportFeatures);
     if (!CHECK_RET(ret == ACL_SUCCESS)) {
         CleanupResources(resources, workspaceAddr, stream, deviceId);
         return ret;
@@ -451,6 +518,16 @@ int main() {
 
     PrintResult<float>(v_pWShape, &resources.v_pWDeviceAddr, "v_pW");
 
+    int testResult = 0;
+#ifdef ASCEND_COMPUTE_UNI_A5
+    std::vector<int64_t> vViewmatsShape = {1, 1, 16};
+    std::vector<int64_t> vKsShape = {1, 1, 9};
+    if (!CheckCameraGrad(vViewmatsShape, &resources.v_viewmatsDeviceAddr, "v_viewmats") ||
+        !CheckCameraGrad(vKsShape, &resources.v_ksDeviceAddr, "v_ks")) {
+        testResult = 1;
+    }
+#endif
+
     CleanupResources(resources, workspaceAddr, stream, deviceId);
-    return 0;
+    return testResult;
 }

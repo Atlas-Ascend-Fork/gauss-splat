@@ -18,10 +18,12 @@
 // - 全部 SIMT 编译期常量收敛于本头文件（DevView.md「编译期常量与归属」）：
 //   THREAD_NUM = 1024 与 LAUNCH_BOUND / Simt::Dim3 同一 constexpr（SIMT 铁律，
 //   禁止从 tiling 数据动态获取线程数）。
-// - 唯一 VF 函数 FwdSimtCompute：1024 线程 × 1 像素/线程逐像素串行状态机，
+// - 主 VF 函数 FwdSimtCompute：1024 线程 × 1 像素/线程逐像素串行状态机，
 //   承载 EWA 二次型、双 clip（clip 1 三目比较 NaN 传播 / clip 2 微贡献跳过）、
 //   alpha blending 累积（T_{k-1} 前置透射率语义裁定）、per-pixel done、Kahan
 //   保序累加（Overview.md 数学语义 #1–#6）。
+// - 背景色 VF 函数 FwdBgCompose：每 tile 一次（批循环结束后），执行
+//   color += exp(lastCumsum)·bg；不得并入 FwdSimtCompute（每批一次会重复叠加）。
 // - VF 内辅助函数 TileDoneReduce：tile-done 两级 warp 归约（非 VF 入口，无
 //   __simt_vf__ 标记；由 FwdSimtCompute 末尾调用，全体 1024 线程参与）。
 //
@@ -111,6 +113,9 @@ __simt_callee__ __aicore__ inline void TileDoneReduce(uint64_t tid, uint32_t war
 //                                     tile-done 标志，(__ubuf__ int32_t*)&tileSync[32] 为
 //                                     warpReduceUb_（布局约束：warpReduceUb_ 紧邻
 //                                     tileDoneUb_ 32B 槽之后，见编排类 UbBuffInit）
+// 说明：背景色合成不在本 VF 内完成——VF 每批（≤256 高斯）调用一次，颜色累加器跨批
+// 持久化；若在此叠加会按批数重复累加背景项。背景色合成由编排层在批循环结束后调用
+// FwdBgCompose 每 tile 执行一次（见下）。
 // -----------------------------------------------------------------------------
 __simt_vf__ __aicore__ LAUNCH_BOUND(THREAD_NUM) inline void FwdSimtCompute(
     __ubuf__ float*    tileCoordX,
@@ -245,6 +250,33 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(THREAD_NUM) inline void FwdSimtCompute(
 
     // ===== tile-done 统计（全体线程含 outbound 参与；P4 判据来源，§9.4）=====
     TileDoneReduce(tid, warpId, laneId, doneMask, warpReduce, tileSync);
+}
+
+// -----------------------------------------------------------------------------
+// FwdBgCompose —— 背景色合成（每 tile 一次，由 SIMD 编排层在批循环结束后调用）：
+//   color += T_K · bg，T_K = exp(lastCumsum)（批循环结束后的对数域累积和）。
+// 必须放在“每 tile 一次”的层级：VF 每批调用、颜色累加器跨批持久化，若在 FwdSimtCompute
+// 内叠加会按批数重复累加背景项（多批 >256 高斯时颜色系统性偏离）。
+// useBgColor == 0 时由调用方跳过本 VF，保证关闭特性时输出与改动前逐位一致。
+// -----------------------------------------------------------------------------
+__simt_vf__ __aicore__ LAUNCH_BOUND(THREAD_NUM) inline void FwdBgCompose(
+    __ubuf__ float*   pixOutR,
+    __ubuf__ float*   pixOutG,
+    __ubuf__ float*   pixOutB,
+    __ubuf__ float*   lastCumsum,
+    __ubuf__ float*   bgColor,
+    int64_t           calPixel)
+{
+    const uint64_t tid = AscendC::Simt::GetThreadIdx();
+    if (tid < static_cast<uint64_t>(calPixel)) {
+        const float tFinal = expf(lastCumsum[tid]);   // T_K = e^{s_K}
+        pixOutR[tid] += tFinal * bgColor[0];
+        pixOutG[tid] += tFinal * bgColor[1];
+        pixOutB[tid] += tFinal * bgColor[2];
+    }
+    // 与同文件其他 VF 一致：写回 pixOut 后 fence + 全线程同步，保证后续 MTE3 读回顺序。
+    asc_threadfence_block();
+    asc_syncthreads();
 }
 
 #endif // CALC_RENDER_FWD_CLIP_LAST_IDS_SIMT_VF_H

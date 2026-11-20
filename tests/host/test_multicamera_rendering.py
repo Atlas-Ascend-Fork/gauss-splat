@@ -15,6 +15,12 @@ from typing import Dict, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[2]
 
+try:
+    from gauss_splat.ops.rendering import _resolve_bg_color as _resolve_bg_color_impl
+except Exception:  # pragma: no cover - 无 CANN/扩展时降级
+    def _resolve_bg_color_impl(splats, device):
+        return None, 0
+
 
 class TensorStub:
     def __init__(self, shape, requires_grad=False, camera_index=None):
@@ -45,6 +51,7 @@ def load_rasterization_method():
         "Dict": Dict, "Optional": Optional, "Tuple": Tuple, "Tensor": object, "RastCtx": object,
         "torch": type("TorchStub", (), {"cat": staticmethod(concatenate)}),
         "_validate_inputs": lambda *args: None,
+        "_resolve_bg_color": _resolve_bg_color_impl,
     }
     exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), "exec"), namespace)
     return namespace["_rasterization"]
@@ -58,8 +65,11 @@ class MultiCameraGradientTest(unittest.TestCase):
         calls = []
 
         class RecordingRasterizer:
-            def _rasterization(self, _gs, view_camera, *args):
-                calls.append((view_camera[0].camera_index, args[-1]))
+            def __init__(self):
+                self.calls = calls
+
+            def _rasterization(self, _gs, view_camera, *args, **kwargs):
+                self.calls.append((view_camera[0].camera_index, args[-1]))
                 info = {
                     "means2d": TensorStub((1, 1, 2, 5), True),
                     "radii": TensorStub((1, 1, 2, 5)),

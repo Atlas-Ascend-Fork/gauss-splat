@@ -60,13 +60,15 @@ public:
         GM_ADDR vColor, GM_ADDR vDepth, GM_ADDR lastCumsum, GM_ADDR error, GM_ADDR gs,
         GM_ADDR tileCoords, GM_ADDR offsets, GM_ADDR gsIds, GM_ADDR lastIds,
         int64_t nPixel, int64_t tileNum, int64_t nGauss,
-        int64_t offsetsLen, int64_t gsIdsLen, GM_ADDR vGs)
+        int64_t offsetsLen, int64_t gsIdsLen,
+        GM_ADDR bgColor, GM_ADDR vGs)
     {
         nPixel_ = nPixel;
         tileNum_ = tileNum;
         nGauss_ = nGauss;
         offsetsLen_ = offsetsLen;                       // S (spec formula SN)
         gsIdsLen_ = gsIdsLen;                           // G (spec formula gsIds.shape[0])
+        useBgColor_ = (bgColor != nullptr) ? 1 : 0;
         calPixel_ = MinI64(nPixel_, static_cast<int64_t>(THREAD_NUM));  // = min(nPixel, 1024)
         copyPixel_ = (calPixel_ + 7) & ~static_cast<int64_t>(7);        // 32B-aligned MTE2 element count
         // 32B-aligned element bounds (TTK OOM 插桩判界口径 align32(nbytes)/sizeof(T)):
@@ -93,6 +95,10 @@ public:
         coreOffsetsGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int64_t*>(offsets));  // 3-segment schedule
         gsIdsGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int64_t*>(gsIds));
         lastIdsGm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(lastIds));
+        if (useBgColor_ != 0) {
+            // bgColor 合法性由 csrc / Host Tiling 保证；此处不再静默关闭特性。
+            bgColorGm_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(bgColor));  // [3] bg_color
+        }
         vGsGm_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(vGs));        // output (cleared by ZeroVGs)
 
         // —— UB layout: 184KB single buffer (= 248KB - 64KB DCache, HostTiling.md §4) ——
@@ -104,6 +110,16 @@ public:
         evtMte2S_ = static_cast<event_t>(tp->AllocEventID<HardEvent::MTE2_S>());  // batch MTE2 -> Scalar/VF
         evtVS_    = static_cast<event_t>(tp->AllocEventID<HardEvent::V_S>());     // ReduceMax V -> Scalar
         evtSV_    = static_cast<event_t>(tp->AllocEventID<HardEvent::S_V>());     // scalarParams S -> VF
+
+        // —— bg_color：背景色一次性载入 UB（3×float = 12B，DataCopyPad 精确长度，
+        //    不越读 bgColor 张量末尾）；随后同步到 V 流水供 VF 读取 ——
+        if (useBgColor_ != 0) {
+            DataCopyExtParams bgCopyParams{1, static_cast<uint32_t>(3U * sizeof(float)), 0, 0, 0};
+            DataCopyPadExtParams<float> bgPadParams{false, 0, 0, 0};
+            DataCopyPad(bgColorUb_, bgColorGm_[0], bgCopyParams, bgPadParams);
+            SetFlag<HardEvent::MTE2_V>(static_cast<TEventID>(evtMte2V_));
+            WaitFlag<HardEvent::MTE2_V>(static_cast<TEventID>(evtMte2V_));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -213,7 +229,9 @@ private:
         tmpReduceUb_ = ub[off].ReinterpretCast<int32_t>(); off += LAST_IDS_UB_FLOATS;         // 4KB ReduceMax tmp
         off = (off + 7) & ~static_cast<int64_t>(7);
         maxLastIdsUb_ = ub[off].ReinterpretCast<int32_t>(); off += 8;          // 32B: 8 x int32 result
-        // total = off floats (75,872B = 18,968 floats) <= 184KB budget (DESIGN-BRANCH-0 §4)
+        bgColorUb_ = ub[off]; off += 8;                                        // 32B: bg_color RGB（3 有效 + padding）
+        tFinalUb_ = ub[off]; off += THREAD_NUM;                                // 4KB: 前向 s_K 快照（T_K）
+        // total = 80,000B (20,000 floats) ≤ 184KB；bg_color 新增 32B 背景色 + 4KB T_K 快照
         // [Task 36 F1/F2] gsIdsBatch partition was KERNEL_GS_PER_BATCH/4 floats (256B/32
         // slots); the full-batch DataCopy/SetValue (<= 256 int64 = 2KB, DESIGN-BRANCH-0 §4
         // table "gsIdsBatchUb | 2KB | 256 x int64") overflowed it by 1,792B into tmpReduce.
@@ -355,12 +373,15 @@ private:
         //       prevT[0] = 0, prevT[t] = currT[t-1]; REQUIREMENTS §5.3.3.
         //       Reads are guarded against the offsets tensor length S so a
         //       short segment (S < VN + 2T) reads as 0, matching golden.) ——
-        const int64_t currOffset = (tileBase + tileIdx < offsetsLen_)
+        int64_t currOffset = (tileBase + tileIdx < offsetsLen_)
             ? coreOffsetsGm_.GetValue(tileBase + tileIdx) : 0;
-        const int64_t prevOffset = (tileIdx > 0)
+        int64_t prevOffset = (tileIdx > 0)
             ? ((tileBase + tileIdx - 1 < offsetsLen_)
                 ? coreOffsetsGm_.GetValue(tileBase + tileIdx - 1) : 0)
             : 0;
+        // 与 fwd 一致：非法/倒挂 offsets 先裁剪到 [0, gsIdsLen]
+        prevOffset = MinI64(MaxI64(prevOffset, 0), gsIdsLen_);
+        currOffset = MinI64(MaxI64(currOffset, 0), gsIdsLen_);
 
         // —— 4. empty-tile guard: skip the gaussian loop entirely ——
         if (currOffset <= prevOffset) {
@@ -378,6 +399,18 @@ private:
 
         // —— 5. triple-skip (a): ReduceMax over lastIds to shrink the reverse start ——
         WaitFlag<HardEvent::MTE2_V>(evtMte2V_);          // pixel plane arrived
+        // 该分支每 tile 执行一次（不在逐高斯循环内）；关位时由 HasBg=false 模板消除，
+        // 因此不构成关位性能回退。固化前向 T_K = exp(s_K) 到独立 UB：lastCumsumUb_ 在批循环中会被逐批回退改写，
+        // 直接读取会得到“中间态透射率”，导致背景色交叉项按批放大。
+        // 指数在编排层每 tile 执行一次，VF 内不再逐批 expf。
+        if (useBgColor_ != 0) {
+            // lastCumsum 可能由 MTE2（对齐网格）或 Scalar（非对齐网格）写入：
+            // MTE2→V 已在上一行 Wait；此处再补 S→V，保证 Scalar 写入对 V 可见。
+            SetFlag<HardEvent::S_V>(evtSV_);
+            WaitFlag<HardEvent::S_V>(evtSV_);
+            Duplicate(tFinalUb_, 1.0f, THREAD_NUM);   // 尾部线程（calPixel..1024）防越界读
+            Exp(tFinalUb_, lastCumsumUb_, static_cast<int32_t>(calPixel_));
+        }
         // Forward sum/error remain the per-pixel Kahan state. Do not
         // replace the recurrence with a reassociated suffix sum.
         const int64_t launchThreads = THREAD_NUM;
@@ -419,19 +452,40 @@ private:
             SetFlag<HardEvent::S_V>(evtSV_);
             WaitFlag<HardEvent::S_V>(evtSV_);
 
-            asc_vf_call<BwdSimtCompute<THREAD_NUM>>(dim3{THREAD_NUM, 1, 1},
-            (__gm__ float*)gsGm_.GetPhyAddr(),
-            (__ubuf__ float*)tileCoordXUb_.GetPhyAddr(),
-            (__ubuf__ float*)tileCoordYUb_.GetPhyAddr(),
-            (__ubuf__ float*)gsAttrBatchUb_.GetPhyAddr(),
-            (__ubuf__ float*)vColorDepthUb_.GetPhyAddr(),
-            (__ubuf__ float*)lastCumsumUb_.GetPhyAddr(),
-            (__ubuf__ float*)errorUb_.GetPhyAddr(),
-            (__ubuf__ float*)cumsumBufUb_.GetPhyAddr(),
-            (__ubuf__ int32_t*)lastIdsUb_.GetPhyAddr(),
-            (__ubuf__ int64_t*)scalarParamsUb_.GetPhyAddr(),
-            (__ubuf__ int64_t*)gsIdsBatchUb_.GetPhyAddr(),
-            (__gm__ float*)vGsGm_.GetPhyAddr());
+            // 编译期双实例：关位（HasBg=false）不生成任何背景色指令，保证零退化。
+            if (useBgColor_ != 0) {
+                asc_vf_call<BwdSimtCompute<THREAD_NUM, true>>(dim3{THREAD_NUM, 1, 1},
+                (__gm__ float*)gsGm_.GetPhyAddr(),
+                (__ubuf__ float*)tileCoordXUb_.GetPhyAddr(),
+                (__ubuf__ float*)tileCoordYUb_.GetPhyAddr(),
+                (__ubuf__ float*)gsAttrBatchUb_.GetPhyAddr(),
+                (__ubuf__ float*)vColorDepthUb_.GetPhyAddr(),
+                (__ubuf__ float*)lastCumsumUb_.GetPhyAddr(),
+                (__ubuf__ float*)errorUb_.GetPhyAddr(),
+                (__ubuf__ float*)cumsumBufUb_.GetPhyAddr(),
+                (__ubuf__ int32_t*)lastIdsUb_.GetPhyAddr(),
+                (__ubuf__ int64_t*)scalarParamsUb_.GetPhyAddr(),
+                (__ubuf__ int64_t*)gsIdsBatchUb_.GetPhyAddr(),
+                (__gm__ float*)vGsGm_.GetPhyAddr(),
+                (__ubuf__ float*)bgColorUb_.GetPhyAddr(),
+                (__ubuf__ float*)tFinalUb_.GetPhyAddr());
+            } else {
+                asc_vf_call<BwdSimtCompute<THREAD_NUM, false>>(dim3{THREAD_NUM, 1, 1},
+                (__gm__ float*)gsGm_.GetPhyAddr(),
+                (__ubuf__ float*)tileCoordXUb_.GetPhyAddr(),
+                (__ubuf__ float*)tileCoordYUb_.GetPhyAddr(),
+                (__ubuf__ float*)gsAttrBatchUb_.GetPhyAddr(),
+                (__ubuf__ float*)vColorDepthUb_.GetPhyAddr(),
+                (__ubuf__ float*)lastCumsumUb_.GetPhyAddr(),
+                (__ubuf__ float*)errorUb_.GetPhyAddr(),
+                (__ubuf__ float*)cumsumBufUb_.GetPhyAddr(),
+                (__ubuf__ int32_t*)lastIdsUb_.GetPhyAddr(),
+                (__ubuf__ int64_t*)scalarParamsUb_.GetPhyAddr(),
+                (__ubuf__ int64_t*)gsIdsBatchUb_.GetPhyAddr(),
+                (__gm__ float*)vGsGm_.GetPhyAddr(),
+                (__ubuf__ float*)bgColorUb_.GetPhyAddr(),
+                (__ubuf__ float*)tFinalUb_.GetPhyAddr());
+            }
             PipeBarrier<PIPE_ALL>();                     // batch isolation: VF writes -> next batch MTE2 reads
             i = batchStart - 1;
         }
@@ -472,6 +526,7 @@ private:
     GlobalTensor<int64_t> coreOffsetsGm_;
     GlobalTensor<int64_t> gsIdsGm_;
     GlobalTensor<int32_t> lastIdsGm_;
+    GlobalTensor<float> bgColorGm_;    // [3] 背景色（可选输入；未置位时不绑定）
     GlobalTensor<float> vGsGm_;
 
     // UB single buffer + partitions (DESIGN-BRANCH-0 §4 table)
@@ -488,6 +543,9 @@ private:
     LocalTensor<int64_t> gsIdsBatchUb_;
     LocalTensor<int32_t> tmpReduceUb_;
     LocalTensor<int32_t> maxLastIdsUb_;
+    LocalTensor<float> bgColorUb_;      // 32B 槽：背景色 RGB（bg_color 特性）
+    LocalTensor<float> tFinalUb_;       // 4KB：前向 s_K 固化（T_K 来源；批循环会改写 lastCumsum）
+    int32_t useBgColor_ = 0;            // 1 = 可选背景色存在
 };
 
 } // namespace NsCalcRenderBwdClipLastids
@@ -509,7 +567,7 @@ private:
 extern "C" __global__ __aicore__ void calc_render_bwd_clip_lastids(
     GM_ADDR vColor, GM_ADDR vDepth, GM_ADDR lastCumsum, GM_ADDR error, GM_ADDR gs,
     GM_ADDR tileCoords, GM_ADDR offsets, GM_ADDR gsIds, GM_ADDR lastIds,
-    GM_ADDR vGs,
+    GM_ADDR bgColor, GM_ADDR vGs,
     GM_ADDR workspace, GM_ADDR tiling)
 {
     // AIV (AI Vector) only task type (baseline-consistent entry; no
@@ -545,6 +603,7 @@ extern "C" __global__ __aicore__ void calc_render_bwd_clip_lastids(
         *(reinterpret_cast<__gm__ int64_t*>(tilingPtr) + 3);   // byte offset 24
     const int64_t gsIdsLenTiling =
         *(reinterpret_cast<__gm__ int64_t*>(tilingPtr) + 4);   // byte offset 32
+    const int64_t gsIdsLen = gsIdsLenTiling;
 
     SetAtomicNone();
     // ⚠️ TPipe must be declared in the entry body (anti UB bus error 264);
@@ -555,7 +614,7 @@ extern "C" __global__ __aicore__ void calc_render_bwd_clip_lastids(
     op.Init(vColor, vDepth, lastCumsum, error, gs,
             tileCoords, offsets, gsIds, lastIds,
             nPixelTiling, tileNumTiling, nGaussTiling,
-            offsetsLenTiling, gsIdsLenTiling, vGs);
+            offsetsLenTiling, gsIdsLen, bgColor, vGs);
 
     // —— vGs kernel-side zero init (file-header VGS ZERO INIT note): the spec
     //    output semantics are vGs = 0 + Σ contributions (golden np.zeros +

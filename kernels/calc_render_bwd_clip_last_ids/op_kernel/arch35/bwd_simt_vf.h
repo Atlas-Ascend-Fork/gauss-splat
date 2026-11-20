@@ -52,7 +52,9 @@ __simt_callee__ __aicore__ inline void ScatterGradient(
 
 // Specialize the launch bound as well as the launch dimension. UB channel
 // strides remain THREAD_NUM in both variants; they are not blockDim strides.
-template<int Threads>
+// bg_color 特性：bgColorUb 为前向叠加过的同一份背景色 [3]，
+// HasBg=false 时整条背景色梯度路径不执行（输出与改动前逐位一致）。
+template<int Threads, bool HasBg>
 __simt_vf__ __aicore__ __launch_bounds__(Threads) inline void BwdSimtCompute(
     __gm__ float* gsGm,
     __ubuf__ float* tileCoordXUb, __ubuf__ float* tileCoordYUb,
@@ -60,7 +62,8 @@ __simt_vf__ __aicore__ __launch_bounds__(Threads) inline void BwdSimtCompute(
     __ubuf__ float* lastCumsumUb, __ubuf__ float* errorUb,
     __ubuf__ float* cumsumBufUb, __ubuf__ int32_t* lastIdsUb,
     __ubuf__ int64_t* scalarParamsUb, __ubuf__ int64_t* gsIdsBatchUb,
-    __gm__ float* vGsGm)
+    __gm__ float* vGsGm,
+    __ubuf__ float* bgColorUb, __ubuf__ float* tFinalUb)
 {
     (void)gsGm;
     const int tid = static_cast<int>(AscendC::Simt::GetThreadIdx());
@@ -69,6 +72,11 @@ __simt_vf__ __aicore__ __launch_bounds__(Threads) inline void BwdSimtCompute(
     const int64_t batchStart = scalarParamsUb[SCALAR_BATCH_START];
     const int batchSize = static_cast<int>(scalarParamsUb[SCALAR_BATCH_SIZE]);
     float sum = lastCumsumUb[tid], error = errorUb[tid];
+    // 前向最终透光率 T_K 由编排层在 tile 起始 Exp 固化到 tFinalUb_
+    // （lastCumsumUb_ 会在批循环中被逐批回退改写；指数每 tile 只算一次）。
+    // 背景色路径的精确分摊不需要跨批后缀连乘：dT_K/dα_i = -T_K/(1-α_i)，与批划分无关。
+    float tFinal = 0.0f;
+    if constexpr (HasBg) { tFinal = tFinalUb[tid]; }
     float cumR = cumsumBufUb[CUMSUM_R_OFFSET + tid];
     float cumG = cumsumBufUb[CUMSUM_G_OFFSET + tid];
     float cumB = cumsumBufUb[CUMSUM_B_OFFSET + tid];
@@ -78,6 +86,13 @@ __simt_vf__ __aicore__ __launch_bounds__(Threads) inline void BwdSimtCompute(
     const float vb = vColorDepthUb[VCOLOR_B_OFFSET + tid];
     const float vd = vColorDepthUb[VCOLOR_VDEPTH_OFFSET + tid];
     const float px = tileCoordXUb[tid], py = tileCoordYUb[tid];
+    // 背景色路径的透射率梯度种子：dL/dT_K = Σ_c bg_c · v_c（仅颜色 RGB 路径；
+    // 深度通道不叠加背景色）。bg_c 取自 bgColor 输入（与前向同一份数值，不是梯度）；
+    // 背景色本身不可微，算子不产出其梯度。
+    float vTbg = 0.0f;
+    if constexpr (HasBg) {
+        vTbg = bgColorUb[0] * vr + bgColorUb[1] * vg + bgColorUb[2] * vb;
+    }
     for (int t = batchSize - 1; t >= 0; --t) {
         bool valid = batchStart + t <= last;
         if (!asc_any(static_cast<int>(valid))) { continue; }
@@ -112,6 +127,9 @@ __simt_vf__ __aicore__ __launch_bounds__(Threads) inline void BwdSimtCompute(
                         +(trans*cg-cumG/oneMinus)*vg
                         +(trans*cb-cumB/oneMinus)*vb
                         +(trans*cd-cumD/oneMinus)*vd;
+                // bg_color：叠加背景色路径对 dL/dα_i 的贡献 -vTbg · T_K/(1-α_i)。
+                // 用 T_K（入口读取的前向最终透光率）而非后缀连乘，天然跨批一致。
+                if constexpr (HasBg) { va += -vTbg * tFinal / oneMinus; }
                 if (raw>ALPHA_UPPER_BOUND) { va=0.0f; weight=0.0f; }
                 vo=va*weight;
                 const float vw=-opacity*vo;

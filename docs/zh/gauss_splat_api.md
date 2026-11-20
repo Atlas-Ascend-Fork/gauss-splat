@@ -38,6 +38,7 @@
   - `opacities` (Tensor): 不透明度（logits），形状 (N,)
   - `sh0` (Tensor): 球谐系数第0阶，形状 (N, 1, 3)
   - `shN` (Tensor): 球谐系数高阶，形状 (N, K, 3)
+  - `bg_color` (Tensor/tuple/list, optional): A5 `clip_lastids` 专用背景色 RGB，形状 (3,)；None 表示关闭；传入即启用背景色；Tensor 可设置 `requires_grad`。
 - `camera_model` (str): 相机模型，可选值: "pinhole", "ortho", "fisheye"，默认为"pinhole"
 
 **返回值**:
@@ -140,6 +141,7 @@ means2d, depths, conics, opacities, radius, covars2d, colors, cnt, proj_filter, 
 - `tile_coords` (Tensor): 分块坐标，形状 (tileNum, 2, nPixel)
 - `offsets` (Tensor): 偏移量，形状 (vectorCnt + (TileNum * 2))
 - `sorted_gs_ids` (Tensor): 排序后的高斯点ID，形状 (totalGauss)
+- `bg_color` (Tensor, optional): 背景色 RGB，形状 (3,)，float32；None 表示关闭（仅 A5 `clip_lastids`）。需与输入同 device；传入 `requires_grad=True` 的张量时，反向返回 `dL/dbg = Σ T_K·v_color`；是否加入优化器由调用方决定。
 
 **返回值**:
 
@@ -157,6 +159,12 @@ render_colors, render_depths = gauss_splat.calc_render(
     means2d[b, c], conics[b, c, 0], conics[b, c, 1], conics[b, c, 2],
     opacities[b, c], colors[b, c], depths[b, c].unsqueeze(0),
     pix_coords, lb_sched, sorted_gs_id
+)
+# 可选背景色（A5）：传入 bg_color 即启用
+render_colors_bg, render_depths_bg = gauss_splat.calc_render(
+    means2d[b, c], conics[b, c, 0], conics[b, c, 1], conics[b, c, 2],
+    opacities[b, c], colors[b, c], depths[b, c].unsqueeze(0),
+    pix_coords, lb_sched, sorted_gs_id, torch.tensor([0.2, 0.4, 0.6], device=means2d.device)
 )
 ```
 

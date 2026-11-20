@@ -36,6 +36,11 @@ public:
             .DataType({ge::DT_INT64})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
+        this->Input("bgColor")       // 背景色 [3]（RGB，float32；可选，追加为输入索引 4）
+            .ParamType(OPTIONAL)
+            .DataType({ge::DT_FLOAT})
+            .Format({ge::FORMAT_ND})
+            .UnknownShapeFormat({ge::FORMAT_ND});
 
         // —— Output 声明：顺序 = aclnn/OpDef 签名顺序（color, depth, lastCumsum, error, lastIds）——
         this->Output("color")        // R/G/B 三平面 [3, TileNum, 1024]
@@ -63,8 +68,6 @@ public:
             .DataType({ge::DT_INT32})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
-
-        // —— Attr 声明：无（proto.md：alpha 上界 0.999、ALPHA_THRESHOLD=1/255、DONE_THRESHOLD=1e-4、nPixel=1024 均为编译期固定常量，T1/T3）——
 
         // —— AICore 配置：仅 ascend950 ——
         OpAICoreConfig aicoreConfig;

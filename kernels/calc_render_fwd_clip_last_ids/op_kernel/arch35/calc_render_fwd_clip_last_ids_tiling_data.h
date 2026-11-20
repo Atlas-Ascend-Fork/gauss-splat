@@ -42,8 +42,7 @@ struct alignas(8) CalcRenderFwdClipLastidsTilingData {
     uint32_t blockDim;  // AIV 核数 = GetCoreNumAiv()（为 0 时单核兜底 1）；与 SetBlockDim 同源同值
 };
 
-// ABI 契约：8+8+8+8+8+8+4(+4 padding) = 52 字节有效、48B 对齐槽（Task 30 新增
-// totalGauss 后 40B→48B 序列化布局），字段偏移与设计字段表一致。
+// ABI 契约：8+8+8+8+8+8+4(+4 padding) = 48 字节有效、48B 对齐槽。
 static_assert(offsetof(CalcRenderFwdClipLastidsTilingData, nPixel) == 0, "nPixel ABI");
 static_assert(offsetof(CalcRenderFwdClipLastidsTilingData, tileNum) == 8, "tileNum ABI");
 static_assert(offsetof(CalcRenderFwdClipLastidsTilingData, nGauss) == 16, "nGauss ABI");

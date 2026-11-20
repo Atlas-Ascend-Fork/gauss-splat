@@ -35,14 +35,27 @@ void CheckInputs(const at::Tensor &gs, const at::Tensor &coords,
     TORCH_CHECK(coords.size(2) > 0 && coords.size(2) <= 1024, "SIMT rendering requires 1 <= P <= 1024");
     TORCH_CHECK(offsets.dim() == 1 && ids.dim() == 1, "offsets and gsIds must be vectors");
 }
-}
 
+// 可选背景色校验：存在时必须是 float32、连续、[3]（RGB），并与 gs 同设备。
+void CheckBgColor(const c10::optional<at::Tensor> &bgColor, const at::Tensor &gs,
+                  const char *name)
+{
+    const bool present = bgColor.has_value() && bgColor->defined();
+    if (present) {
+        const at::Tensor &bg = *bgColor;
+        CheckTensor(bg, gs, at::kFloat, name);
+        TORCH_CHECK(bg.dim() == 1 && bg.size(0) == 3, name, " must have shape [3]");
+    }
+}
+}
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor> 
 calc_render_fwd_clip_last_ids(
     const at::Tensor &gs, const at::Tensor &tileCoords,
-    const at::Tensor &offsets, const at::Tensor &gsIds)
+    const at::Tensor &offsets, const at::Tensor &gsIds,
+    const c10::optional<at::Tensor> &bgColor)
 {
     CheckInputs(gs, tileCoords, offsets, gsIds);
+    CheckBgColor(bgColor, gs, "bg_color");
     const auto t = tileCoords.size(0), p = tileCoords.size(2);
     auto color = at::zeros({3, t, p}, gs.options());
     auto depth = at::zeros({t, p}, gs.options());
@@ -50,7 +63,7 @@ calc_render_fwd_clip_last_ids(
     auto error = at::zeros({t, p}, gs.options());
     auto lastIds = at::full({t, p}, -1, gs.options().dtype(at::kInt));
     EXEC_NPU_CMD(aclnnCalcRenderFwdClipLastids, gs, tileCoords, offsets, gsIds,
-                 color, depth, lastCumsum, error, lastIds);
+                 bgColor, color, depth, lastCumsum, error, lastIds);
     return std::make_tuple(color, depth, lastCumsum, error, lastIds);
 }
 
@@ -58,7 +71,8 @@ at::Tensor calc_render_bwd_clip_last_ids(
     const at::Tensor &vColor, const at::Tensor &vDepth,
     const at::Tensor &lastCumsum, const at::Tensor &error,
     const at::Tensor &gs, const at::Tensor &tileCoords,
-    const at::Tensor &offsets, const at::Tensor &gsIds, const at::Tensor &lastIds)
+    const at::Tensor &offsets, const at::Tensor &gsIds, const at::Tensor &lastIds,
+    const c10::optional<at::Tensor> &bgColor)
 {
     CheckInputs(gs, tileCoords, offsets, gsIds);
     CheckTensor(vColor, gs, at::kFloat, "vColor");
@@ -66,6 +80,7 @@ at::Tensor calc_render_bwd_clip_last_ids(
     CheckTensor(lastCumsum, gs, at::kFloat, "lastCumsum");
     CheckTensor(error, gs, at::kFloat, "error");
     CheckTensor(lastIds, gs, at::kInt, "lastIds");
+    CheckBgColor(bgColor, gs, "bg_color");
     const auto t = tileCoords.size(0), p = tileCoords.size(2);
     TORCH_CHECK(vColor.sizes() == at::IntArrayRef({3, t, p}), "vColor must have shape [3,T,P]");
     TORCH_CHECK(vDepth.sizes() == at::IntArrayRef({1, t, p}), "vDepth must have shape [1,T,P]");
@@ -74,6 +89,6 @@ at::Tensor calc_render_bwd_clip_last_ids(
                 "lastCumsum, error and lastIds must have shape [T,P]");
     auto vGs = at::zeros_like(gs);
     EXEC_NPU_CMD(aclnnCalcRenderBwdClipLastids, vColor, vDepth, lastCumsum, error,
-                 gs, tileCoords, offsets, gsIds, lastIds, vGs);
+                 gs, tileCoords, offsets, gsIds, lastIds, bgColor, vGs);
     return vGs;
 }

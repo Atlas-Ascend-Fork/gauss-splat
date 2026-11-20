@@ -63,6 +63,22 @@ def _validate_inputs(
                     f"Invalid sh_degree for colors shape: {colors.shape}")
 
 
+def _resolve_bg_color(splats: dict, device) -> Optional[Tensor]:
+    """从 splats 字典解析可选背景色；None 表示关闭。"""
+    raw = splats.get("bg_color", None)
+    if raw is None:
+        return None
+    if isinstance(raw, torch.Tensor):
+        # 不 detach：允许 bg_color 为 nn.Parameter，由 CalcRender.backward 返回 v_bg。
+        bg_color = raw.to(dtype=torch.float32, device=device).reshape(-1)
+    else:
+        bg_color = torch.as_tensor(raw, dtype=torch.float32, device=device).reshape(-1)
+    if bg_color.numel() != 3:
+        raise ValueError(
+            f"splats['bg_color'] must have 3 elements, got {tuple(bg_color.shape)}")
+    return bg_color.contiguous()
+
+
 class Rasterizer:
     def __init__(self) -> None:
         self.tile_size = 32
@@ -113,6 +129,7 @@ class Rasterizer:
     ) -> Tuple[Tensor, Tensor, Dict]:
         width, height = size
         device = splats["means"].device
+        bg_color = _resolve_bg_color(splats, device)
         geometry_key = (math.ceil(width / tile_size) * tile_size,
                         math.ceil(height / tile_size) * tile_size,
                         tile_size, device)
@@ -144,6 +161,7 @@ class Rasterizer:
             sh_degree=active_sh_degree,
             tile_size=tile_size,
             camtoworlds=camtoworlds,
+            bg_color=bg_color,
         )
         return render_colors, render_depth, info
 
@@ -156,6 +174,7 @@ class Rasterizer:
         tile_size: int = 32,
         camtoworlds: Optional[Tensor] = None,
         rast_ctx: Optional[RastCtx] = None,
+        bg_color: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor, Dict]:
         means, quats, scales, opacities, colors = gs
         viewmats, Ks, camera_model, render_mode = camera
@@ -184,6 +203,7 @@ class Rasterizer:
                      camera_model, render_mode),
                     size, sh_degree, tile_size, camtoworlds[camera_index:camera_index + 1],
                     RastCtx(),
+                    bg_color=bg_color,
                 )
                 rendered.append(image)
                 depths_per_view.append(depth)
@@ -301,6 +321,7 @@ class Rasterizer:
                     pix_coords,
                     lb_sched,
                     sorted_gs_id,
+                    bg_color,
                 )
                 cf_render_colors = self.tile2image(
                     cf_render_colors.permute(1, 2, 0), height, width

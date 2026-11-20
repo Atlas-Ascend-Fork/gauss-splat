@@ -20,6 +20,12 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 
+try:
+    from gauss_splat.ops.rendering import _resolve_bg_color as _resolve_bg_color_impl
+except Exception:  # pragma: no cover - 无 CANN/扩展时降级
+    def _resolve_bg_color_impl(splats, device):
+        return None, 0
+
 
 class Array:
     def __init__(self, values, device="cpu"):
@@ -62,6 +68,8 @@ def load_rasterizer():
     namespace = {
         "Dict": Dict, "Optional": Optional, "Tuple": Tuple, "Tensor": object,
         "RastCtx": object, "math": math, "torch": fake_torch,
+        # 模块级解析函数不在抽取范围内：优先注入真实实现，仅在扩展不可导入时降级。
+        "_resolve_bg_color": _resolve_bg_color_impl,
     }
     exec(compile(ast.Module(body=[rasterizer], type_ignores=[]), str(path), "exec"), namespace)
     return namespace["Rasterizer"]()

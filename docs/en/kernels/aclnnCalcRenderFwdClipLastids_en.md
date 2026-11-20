@@ -1,4 +1,4 @@
-# aclnnCalcRenderSimtFwd
+# aclnnCalcRenderFwdClipLastids
 
 [View Source Code](https://gitcode.com/cann/gauss-splat/blob/master/kernels/calc_render_fwd_clip_last_ids/op_kernel/arch35/calc_render_fwd_clip_last_ids_apt.cpp)
 
@@ -40,6 +40,14 @@ $$
 color = \sum_{i} \alpha_i T_{i-1} c_i, \quad depth = \sum_{i} \alpha_i T_{i-1} d_i
 $$
 
+When `bgColor` is provided, the background color is added to the blended color above (the background color always participates in the float32 linear domain and is never mixed into the log-domain Kahan recurrence):
+
+$$
+color \mathrel{+}= T_K \cdot bg, \quad T_K = e^{s_K}
+$$
+
+where $bg$ is the $(R,G,B)$ passed by `bgColor` and $T_K$ is the residual transmittance after the traversal ($T_K=1$ when no Gaussian contributes, so the output color of an empty tile is the background color itself).
+
 - Otherwise the pixel reaches the per-pixel done condition; record `lastIds` and terminate the traversal (this Gaussian sphere and all following ones are no longer accumulated).
 
 In both cases the log-domain accumulated transmittance (`lastCumsum`) is updated with Kahan compensation:
@@ -58,14 +66,15 @@ These intermediate outputs, together with the inputs `gs`, `tileCoords`, `offset
 
 ## Function Prototype
 
-Each operator is divided into a two-stage interface. You must first call the "aclnnCalcRenderSimtFwdGetWorkspaceSize" interface to obtain the required workspace size and the executor that contains the operator computation process, and then call the "aclnnCalcRenderSimtFwd" interface to execute the computation.
+Each operator is divided into a two-stage interface. You must first call the "aclnnCalcRenderFwdClipLastidsGetWorkspaceSize" interface to obtain the required workspace size and the executor that contains the operator computation process, and then call the "aclnnCalcRenderFwdClipLastids" interface to execute the computation.
 
 ```Cpp
-aclnnStatus aclnnCalcRenderSimtFwdGetWorkspaceSize(
+aclnnStatus aclnnCalcRenderFwdClipLastidsGetWorkspaceSize(
     const aclTensor *gs,
     const aclTensor *tileCoords,
     const aclTensor *offsets,
     const aclTensor *gsIds,
+    const aclTensor *bgColorOptional,
     const aclTensor *color,
     const aclTensor *depth,
     const aclTensor *lastCumsum,
@@ -76,14 +85,14 @@ aclnnStatus aclnnCalcRenderSimtFwdGetWorkspaceSize(
 ```
 
 ```Cpp
-aclnnStatus aclnnCalcRenderSimtFwd(
+aclnnStatus aclnnCalcRenderFwdClipLastids(
     void             *workspace,
     uint64_t          workspaceSize,
     aclOpExecutor    *executor,
     const aclrtStream stream)
 ```
 
-## aclnnCalcRenderSimtFwdGetWorkspaceSize
+## aclnnCalcRenderFwdClipLastidsGetWorkspaceSize
 
 - **Parameter Description:**
   
@@ -139,6 +148,16 @@ aclnnStatus aclnnCalcRenderSimtFwd(
       <td>ND</td>
       <td>(totalGauss)</td>
       <td>Yes</td>
+    </tr>
+    <tr>
+      <td>bgColor</td>
+      <td>Input</td>
+      <td>Background color (R,G,B).</td>
+      <td>Optional input. When provided its shape must be (3) and dtype float32, otherwise an error is reported; nullptr disables background blending.</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(3)</td>
+      <td>√</td>
     </tr>
     <tr>
       <td>color</td>
@@ -238,7 +257,7 @@ aclnnStatus aclnnCalcRenderSimtFwd(
         </tbody>
     </table>
 
-## aclnnCalcRenderSimtFwd
+## aclnnCalcRenderFwdClipLastids
 
 - **Parameter Description:**
   
@@ -258,7 +277,7 @@ aclnnStatus aclnnCalcRenderSimtFwd(
     <tr>
       <td>workspaceSize</td>
       <td>Input</td>
-      <td>Workspace size allocated on the device side, obtained by the first-stage interface aclnnCalcRenderSimtFwdGetWorkspaceSize.</td>
+      <td>Workspace size allocated on the device side, obtained by the first-stage interface aclnnCalcRenderFwdClipLastidsGetWorkspaceSize.</td>
     </tr>
     <tr>
       <td>executor</td>
@@ -286,6 +305,8 @@ aclnnStatus aclnnCalcRenderSimtFwd(
 - color must be (3, tileNum, 1024); depth, lastCumsum, error, and lastIds must be (tileNum, 1024), and must be pre-allocated by the caller.
 - For empty tensors (tileNum == 0), the operator returns immediately without writing the outputs.
 - This operator must be used together with calc_render_bwd_clip_last_ids; the `lastCumsum`, `error`, and `lastIds` outputs need to be passed to the backward operator.
+- bgColor is optional, must have shape (3) and dtype FLOAT; providing it enables background blending.
+- For an empty tile (empty schedule segment in offsets) with background enabled, the output color equals the background color (residual transmittance is 1), and depth/lastCumsum/error/lastIds are 0.
 
 **Dimension Variable Description:**
 

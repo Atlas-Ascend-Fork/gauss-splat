@@ -284,7 +284,6 @@ class Runner:
             # sh schedule
             sh_degree_to_use = min(step // cfg.sh_degree_interval, cfg.sh_degree)
 
-            # metagauss render，不支持background color
             if self.cfg.profiling and step == 0:
                 self.profiler.start()
             renders, render_depth, info = self.raserizer.ascend_rasterize_splats(

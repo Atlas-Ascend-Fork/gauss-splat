@@ -19,8 +19,10 @@
 //
 // 执行流：核间跨核步进分区（loopProcess，Task 30 golden 覆盖语义）→ 逐 tile
 // 阶段化流水线（Process）→ 批循环 VF_CALL FwdSimtCompute（1024 线程 × 1 像素/
-// 线程，像素数学全在 VF，fwd_simt_vf.h）→ 批尾 tile-done 判定（P4）→ 五路写回。
-// 单 buffer UB 布局 60640B ≤ 可用 UB 120KB（ubSize − DCACHE_RESERVED，T4）；
+// 线程，像素数学全在 VF，fwd_simt_vf.h）→ 批尾 tile-done 判定（P4）→ 批循环后
+// FwdBgCompose（每 tile 一次，bg_color 特性）→ 五路写回。
+// 单 buffer UB 布局 60640B ≤ 可用 UB 120KB（ubSize − DCACHE_RESERVED，T4；
+// 背景色复用原 Exp 保留位，UB 零增长）；
 // 6 类 HardEvent 各 1 对组织 MTE2/V/MTE3/S 四流水数据依赖（T6，禁 PipeBarrier）。
 //
 // 输入 4 路（gs [NGauss,10] fp32 / tileCoords [TileNum,2,1024] fp32 /
@@ -34,7 +36,9 @@
 using namespace AscendC;
 
 // 单 buffer UB 布局总字节数（DESIGN-BRANCH-0.md §4 逐段字节账合计；
-// InitBuffer 按 120KB 全额申请，本常量仅作容量校验口径）
+// InitBuffer 按 120KB 全额申请，本常量仅作容量校验口径）。
+// bg_color 特性复用既有 4KB Exp 保留位（36864B）存放背景色，布局合计保持 60640B
+// （UB 零增长）。
 constexpr uint32_t UB_LAYOUT_BYTES = 60640;
 
 // =============================================================================
@@ -47,7 +51,7 @@ public:
     __aicore__ inline CalcRenderFwdClipLastidsKernel() {}
 
     __aicore__ inline void Init(GM_ADDR gs, GM_ADDR tileCoords, GM_ADDR offsets,
-                                GM_ADDR gsIds, GM_ADDR color, GM_ADDR depth,
+                                GM_ADDR gsIds, GM_ADDR bgColor, GM_ADDR color, GM_ADDR depth,
                                 GM_ADDR lastCumsum, GM_ADDR error, GM_ADDR lastIds,
                                 const CalcRenderFwdClipLastidsTilingData* tilingData, TPipe* pipe);
     __aicore__ inline void loopProcess();                // 跨核步进分区调度（§3，Task 30 golden 覆盖语义）
@@ -90,6 +94,7 @@ private:
     GlobalTensor<int64_t> scheduleGm_;    // offsets 第 2 段：[vecNum, vecNum+TileNum) 负载均衡 tile 调度序
     GlobalTensor<int64_t> tileOffsetsGm_; // offsets 第 3 段：[vecNum+TileNum, vecNum+2*TileNum) 累计高斯偏移 end[k]
     GlobalTensor<int64_t> gsIdsGm_;       // [TotalGauss] 深度排序高斯全局 id
+    GlobalTensor<float> bgColorGm_;       // [3] 背景色（可选输入索引 4；未置位时不绑定）
     GlobalTensor<float> colorRGm_;        // color[0] 平面基址（R），[TileNum, 1024]
     GlobalTensor<float> colorGGm_;        // color[1] 平面基址（G）
     GlobalTensor<float> colorBGm_;        // color[2] 平面基址（B）
@@ -107,20 +112,25 @@ private:
     LocalTensor<float> lastCumsum_;       // ln 域累积透射率 s = Σ ln(1−α)
     LocalTensor<float> error_;            // Kahan 补偿误差累加器
     LocalTensor<int32_t> lastIds_;        // 逐像素最后贡献高斯全局索引
-    LocalTensor<float> T_;                // Exp 辅助保留位（透射率实际寄存器化，不传值）
     LocalTensor<uint8_t> doneMaskUb_;     // per-pixel done（跨 VF 调用持久化）
     LocalTensor<int64_t> scalarParamsUb_; // 5×int64：prevOffset/currOffset/nPixel/calPixel/batchSize
+    LocalTensor<float> bgColorUb_;        // [3] 背景色（复用原 Exp 保留位，4KB 槽，32B 对齐）
     LocalTensor<float> gsAttrBatchUb_;    // 256 高斯 × 16 float 协同载入区（T12）
     LocalTensor<int64_t> gsIdsBatchUb_;   // 256×int64 批量 gsIds
     LocalTensor<uint8_t> tileDoneUb_;     // tile-done 标志：SIMT VF 写、SIMD Scalar 读
     LocalTensor<int32_t> warpReduceUb_;   // 32 warp × int32 归约暂存
+    // ===== 背景色特性状态 =====
+    int32_t useBgColor_ = 0;              // 1 = 背景色特性开启（bgColor 合法性已由 csrc/Host 保证）
+    float bgR_ = 0.0f;                    // 背景色标量副本：空 tile 快速路径写回用
+    float bgG_ = 0.0f;
+    float bgB_ = 0.0f;
 };
 
 // -----------------------------------------------------------------------------
 // Init — GM 绑定 / 核号 / 事件 / TilingData 消费（Kernel.md §4）
 // -----------------------------------------------------------------------------
 __aicore__ inline void CalcRenderFwdClipLastidsKernel::Init(GM_ADDR gs, GM_ADDR tileCoords, GM_ADDR offsets,
-                                                     GM_ADDR gsIds, GM_ADDR color, GM_ADDR depth,
+                                                     GM_ADDR gsIds, GM_ADDR bgColor, GM_ADDR color, GM_ADDR depth,
                                                      GM_ADDR lastCumsum, GM_ADDR error, GM_ADDR lastIds,
                                                      const CalcRenderFwdClipLastidsTilingData* tilingData,
                                                      TPipe* pipe)
@@ -139,6 +149,9 @@ __aicore__ inline void CalcRenderFwdClipLastidsKernel::Init(GM_ADDR gs, GM_ADDR 
     nGauss_  = tilingData->nGauss;
     nIds_    = tilingData->totalGauss;   // gsIds 长度（Task 30 段界防御）
 
+    // ===== 背景色特性：可选输入 bgColor 是否存在由 Host/csrc 语义保证。=====
+    useBgColor_ = (bgColor != nullptr) ? 1 : 0;
+
     // ===== 事件 ID（单 buffer 6 类各 1 对，T6；Init 一次性 Alloc、kernel 生命周期复用，
     //       不逐 tile 重复分配释放——AllocEventID/ReleaseEventID 成对纪律）=====
     mte3Mte2Id_ = pipe->AllocEventID<HardEvent::MTE3_MTE2>();
@@ -152,6 +165,10 @@ __aicore__ inline void CalcRenderFwdClipLastidsKernel::Init(GM_ADDR gs, GM_ADDR 
     gsGm_.SetGlobalBuffer((__gm__ float *)gs);                     // [NGauss, 10]
     tileCoordsGm_.SetGlobalBuffer((__gm__ float *)tileCoords);     // [TileNum, 2, 1024]
     gsIdsGm_.SetGlobalBuffer((__gm__ int64_t *)gsIds);             // [TotalGauss]
+    if (useBgColor_ != 0) {
+        // bgColor 合法性由 csrc / Host Tiling 保证；此处不再静默关闭特性。
+        bgColorGm_.SetGlobalBuffer((__gm__ float *)bgColor);   // [3] 背景色（可选输入）
+    }
     // offsets 三段布局（基线同款：SetGlobalBuffer 基址 + 段内偏移视图）
     coreOffsetsGm_.SetGlobalBuffer((__gm__ int64_t *)offsets);     // 第 1 段 [0, vecNum)
     scheduleGm_   = coreOffsetsGm_[vecNum_];                       // 第 2 段（tile 调度序）
@@ -172,6 +189,22 @@ __aicore__ inline void CalcRenderFwdClipLastidsKernel::Init(GM_ADDR gs, GM_ADDR 
 
     // ===== 核内共享 UB（单 buffer，T4）=====
     UbBuffInit(pipe);
+
+    // ===== 背景色一次性载入（可选输入，全 tile 复用）：3×float = 12B，
+    //       DataCopyPad 精确长度，不越读 bgColor 张量末尾；随后同步到 S（标量副本，
+    //       空 tile 快速路径写回用）与 V（VF 读 UB）两条流水 =====
+    if (useBgColor_ != 0) {
+        DataCopyExtParams bgCopyParams{1, static_cast<uint32_t>(3U * sizeof(float)), 0, 0, 0};
+        DataCopyPadExtParams<float> bgPadParams{false, 0, 0, 0};
+        DataCopyPad(bgColorUb_, bgColorGm_[0], bgCopyParams, bgPadParams);
+        SetFlag<HardEvent::MTE2_S>(mte2SId_);
+        WaitFlag<HardEvent::MTE2_S>(mte2SId_);
+        bgR_ = bgColorUb_.GetValue(0);
+        bgG_ = bgColorUb_.GetValue(1);
+        bgB_ = bgColorUb_.GetValue(2);
+        SetFlag<HardEvent::MTE2_V>(mte2VId_);
+        WaitFlag<HardEvent::MTE2_V>(mte2VId_);
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -197,14 +230,14 @@ __aicore__ inline void CalcRenderFwdClipLastidsKernel::UbBuffInit(TPipe* pipe)
     error_         = ub[28672].ReinterpretCast<float>();  // 28672B，4KB：Kahan 补偿跨批状态（tile 内）/
                                                           //   写回前清零的 error 输出区（阶段 5）
     lastIds_       = ub[32768].ReinterpretCast<int32_t>();// 32768B，4KB：int32×1024
-    T_             = ub[36864].ReinterpretCast<float>();  // 36864B，4KB：Exp 辅助保留位（透射率寄存器化）
+    bgColorUb_     = ub[36864].ReinterpretCast<float>();  // 36864B，4KB：背景色 RGB（复用原 Exp 保留位）
     doneMaskUb_    = ub[40960].ReinterpretCast<uint8_t>();// 40960B，1KB：uint8×1024 per-pixel done
     scalarParamsUb_ = ub[41984].ReinterpretCast<int64_t>();// 41984B，64B 槽：5×int64(40B) + 24B padding
     gsAttrBatchUb_ = ub[42048].ReinterpretCast<float>();  // 42048B，16KB：256 高斯 × 16 float
     gsIdsBatchUb_  = ub[58432].ReinterpretCast<int64_t>(); // 58432B，2KB：256×int64
     tileDoneUb_    = ub[60480].ReinterpretCast<uint8_t>();// 60480B，32B 槽（1 有效）：tile-done 标志
     warpReduceUb_  = ub[60512].ReinterpretCast<int32_t>();// 60512B，128B：32 warp × int32 归约暂存
-    // 合计 60640B ≈ 59.2KB ≤ 120KB 可用 UB（T4，与 DESIGN-BRANCH-0.md §4 表逐值一致）
+    // 合计 60640B ≈ 59.2KB ≤ 120KB 可用 UB（T4；背景色复用 Exp 保留位，UB 零增长）
 }
 
 // -----------------------------------------------------------------------------
@@ -295,6 +328,14 @@ __aicore__ inline void CalcRenderFwdClipLastidsKernel::Process(int64_t tileIdx)
     //       currOffset ≤ prevOffset——对齐 golden segLen = max(segEnd−segStart, 0)，
     //       合同外非单调 end 的倒挂段亦为空 tile）=====
     if (currOffset <= prevOffset) {
+        // bg_color：空 tile 无高斯贡献（T_K = 1），输出颜色即背景色本身。
+        // 背景分量为 -0.0 时归一为 +0.0，保证与关位（阶段 2 写 +0.0）逐位一致。
+        if (useBgColor_ != 0) {
+            // -0.0 + 0.0 = +0.0（IEEE，非 fast-math 下不被折叠），无分支归一
+            Duplicate(pixOutR_, bgR_ + 0.0f, (int32_t)calPixel_);
+            Duplicate(pixOutG_, bgG_ + 0.0f, (int32_t)calPixel_);
+            Duplicate(pixOutB_, bgB_ + 0.0f, (int32_t)calPixel_);
+        }
         SetFlag<HardEvent::V_MTE3>(vMte3Id_);
         WaitFlag<HardEvent::V_MTE3>(vMte3Id_);
         CopyOutTile(tileColorRGm, tileColorGGm, tileColorBGm, tileDepthGm,
@@ -403,6 +444,20 @@ __aicore__ inline void CalcRenderFwdClipLastidsKernel::Process(int64_t tileIdx)
         }
     }
 
+    // ===== 阶段 4.5：背景色合成（每 tile 一次，批循环结束后；bg_color 特性）=====
+    // 不能在 FwdSimtCompute（每批一次）内叠加，否则多批（>256 高斯/tile）会按批数
+    // 重复累加背景项。此处 lastCumsum_ 已是本 tile 全部批处理完的 s_K，
+    // 逐像素计算 T_K = exp(s_K) 后执行 color += T_K · bg；特性关闭时整段跳过。
+    if (useBgColor_ != 0) {
+        __ubuf__ float* pixOutRPtr   = (__ubuf__ float*)pixOutR_.GetPhyAddr();
+        __ubuf__ float* pixOutGPtr   = (__ubuf__ float*)pixOutG_.GetPhyAddr();
+        __ubuf__ float* pixOutBPtr   = (__ubuf__ float*)pixOutB_.GetPhyAddr();
+        __ubuf__ float* lastCumsumPtr = (__ubuf__ float*)lastCumsum_.GetPhyAddr();
+        __ubuf__ float* bgColorPtr   = (__ubuf__ float*)bgColorUb_.GetPhyAddr();
+        asc_vf_call<FwdBgCompose>(AscendC::Simt::Dim3(THREAD_NUM),
+            pixOutRPtr, pixOutGPtr, pixOutBPtr, lastCumsumPtr, bgColorPtr, calPixel_);
+    }
+
     // ===== 阶段 5：五路写回（V → MTE3，§8）=====
     // error 输出 = Kahan 补偿项数学真值 0（spec.yaml math_semantics.formula：
     // error = np.zeros(...)，精确算术下补偿项恒零；golden.py:133 逐像素与 0 比对，
@@ -446,7 +501,7 @@ __aicore__ inline void CalcRenderFwdClipLastidsKernel::CopyOutTile(GlobalTensor<
 // 不消费）。TPipe 必须在 kernel 入口声明、经指针传入（T6：UB bus error 264 修复）。
 // -----------------------------------------------------------------------------
 extern "C" __global__ __aicore__ void calc_render_fwd_clip_lastids(
-    GM_ADDR gs, GM_ADDR tileCoords, GM_ADDR offsets, GM_ADDR gsIds,
+    GM_ADDR gs, GM_ADDR tileCoords, GM_ADDR offsets, GM_ADDR gsIds, GM_ADDR bgColor,
     GM_ADDR color, GM_ADDR depth, GM_ADDR lastCumsum, GM_ADDR error,
     GM_ADDR lastIds, GM_ADDR workspace, GM_ADDR tiling)
 {
@@ -462,7 +517,7 @@ extern "C" __global__ __aicore__ void calc_render_fwd_clip_lastids(
         return;
     }
     CalcRenderFwdClipLastidsKernel op;
-    op.Init(gs, tileCoords, offsets, gsIds,
+    op.Init(gs, tileCoords, offsets, gsIds, bgColor,
             color, depth, lastCumsum, error, lastIds, &tilingData, &pipe);
     op.loopProcess();
 }

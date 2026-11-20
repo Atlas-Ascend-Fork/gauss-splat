@@ -128,6 +128,14 @@ static ge::graphStatus InferShape4CalcRenderBwdClipLastids(gert::InferShapeConte
         return ge::GRAPH_FAILED;
     }
 
+    // ---- bgColor 可选输入（索引 9）shape 校验 ----
+    // 未传：背景色特性关闭，直接通过；传入：必须为 rank-1、元素数 3（RGB）。
+    const gert::Shape* vBgShape = context->GetOptionalInputShape(9);
+    if (vBgShape != nullptr && (vBgShape->GetDimNum() != 1U || vBgShape->GetDim(0) != 3)) {
+        OP_LOGE(context->GetNodeName(), "bgColor shape must be [3] (shape_mismatch)");
+        return ge::GRAPH_FAILED;
+    }
+
     return ge::GRAPH_SUCCESS;
 }
 

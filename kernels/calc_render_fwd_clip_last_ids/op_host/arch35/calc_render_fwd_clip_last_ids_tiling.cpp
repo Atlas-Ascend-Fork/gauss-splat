@@ -18,8 +18,10 @@
 
 namespace optiling {
 namespace {
-constexpr size_t kInputCount = 4;
-constexpr size_t kTensorCount = 9;
+constexpr size_t kInputCount = 5;
+constexpr size_t kTensorCount = 10;
+// 可选输入 bgColor 在输入序中的位置。
+constexpr size_t kBgColorIdx = 4;
 // HostTiling.md §3 固定维契约：N_PIXEL_FIXED = 1024（32×32 tile，T1）、
 // GS_ATTR_NUM = 10（gs 属性布局）。
 constexpr int64_t kPixelCount = 1024;
@@ -27,11 +29,12 @@ constexpr int64_t kGsAttrNum = 10;
 // HostTiling.md §3 行 5：各维 ∈ [0, 2^31−1]（含 NGauss < 2^31，T8 前提）。
 constexpr int64_t kMaxDim = 2147483647;
 constexpr std::array<const char*, kTensorCount> kNames = {
-    "gs", "tileCoords", "offsets", "gsIds", "color", "depth", "lastCumsum", "error", "lastIds"};
+    "gs", "tileCoords", "offsets", "gsIds", "bgColor",
+    "color", "depth", "lastCumsum", "error", "lastIds"};
 constexpr std::array<ge::DataType, kTensorCount> kDtypes = {
-    ge::DT_FLOAT, ge::DT_FLOAT, ge::DT_INT64, ge::DT_INT64,
+    ge::DT_FLOAT, ge::DT_FLOAT, ge::DT_INT64, ge::DT_INT64, ge::DT_FLOAT,
     ge::DT_FLOAT, ge::DT_FLOAT, ge::DT_FLOAT, ge::DT_FLOAT, ge::DT_INT32};
-constexpr std::array<size_t, kTensorCount> kRanks = {2, 3, 1, 1, 3, 2, 2, 2, 2};
+constexpr std::array<size_t, kTensorCount> kRanks = {2, 3, 1, 1, 1, 3, 2, 2, 2, 2};
 using Shapes = std::array<const gert::StorageShape*, kTensorCount>;
 
 ge::graphStatus Fail(const char* reason)
@@ -41,13 +44,35 @@ ge::graphStatus Fail(const char* reason)
 
 // 校验顺序 HostTiling.md §3：dtype → format → rank（维度值检查后置，交
 // ValidateInputs 设计锚点与维域兜底，保证 tileNum<0 命中设计锚点串）。
+// 可选输入 bgColor（索引 4）缺省时 shapes[4] 置空，表示未启用背景色。
 bool CheckTensorMetadata(gert::TilingContext* context, Shapes& shapes)
 {
     for (size_t i = 0; i < kTensorCount; ++i) {
-        const auto* desc = i < kInputCount ? context->GetInputDesc(i) : context->GetOutputDesc(i - kInputCount);
-        shapes[i] = i < kInputCount ? context->GetInputShape(i) : context->GetOutputShape(i - kInputCount);
-        if (desc == nullptr || shapes[i] == nullptr) {
-            return false;
+        const gert::CompileTimeTensorDesc* desc = nullptr;
+        if (i == kBgColorIdx) {
+            // 可选输入必须走 Optional 接口；按 gert 约定“未实例化”返回 nullptr。
+            // 不能把 dimnum==0（present 的 rank-0 张量）也当成缺省，否则会把
+            // “传了非法 bg 但未启用背景色”静默忽略，导致 Host 与 Python/csrc 口径不一致。
+            shapes[i] = context->GetOptionalInputShape(i);
+            if (shapes[i] == nullptr) {
+                continue;              // 真正缺省：未启用背景色
+            }
+            desc = context->GetOptionalInputDesc(i);
+            if (desc == nullptr) {
+                return false;
+            }
+            if (shapes[i]->GetStorageShape().GetDimNum() != 1) {
+                return false;
+            }
+            if (shapes[i]->GetStorageShape().GetDim(0) != 3) {
+                return false;
+            }
+        } else {
+            desc = i < kInputCount ? context->GetInputDesc(i) : context->GetOutputDesc(i - kInputCount);
+            shapes[i] = i < kInputCount ? context->GetInputShape(i) : context->GetOutputShape(i - kInputCount);
+            if (desc == nullptr || shapes[i] == nullptr) {
+                return false;
+            }
         }
         if (desc->GetDataType() != kDtypes[i]) {
             return false;
@@ -86,6 +111,9 @@ static ge::graphStatus ValidateInputs(const gert::TilingContext* context, int64_
 bool CheckDimDomain(const Shapes& shapes)
 {
     for (size_t i = 0; i < kTensorCount; ++i) {
+        if (shapes[i] == nullptr) {
+            continue;   // 可选输入 bgColor 缺省
+        }
         const auto& shape = shapes[i]->GetStorageShape();
         for (size_t d = 0; d < kRanks[i]; ++d) {
             if (shape.GetDim(d) < 0 || shape.GetDim(d) > kMaxDim) {
@@ -105,12 +133,12 @@ bool CheckShapes(const Shapes& shapes, int64_t tiles)
         Fail("tileCoords coord-axis dim must be 2");
         return false;
     }
-    const auto& color = shapes[4]->GetStorageShape();
+    const auto& color = shapes[5]->GetStorageShape();
     if (color.GetDim(0) != 3 || color.GetDim(1) != tiles || color.GetDim(2) != kPixelCount) {
         Fail("color shape must be [3,tileNum,1024]");
         return false;
     }
-    for (size_t i = 5; i < kTensorCount; ++i) {
+    for (size_t i = 6; i < kTensorCount; ++i) {
         const auto& shape = shapes[i]->GetStorageShape();
         if (shape.GetDim(0) != tiles || shape.GetDim(1) != kPixelCount) {
             return false;

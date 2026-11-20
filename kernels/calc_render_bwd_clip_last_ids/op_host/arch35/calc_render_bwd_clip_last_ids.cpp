@@ -138,6 +138,17 @@ public:
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
 
+        // --- Input: bgColor (float32, [3], OPTIONAL) ---
+        // 可选背景色输入，追加为第 10 个输入
+        // （索引 9）。该输入携带前向叠加的同一份背景色**数值**（不是 dL/dbg；前后向
+        // 一致性要求），反向用其值构造 v_bg = bg·v_color 并把梯度修正分摊到各高斯
+        // alpha；背景色不可微，本算子不产出其梯度（Python 侧返回 None）。
+        this->Input("bgColor")
+            .ParamType(OPTIONAL)
+            .DataType({ge::DT_FLOAT})
+            .Format({ge::FORMAT_ND})
+            .UnknownShapeFormat({ge::FORMAT_ND});
+
         // --- Output: vGs (float32, [N,10]) ---
         // Per-gaussian gradients; kernel 入口协作清零后仅原子累加（非 inplace）。
         // vGs.shape = gs.shape, vGs.dtype = gs.dtype (proto.md §4)。

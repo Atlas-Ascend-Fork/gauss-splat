@@ -25,6 +25,7 @@ struct TensorResources {
     void* tileCoordsDeviceAddr = nullptr;
     void* offsetsDeviceAddr = nullptr;
     void* gsIdsDeviceAddr = nullptr;
+    void* bgColorDeviceAddr = nullptr;
     void* colorDeviceAddr = nullptr;
     void* depthDeviceAddr = nullptr;
     void* lastCumsumDeviceAddr = nullptr;
@@ -35,6 +36,7 @@ struct TensorResources {
     aclTensor* tileCoordsTensor = nullptr;
     aclTensor* offsetsTensor = nullptr;
     aclTensor* gsIdsTensor = nullptr;
+    aclTensor* bgColorTensor = nullptr;   // 可选输入：背景色
     aclTensor* colorTensor = nullptr;
     aclTensor* depthTensor = nullptr;
     aclTensor* lastCumsumTensor = nullptr;
@@ -61,6 +63,7 @@ int InitializeTensors(TensorResources& resources, int32_t deviceId) {
     std::vector<int64_t> tileCoordsShape = {tileNum, 2, nPixel};
     std::vector<int64_t> offsetsShape = {vectorCoreNum + 2 * tileNum};
     std::vector<int64_t> gsIdsShape = {totalGauss};
+    std::vector<int64_t> bgColorShape = {3};
     std::vector<int64_t> colorShape = {3, tileNum, nPixel};
     std::vector<int64_t> depthShape = {tileNum, nPixel};
     std::vector<int64_t> lastCumsumShape = {tileNum, nPixel};
@@ -70,7 +73,16 @@ int InitializeTensors(TensorResources& resources, int32_t deviceId) {
     std::vector<float> gsHostData(GetShapeSize(gsShape), 0.5f);
     std::vector<float> tileCoordsHostData(GetShapeSize(tileCoordsShape), 0.0f);
     std::vector<int64_t> offsetsHostData(GetShapeSize(offsetsShape), 0);
+    // 合法调度：core0 承担全部 tile（其余核空载），schedule 为恒等排列；
+    // tile 段保持全 0 ⇒ 所有 tile 为空 tile，用于覆盖空 tile 快速路径。
+    for (int64_t i = 0; i < vectorCoreNum; ++i) {
+        offsetsHostData[i] = tileNum;
+    }
+    for (int64_t j = 0; j < tileNum; ++j) {
+        offsetsHostData[vectorCoreNum + j] = j;
+    }
     std::vector<int64_t> gsIdsHostData(GetShapeSize(gsIdsShape), 0);
+    std::vector<float> bgColorHostData = {0.25f, 0.5f, 0.75f};
     std::vector<float> colorHostData(GetShapeSize(colorShape), 0.0f);
     std::vector<float> depthHostData(GetShapeSize(depthShape), 0.0f);
     std::vector<float> lastCumsumHostData(GetShapeSize(lastCumsumShape), 0.0f);
@@ -91,6 +103,10 @@ int InitializeTensors(TensorResources& resources, int32_t deviceId) {
 
     ret = CreateAclTensor(gsIdsHostData, gsIdsShape, &resources.gsIdsDeviceAddr,
                           aclDataType::ACL_INT64, &resources.gsIdsTensor);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
+
+    ret = CreateAclTensor(bgColorHostData, bgColorShape, &resources.bgColorDeviceAddr,
+                          aclDataType::ACL_FLOAT, &resources.bgColorTensor);
     if (!CHECK_RET(ret == ACL_SUCCESS)) return ret;
 
     ret = CreateAclTensor(colorHostData, colorShape, &resources.colorDeviceAddr,
@@ -117,12 +133,13 @@ int InitializeTensors(TensorResources& resources, int32_t deviceId) {
 }
 
 int ExecuteCalcRenderFwdClipLastids(TensorResources& resources, aclrtStream stream,
-                             void** workspaceAddr, uint64_t* workspaceSize) {
+                             void** workspaceAddr, uint64_t* workspaceSize,
+                             aclTensor* bgColorTensor) {
     aclOpExecutor* executor;
 
     int ret = aclnnCalcRenderFwdClipLastidsGetWorkspaceSize(
         resources.gsTensor, resources.tileCoordsTensor, resources.offsetsTensor, resources.gsIdsTensor,
-        resources.colorTensor, resources.depthTensor, resources.lastCumsumTensor, resources.errorTensor,
+        bgColorTensor, resources.colorTensor, resources.depthTensor, resources.lastCumsumTensor, resources.errorTensor,
         resources.lastIdsTensor, workspaceSize, &executor);
 
     if (!CHECK_RET(ret == ACL_SUCCESS)) {
@@ -150,6 +167,7 @@ void CleanupResources(TensorResources& resources, void* workspaceAddr,
     if (resources.tileCoordsTensor) aclDestroyTensor(resources.tileCoordsTensor);
     if (resources.offsetsTensor) aclDestroyTensor(resources.offsetsTensor);
     if (resources.gsIdsTensor) aclDestroyTensor(resources.gsIdsTensor);
+    if (resources.bgColorTensor) aclDestroyTensor(resources.bgColorTensor);
     if (resources.colorTensor) aclDestroyTensor(resources.colorTensor);
     if (resources.depthTensor) aclDestroyTensor(resources.depthTensor);
     if (resources.lastCumsumTensor) aclDestroyTensor(resources.lastCumsumTensor);
@@ -160,6 +178,7 @@ void CleanupResources(TensorResources& resources, void* workspaceAddr,
     if (resources.tileCoordsDeviceAddr) aclrtFree(resources.tileCoordsDeviceAddr);
     if (resources.offsetsDeviceAddr) aclrtFree(resources.offsetsDeviceAddr);
     if (resources.gsIdsDeviceAddr) aclrtFree(resources.gsIdsDeviceAddr);
+    if (resources.bgColorDeviceAddr) aclrtFree(resources.bgColorDeviceAddr);
     if (resources.colorDeviceAddr) aclrtFree(resources.colorDeviceAddr);
     if (resources.depthDeviceAddr) aclrtFree(resources.depthDeviceAddr);
     if (resources.lastCumsumDeviceAddr) aclrtFree(resources.lastCumsumDeviceAddr);
@@ -170,6 +189,36 @@ void CleanupResources(TensorResources& resources, void* workspaceAddr,
     if (stream) aclrtDestroyStream(stream);
     aclrtResetDevice(deviceId);
     aclFinalize();
+}
+
+bool CheckEmptyTileColor(const TensorResources& resources,
+                         const std::vector<int64_t>& colorShape,
+                         const std::vector<float>& expectBg)
+{
+    if (expectBg.size() != 3) {
+        return false;
+    }
+    const int64_t plane = colorShape[1] * colorShape[2];
+    std::vector<float> colorData(3 * plane, 0.0f);
+    int copyRet = aclrtMemcpy(colorData.data(), colorData.size() * sizeof(float),
+                              resources.colorDeviceAddr, colorData.size() * sizeof(float),
+                              ACL_MEMCPY_DEVICE_TO_HOST);
+    if (!CHECK_RET(copyRet == ACL_SUCCESS)) {
+        LOG_PRINT("copy color from device failed. ERROR: %d\n", copyRet);
+        return false;
+    }
+    for (int64_t c = 0; c < 3; ++c) {
+        for (int64_t i = 0; i < plane; ++i) {
+            if (std::fabs(colorData[c * plane + i] - expectBg[c]) > 1e-6f) {
+                LOG_PRINT("empty-tile bg mismatch: channel=%ld idx=%ld got=%f expect=%f\n",
+                          static_cast<long>(c), static_cast<long>(i),
+                          colorData[c * plane + i], expectBg[c]);
+                return false;
+            }
+        }
+    }
+    LOG_PRINT("empty-tile color check passed\n");
+    return true;
 }
 
 } // namespace
@@ -192,7 +241,11 @@ int main() {
         return ret;
     }
 
-    ret = ExecuteCalcRenderFwdClipLastids(resources, stream, &workspaceAddr, &workspaceSize);
+    // Case 1: bg_color 开启（bgColor 存在）。
+    // offsets 全 0 ⇒ 所有 tile 为空 tile（无高斯贡献，剩余透光率 = 1），
+    // 因此 color 必须逐像素等于背景色本身（空 tile 专项用例）。
+    ret = ExecuteCalcRenderFwdClipLastids(resources, stream, &workspaceAddr, &workspaceSize,
+                                          resources.bgColorTensor);
     if (!CHECK_RET(ret == ACL_SUCCESS)) {
         CleanupResources(resources, workspaceAddr, stream, deviceId);
         return ret;
@@ -203,8 +256,36 @@ int main() {
         LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", ret);
     }
 
-    PrintResult<float>(colorShape, &resources.colorDeviceAddr, "color");
+    PrintResult<float>(colorShape, &resources.colorDeviceAddr, "color(bg=on)");
+    // 断言失败必须非 0 退出，不能被后续用例覆盖为成功（避免 CI 假绿）。
+    if (!CheckEmptyTileColor(resources, colorShape, {0.25f, 0.5f, 0.75f})) {
+        CleanupResources(resources, workspaceAddr, stream, deviceId);
+        return ACL_ERROR_FAILURE;
+    }
+    if (workspaceAddr) {
+        aclrtFree(workspaceAddr);
+        workspaceAddr = nullptr;
+    }
+    workspaceSize = 0;
+
+    // Case 2: bg_color 关闭（bgColor = nullptr）⇒ 空 tile 输出全 0。
+    ret = ExecuteCalcRenderFwdClipLastids(resources, stream, &workspaceAddr, &workspaceSize,
+                                          nullptr);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) {
+        CleanupResources(resources, workspaceAddr, stream, deviceId);
+        return ret;
+    }
+    ret = aclrtSynchronizeStream(stream);
+    if (!CHECK_RET(ret == ACL_SUCCESS)) {
+        LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", ret);
+    }
+    PrintResult<float>(colorShape, &resources.colorDeviceAddr, "color(bg=off)");
+    // 关闭特性必须保持零退化，不能只打印不校验。
+    if (!CheckEmptyTileColor(resources, colorShape, {0.0f, 0.0f, 0.0f})) {
+        CleanupResources(resources, workspaceAddr, stream, deviceId);
+        return ACL_ERROR_FAILURE;
+    }
 
     CleanupResources(resources, workspaceAddr, stream, deviceId);
-    return 0;
+    return ret == ACL_SUCCESS ? 0 : ret;
 }

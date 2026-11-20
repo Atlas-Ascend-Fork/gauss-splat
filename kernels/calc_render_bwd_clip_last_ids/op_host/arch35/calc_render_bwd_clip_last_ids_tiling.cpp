@@ -47,7 +47,8 @@
 #include "exe_graph/runtime/tiling_context.h"                      // gert::TilingContext
 #include "op_common/log/log.h"                                     // OP_LOGI / OP_CHECK_NULL_WITH_CONTEXT
 #include "tiling/platform/platform_ascendc.h"                      // platform_ascendc::PlatformAscendC
-#include "../../op_kernel/arch35/calc_render_bwd_clip_last_ids_tiling_struct.h"     // CalcRenderBwdClipLastidsTilingData（TilingData.md §1 契约）
+#include "../../op_kernel/arch35/calc_render_bwd_clip_last_ids_tiling_struct.h"
+#include "../../op_kernel/arch35/bwd_constants.h"
 
 namespace optiling {
 
@@ -61,6 +62,8 @@ constexpr size_t SHAPE_IDX_GS = 4U;          // gs         [N, 10]
 constexpr size_t SHAPE_IDX_TILE_COORDS = 5U; // tileCoords [T, 2, P]
 constexpr size_t SHAPE_IDX_OFFSETS = 6U;     // offsets    [S]
 constexpr size_t SHAPE_IDX_GSIDS = 7U;       // gsIds      [G]
+constexpr size_t SHAPE_IDX_BG_COLOR = 9U;     // bgColor [3]（可选，bg_color 特性）
+
 
 // DCache 预留（字节）：ubSize > DCACHE_SIZE 时可用 UB = ubSize − 64KB
 // （Ascend950 实测 248KB → 184KB；禁止硬编码 192/248KB 兜底，HostTiling.md §4）.
@@ -226,6 +229,22 @@ static ge::graphStatus TilingFuncCalcRenderBwdClipLastids(gert::TilingContext* c
         || (tileNum > 0 && offsetsLen <= 2 * tileNum)) {
         OP_LOGE(context->GetNodeName(), "invalid pixel count or schedule layout");
         return ge::GRAPH_FAILED;
+    }
+
+    // ===== bg_color：可选输入 bgColor 直接决定是否启用 =====
+    const gert::StorageShape* vBgShape = context->GetOptionalInputShape(SHAPE_IDX_BG_COLOR);
+    if (vBgShape != nullptr) {
+        const auto& vBg = vBgShape->GetStorageShape();
+        if (vBg.GetDimNum() != 1U || vBg.GetDim(0) != 3) {
+            OP_LOGE(context->GetNodeName(), "bgColor shape must be [3]");
+            return ge::GRAPH_FAILED;
+        }
+        const auto* vBgDesc = context->GetOptionalInputDesc(SHAPE_IDX_BG_COLOR);
+        OP_CHECK_NULL_WITH_CONTEXT(context, vBgDesc);
+        if (vBgDesc->GetDataType() != ge::DT_FLOAT) {
+            OP_LOGE(context->GetNodeName(), "bgColor dtype must be FLOAT");
+            return ge::GRAPH_FAILED;
+        }
     }
 
     // ===== 多核切分（HostTiling.md §5：仅核数决策）=====

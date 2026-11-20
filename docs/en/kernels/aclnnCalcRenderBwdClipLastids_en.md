@@ -1,4 +1,4 @@
-# aclnnCalcRenderSimtBwd
+# aclnnCalcRenderBwdClipLastids
 
 [View Source Code](https://gitcode.com/cann/gauss-splat/blob/master/kernels/calc_render_bwd_clip_last_ids/op_kernel/arch35/calc_render_bwd_clip_last_ids_apt.cpp)
 
@@ -58,14 +58,22 @@ $$
 v_r^{gs} = \alpha T_{i-1}\, v_r, \quad v_g^{gs} = \alpha T_{i-1}\, v_g, \quad v_b^{gs} = \alpha T_{i-1}\, v_b, \quad v_d^{gs} = \alpha T_{i-1}\, v_d
 $$
 
-When $o \cdot w$ exceeds the upper bound 0.999 ($\alpha$ is clipped), the opacity, position, and conic gradients are treated as invalid (0), while the color/depth gradients are still accumulated as $\alpha T_{i-1} v$; when $\alpha$ falls below the validity threshold $\frac{1}{255}$, all gradients of that Gaussian sphere are treated as invalid (0). The results of all pixels are atomically accumulated by Gaussian sphere ID to obtain the final $v\_Gs$. The output $v\_Gs$ is cooperatively zeroed inside the operator, so the caller does not need to pre-zero it.
+When `bgColor` is provided, the forward output is $color = \sum_i \alpha_i T_{i-1} c_i + T_K \cdot bg$ (with $T_K = e^{s_K}$ the final transmittance). The background color is back-propagated to the blending alpha of every Gaussian through $T_K$, and the corresponding gradient correction is:
+
+$$
+v_{bg} = bg_r v_r + bg_g v_g + bg_b v_b, \qquad g_\alpha \mathrel{+}= -v_{bg} \cdot T_K/(1-\alpha_i) = -v_{bg}\cdot T_{i-1}\cdot\prod_{j>i}(1-\alpha_j)
+$$
+
+During the reverse traversal this term is exactly distributed to each Gaussian via the suffix transmittance factor $\prod_{j>i}(1-\alpha_j)$ and then propagated to the opacity, position, and covariance parameters through $g_\alpha$. The aclnn/kernel operator itself does not produce a background-color gradient; the Python autograd wrapper returns `dL/dbg = Σ T_K·v_color` when `bg_color.requires_grad=True`, otherwise `None`.
+
+When $o \cdot w$ exceeds the upper bound 0.999 ($\alpha$ is clipped), the opacity, position, and conic gradients are treated as invalid (0), while the color/depth gradients are still accumulated as $\alpha T_{i-1} v$; when $\alpha$ falls below the validity threshold $\frac{1}{255}$, all gradients of that Gaussian sphere are treated as invalid (0). The results of all pixels are atomically accumulated by Gaussian sphere ID to obtain the final $v\_Gs$. The output $v\_Gs$ is cooperatively zeroed inside the operator, so the caller does not need to pre-zero it. When background is enabled, the background color added in the forward pass and the one used by the reverse correction must be the same value, otherwise a systematic gradient bias is introduced.
 
 ## Function Prototype
 
-Each operator is divided into a two-stage interface. You must first call the "aclnnCalcRenderSimtBwdGetWorkspaceSize" interface to obtain the required workspace size and the executor that contains the operator computation process, and then call the "aclnnCalcRenderSimtBwd" interface to execute the computation.
+Each operator is divided into a two-stage interface. You must first call the "aclnnCalcRenderBwdClipLastidsGetWorkspaceSize" interface to obtain the required workspace size and the executor that contains the operator computation process, and then call the "aclnnCalcRenderBwdClipLastids" interface to execute the computation.
 
 ```Cpp
-aclnnStatus aclnnCalcRenderSimtBwdGetWorkspaceSize(
+aclnnStatus aclnnCalcRenderBwdClipLastidsGetWorkspaceSize(
     const aclTensor *vColor,
     const aclTensor *vDepth,
     const aclTensor *lastCumsum,
@@ -75,20 +83,21 @@ aclnnStatus aclnnCalcRenderSimtBwdGetWorkspaceSize(
     const aclTensor *offsets,
     const aclTensor *gsIds,
     const aclTensor *lastIds,
+    const aclTensor *bgColorOptional,
     const aclTensor *vGs,
     uint64_t        *workspaceSize,
     aclOpExecutor  **executor)
 ```
 
 ```Cpp
-aclnnStatus aclnnCalcRenderSimtBwd(
+aclnnStatus aclnnCalcRenderBwdClipLastids(
     void             *workspace,
     uint64_t          workspaceSize,
     aclOpExecutor    *executor,
     const aclrtStream stream)
 ```
 
-## aclnnCalcRenderSimtBwdGetWorkspaceSize
+## aclnnCalcRenderBwdClipLastidsGetWorkspaceSize
 
 - **Parameter Description:**
   
@@ -196,6 +205,16 @@ aclnnStatus aclnnCalcRenderSimtBwd(
       <td>Yes</td>
     </tr>
     <tr>
+      <td>bgColor</td>
+      <td>Input</td>
+      <td>The same background color value used by the forward pass (not dL/dbg, optional).</td>
+      <td>Optional input. When provided its shape must be (3) and dtype float32; nullptr disables background blending. This input carries the same background color value that the forward pass added; the backward uses its value to compute the transmittance gradient of the background path ($v_{bg}=bg\cdot v$). The operator does not produce a background-color gradient; the Python autograd wrapper can return `Σ T_K·v_color` when needed.</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(3)</td>
+      <td>√</td>
+    </tr>
+    <tr>
       <td>vGs</td>
       <td>Output</td>
       <td>Gradient output for Gaussian sphere parameters.</td>
@@ -253,7 +272,7 @@ aclnnStatus aclnnCalcRenderSimtBwd(
         </tbody>
     </table>
 
-## aclnnCalcRenderSimtBwd
+## aclnnCalcRenderBwdClipLastids
 
 - **Parameter Description:**
   
@@ -273,7 +292,7 @@ aclnnStatus aclnnCalcRenderSimtBwd(
     <tr>
       <td>workspaceSize</td>
       <td>Input</td>
-      <td>Workspace size allocated on the device side, obtained by the first-stage interface aclnnCalcRenderSimtBwdGetWorkspaceSize.</td>
+      <td>Workspace size allocated on the device side, obtained by the first-stage interface aclnnCalcRenderBwdClipLastidsGetWorkspaceSize.</td>
     </tr>
     <tr>
       <td>executor</td>

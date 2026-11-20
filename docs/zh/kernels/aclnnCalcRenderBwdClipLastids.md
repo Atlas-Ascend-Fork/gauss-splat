@@ -58,6 +58,14 @@ $$
 v_r^{gs} = \alpha T_{i-1}\, v_r, \quad v_g^{gs} = \alpha T_{i-1}\, v_g, \quad v_b^{gs} = \alpha T_{i-1}\, v_b, \quad v_d^{gs} = \alpha T_{i-1}\, v_d
 $$
 
+当 `bgColor` 传入时，前向输出为 $color = \sum_i \alpha_i T_{i-1} c_i + T_K \cdot bg$（$T_K = e^{s_K}$ 为最终透光率），背景色经由 $T_K$ 回传到各高斯球的混合透明度，其梯度修正项为：
+
+$$
+v_{bg} = bg_r v_r + bg_g v_g + bg_b v_b, \qquad g_\alpha \mathrel{+}= -v_{bg} \cdot T_K/(1-\alpha_i) = -v_{bg}\cdot T_{i-1}\cdot\prod_{j>i}(1-\alpha_j)
+$$
+
+该项在逆序遍历中按后缀透射率因子 $\prod_{j>i}(1-\alpha_j)$ 精确分摊到每个高斯球，并随 $g_\alpha$ 传播到不透明度、位置、协方差参数。该算子（aclnn/kernel）本身不产出背景色梯度；Python autograd 封装在 `bg_color.requires_grad=True` 时按 gsplat 口径返回 `dL/dbg = Σ T_K·v_color`，否则返回 `None`。
+
 当 $o \cdot w$ 超过上界 0.999（$\alpha$ 被裁剪）时，不透明度、位置与锥面梯度按无效处理（置0），颜色/深度梯度仍按 $\alpha T_{i-1} v$ 正常累加；当 $\alpha$ 低于有效阈值 $\frac{1}{255}$ 时，该高斯球的全部梯度按无效处理（置0）。各像素的结果按高斯球ID原子累加，得到最终 $v\_Gs$。输出 $v\_Gs$ 由算子内部协作清零，调用方无需预先清零。
 
 ## 函数原型
@@ -75,6 +83,7 @@ aclnnStatus aclnnCalcRenderBwdClipLastidsGetWorkspaceSize(
     const aclTensor *offsets,
     const aclTensor *gsIds,
     const aclTensor *lastIds,
+    const aclTensor *bgColorOptional,
     const aclTensor *vGs,
     uint64_t        *workspaceSize,
     aclOpExecutor  **executor)
@@ -196,6 +205,16 @@ aclnnStatus aclnnCalcRenderBwdClipLastids(
       <td>√</td>
     </tr>
     <tr>
+      <td>bgColor</td>
+      <td>输入</td>
+      <td>前向叠加的同一份背景色数值（不是 dL/dbg，可选）。</td>
+      <td>可选输入。传入时形状必须为 (3)、float32；不传表示关闭背景色。该输入携带前向叠加的同一份背景色数值，反向用其值计算背景色路径的透射率梯度（$v_{bg}=bg\cdot v$）；算子不产出背景色梯度；Python autograd 封装可在需要时返回 `Σ T_K·v_color`。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(3)</td>
+      <td>√</td>
+    </tr>
+    <tr>
       <td>vGs</td>
       <td>输出</td>
       <td>高斯球参数的梯度输出。</td>
@@ -302,6 +321,7 @@ aclnnStatus aclnnCalcRenderBwdClipLastids(
 - vColor、vDepth、lastCumsum、error、lastIds必须与tileCoords共享同一像素网格 (tileNum, 1024)，否则第一段接口返回 shape_mismatch 错误。
 - 该算子需与calc_render_fwd_clip_last_ids配套使用，`gs`、`tileCoords`、`offsets`、`gsIds` 与前向输入一致，`lastCumsum`、`error`、`lastIds` 必须为前向对应输出，`vDepth` 由前向 `depth` 扩展通道维得到。
 - 输出vGs由算子内部协作清零后再累加，调用方无需预先清零。
+- 启用背景色时，前向叠加的背景色与反向修正使用的背景色必须是同一份（相同值），否则产生系统性梯度偏差。
 - 空tensor（tileNum为0或nGauss为0）场景下输出vGs全为0。
 
 **维度变量说明：**

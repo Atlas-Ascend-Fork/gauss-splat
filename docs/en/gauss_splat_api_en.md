@@ -38,6 +38,7 @@ Renders 3D Gaussian point clouds to 2D images.
   - `opacities` (Tensor): Opacities (logits), shape (N,)
   - `sh0` (Tensor): Spherical harmonics coefficients degree 0, shape (N, 1, 3)
   - `shN` (Tensor): Spherical harmonics coefficients higher degrees, shape (N, K, 3)
+  - `bg_color` (Tensor/tuple/list, optional): background RGB for A5 `clip_lastids`, shape (3,); None disables it; passing it enables background blending; the Tensor may have `requires_grad`.
 - `camera_model` (str): Camera model, optional values: "pinhole", "ortho", "fisheye", default is "pinhole"
 
 **Return Values**:
@@ -140,6 +141,9 @@ This function processes one camera in one batch at a time. `N` is the number of 
 - `tile_coords` (Tensor): Tile coordinates, shape (tileNum, 2, nPixel)
 - `offsets` (Tensor): Offsets, shape(vectorCnt + (TileNum * 2))
 - `sorted_gs_ids` (Tensor): Sorted Gaussian point IDs, shape (totalGauss)
+- `bg_color` (Tensor, optional): background RGB, shape (3,), float32; None disables it (A5 `clip_lastids` only). Passing `bg_color` enables background blending. It must be on the same device as the inputs. If it has `requires_grad=True`, backward returns `dL/dbg = Σ T_K·v_color`; whether to optimize it is managed by the caller.
+
+> On A5 `clip_lastids`, the forward pass requires `nPixel=1024` (third dim of `tile_coords`).
 
 **Return Values**:
 
@@ -157,6 +161,13 @@ render_colors, render_depths = gauss_splat.calc_render(
     means2d[b, c], conics[b, c, 0], conics[b, c, 1], conics[b, c, 2],
     opacities[b, c], colors[b, c], depths[b, c].unsqueeze(0),
     pix_coords, lb_sched, sorted_gs_id
+)
+# Optional background color (A5): passing bg_color enables it
+render_colors_bg, render_depths_bg = gauss_splat.calc_render(
+    means2d[b, c], conics[b, c, 0], conics[b, c, 1], conics[b, c, 2],
+    opacities[b, c], colors[b, c], depths[b, c].unsqueeze(0),
+    pix_coords, lb_sched, sorted_gs_id,
+    torch.tensor([0.2, 0.4, 0.6], device=means2d.device)
 )
 ```
 

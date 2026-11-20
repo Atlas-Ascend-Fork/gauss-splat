@@ -9,8 +9,25 @@
  */
 
 #include "register/op_impl_registry.h"
+#include "exe_graph/runtime/infer_shape_context.h"
 namespace ops {
-static ge::graphStatus InferShape4CalcRenderFwdClipLastids(gert::InferShapeContext*) { return ge::GRAPH_SUCCESS; }
+// 五路输出 shape 由调用方预分配（与改动前一致），本函数只校验可选输入 bgColor：
+//   - 未传（背景色特性关闭）：直接返回成功；
+//   - 传入：必须为 rank-1 且元素数为 3（RGB），否则返回 GRAPH_FAILED。
+static ge::graphStatus InferShape4CalcRenderFwdClipLastids(gert::InferShapeContext* context)
+{
+    if (context == nullptr) {
+        return ge::GRAPH_FAILED;
+    }
+    const gert::Shape* bgShape = context->GetOptionalInputShape(4);   // bgColor（输入索引 4）
+    if (bgShape == nullptr) {
+        return ge::GRAPH_SUCCESS;   // 未传可选输入：背景色特性关闭
+    }
+    if (bgShape->GetDimNum() != 1 || bgShape->GetDim(0) != 3) {
+        return ge::GRAPH_FAILED;    // bgColor 必须为 [3]
+    }
+    return ge::GRAPH_SUCCESS;
+}
 IMPL_OP_INFERSHAPE(CalcRenderFwdClipLastids).InferShape(InferShape4CalcRenderFwdClipLastids);
 }
 

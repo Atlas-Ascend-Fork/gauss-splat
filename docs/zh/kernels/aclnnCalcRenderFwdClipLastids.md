@@ -40,6 +40,14 @@ $$
 color = \sum_{i} \alpha_i T_{i-1} c_i, \quad depth = \sum_{i} \alpha_i T_{i-1} d_i
 $$
 
+当 `bgColor` 传入时，在上述混合颜色上叠加背景色（背景色始终以 float32 线性域参与，不与对数域 Kahan 递推混合）：
+
+$$
+color \mathrel{+}= T_K \cdot bg, \quad T_K = e^{s_K}
+$$
+
+其中 $bg$ 为 `bgColor` 传入的 $(R,G,B)$，$T_K$ 为遍历结束后的剩余透光率（无高斯贡献时 $T_K=1$，空 tile 的输出颜色即背景色本身）。
+
 - 否则该像素达到 per-pixel done 条件，记录 `lastIds` 后结束遍历（该高斯球及其后高斯球不再累加）。
 
 两种情况均以 Kahan 补偿更新对数域累积透射率（`lastCumsum`）：
@@ -66,6 +74,7 @@ aclnnStatus aclnnCalcRenderFwdClipLastidsGetWorkspaceSize(
     const aclTensor *tileCoords,
     const aclTensor *offsets,
     const aclTensor *gsIds,
+    const aclTensor *bgColorOptional,
     const aclTensor *color,
     const aclTensor *depth,
     const aclTensor *lastCumsum,
@@ -138,6 +147,16 @@ aclnnStatus aclnnCalcRenderFwdClipLastids(
       <td>INT64</td>
       <td>ND</td>
       <td>(totalGauss)</td>
+      <td>√</td>
+    </tr>
+    <tr>
+      <td>bgColor</td>
+      <td>输入</td>
+      <td>背景色 (R,G,B)。</td>
+      <td>可选输入。传入时形状必须为 (3)、float32，否则报错；不传表示关闭背景色。</td>
+      <td>FLOAT</td>
+      <td>ND</td>
+      <td>(3)</td>
       <td>√</td>
     </tr>
     <tr>
@@ -286,6 +305,8 @@ aclnnStatus aclnnCalcRenderFwdClipLastids(
 - color必须为 (3, tileNum, 1024)；depth、lastCumsum、error、lastIds必须为 (tileNum, 1024)，且必须由调用方预分配。
 - 空tensor（tileNum为0）场景下算子直接返回，不写出输出。
 - 该算子需与calc_render_bwd_clip_last_ids配套使用，`lastCumsum`、`error`、`lastIds` 输出需传给反向算子。
+- bgColor 为可选输入，形状必须为 (3)、数据类型 FLOAT；传入即启用背景色。
+- 空tile（offsets调度段为空）且启用背景色时，输出颜色为背景色（剩余透光率为1），depth/lastCumsum/error/lastIds 为0。
 
 **维度变量说明：**
 

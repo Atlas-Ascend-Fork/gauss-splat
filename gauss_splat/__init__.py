@@ -16,6 +16,9 @@ __all__ = [
     "sh_preprocess",
     "flash_gaussian_build_mask",
     "gaussian_filter",
+    "GaussianData",
+    "CameraData",
+    "ConfigData",
     "Rasterizer",
     "fused_ssim",
     "fused_adam_multi_lr_step_batch",
@@ -35,6 +38,9 @@ from .ops.spherical_harmonics import spherical_harmonics
 from .ops.sh_preprocess import sh_preprocess
 from .ops.flash_gaussian_build_mask import flash_gaussian_build_mask
 from .ops.gaussian_filter import gaussian_filter
+from .ops.rendering import GaussianData
+from .ops.rendering import CameraData
+from .ops.rendering import ConfigData
 from .ops.rendering import Rasterizer
 from .ops.fused_ssim import fused_ssim
 from .ops.fused_adam_multi_lr import fused_adam_multi_lr_step_batch, NpuFusedAdamMultiLrOptimizer

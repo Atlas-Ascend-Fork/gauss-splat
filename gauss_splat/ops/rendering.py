@@ -8,7 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, NamedTuple
 
 import torch
 from torch import Tensor
@@ -24,6 +24,35 @@ from .calc_render import calc_render
 from .get_render_schedule import get_render_schedule_cpp
 from .rast_ctx import RastCtx
 
+
+class GaussianData(NamedTuple):
+    means: Tensor                        # 高斯球三维坐标
+    quats: Tensor                        # 高斯球旋转四参数
+    scales: Tensor                       # 高斯球缩放参数
+    opacities: Tensor                    # 高斯球透明度
+    features_dc: Optional[Tensor]        # 高斯球球谐DC系数
+    features_sh: Optional[Tensor]        # 高斯球球谐SH高阶系数
+
+
+class CameraData(NamedTuple):
+    width: int                           # 渲染图像宽度
+    height: int                          # 渲染图像高度
+    w2c: Tensor                          # 相机外参
+    ks: Tensor                           # 相机内参
+    camera_model: str = "pinhole"        # 相机模型，支持：pinhole / ortho / fisheye
+    exposure: Optional[Tensor] = None    # 曝光矩阵，支持：全局模式, 格网模式
+
+
+class ConfigData(NamedTuple):
+    sh_degree: Optional[int] = None      # 球谐系数
+    tile_size: int = 32                  # 分块大小
+    render_mode: str = "RGB"             # 渲染模式，支持：RGB，RGB+D
+    scale_log: bool = True               # scale数据域，True: scale数据处于log域，内部将取exp操作
+    opacity_logit: bool = True           # opacity数据域，True: opacity数据处于logit域，内部将取sigmoid操作
+    channel_first: bool = False          # 数据布局方式, True：通道数据为第一维
+    bg_color: Optional[Tensor] = None    # 背景色
+
+
 def assert_check(condition, message):
     if not condition:
         raise ValueError(message)
@@ -37,14 +66,14 @@ def _validate_inputs(
     C: int
 ) -> None:
     means, quats, scales, opacities, colors = gs
-    viewmats, Ks, camera_model, render_mode = camera
+    viewmats, ks, camera_model, render_mode = camera
     # Pure channel-first op: [D,N] / [K,3,N].
     assert_check(means.shape == (3, N), f"Invalid shape for means: {means.shape}")
     assert_check(quats.shape == (4, N), f"Invalid shape for quats: {quats.shape}")
     assert_check(scales.shape == (3, N), f"Invalid shape for scales: {scales.shape}")
     assert_check(opacities.shape == (N,), f"Invalid shape for opacities: {opacities.shape}")
     assert_check(viewmats.shape == (C, 4, 4), f"Invalid shape for viewmats: {viewmats.shape}")
-    assert_check(Ks.shape == (C, 3, 3), f"Invalid shape for Ks: {Ks.shape}")
+    assert_check(ks.shape == (C, 3, 3), f"Invalid shape for ks: {ks.shape}")
     assert_check(camera_model in ["pinhole", "ortho", "fisheye"], f"Invalid camera_model: {camera_model}")
     assert_check(render_mode in ["RGB", "D", "ED", "RGB+D", "RGB+ED"], f"Invalid render_mode: {render_mode}")
 
@@ -63,8 +92,9 @@ def _validate_inputs(
                     f"Invalid sh_degree for colors shape: {colors.shape}")
 
 
-def _resolve_bg_color(splats: dict, device) -> Optional[Tensor]:
+def _resolve_bg_color(splats: dict) -> Optional[Tensor]:
     """从 splats 字典解析可选背景色；None 表示关闭。"""
+    device = splats["means"].device
     raw = splats.get("bg_color", None)
     if raw is None:
         return None
@@ -118,18 +148,15 @@ class Rasterizer:
         cf_gs = cf_means2, cf_colors3, cf_opacity, inv_x_0, inv_x_1, inv_x_2, cf_depths
         return (cf_gs, pix_coords)
 
-    def rasterization(
+    def rasterize(
         self,
-        cam: Tuple,
-        size: Tuple,
-        tile_size: int,
-        active_sh_degree: int,
-        splats: dict,
-        camera_model: str = "pinhole",
-    ) -> Tuple[Tensor, Tensor, Dict]:
-        width, height = size
-        device = splats["means"].device
-        bg_color = _resolve_bg_color(splats, device)
+        gs: GaussianData,
+        camera: CameraData,
+        config: ConfigData = ConfigData()
+    ) -> Tuple[Tensor, Tensor, Optional[Tensor], Dict]:
+        width, height = camera.width, camera.height
+        device = gs.means.device
+        tile_size = config.tile_size
         geometry_key = (math.ceil(width / tile_size) * tile_size,
                         math.ceil(height / tile_size) * tile_size,
                         tile_size, device)
@@ -144,52 +171,82 @@ class Rasterizer:
             self.pix_coord = torch.stack(torch.meshgrid(torch.arange(self.padded_width),
                 torch.arange(self.padded_height), indexing='xy'), dim=-1).to(device)
             self._geometry_key = geometry_key
+        return self._rasterization(gs, camera, config)
 
-        means = splats["means"]          # [3, N]
-        quats = splats["quats"]          # [4, N]
-        scales = torch.exp(splats["scales"])  # [3, N]
-        opacities = torch.sigmoid(splats["opacities"])  # [N]
+    def rasterization(
+        self,
+        cam: Tuple,
+        size: Tuple,
+        tile_size: int,
+        active_sh_degree: int,
+        splats: dict,
+        camera_model: str = "pinhole",
+    ) -> Tuple[Tensor, Tensor, Dict]:
+        ### wrapper gaussian-relatived data
+        colors = splats["sh"]
+        gs = GaussianData(
+            means=splats["means"],                          # [3, N]
+            quats=splats["quats"],                          # [4, N]
+            scales=splats["scales"],                        # [3, N]
+            opacities=splats["opacities"],                  # [N]
+            features_dc=colors[:1].contiguous(),            # [1, 3, N]
+            features_sh=colors[1:].contiguous()             # [K-1, 3, N]
+        )
 
-        colors = splats["sh"]            # [K, 3, N]
+        ### wrapper camera-relatived data
+        camtoworlds, ks, render_mode = cam
+        w2c = torch.linalg.inv(camtoworlds)
+        camera = CameraData(
+            width=size[0],
+            height=size[1],
+            w2c=w2c,
+            ks=ks,
+            camera_model=camera_model
+        )
 
-        camtoworlds, Ks, render_mode = cam
-        viewmats = torch.linalg.inv(camtoworlds)
-        render_colors, render_depth, info = self._rasterization(
-            gs=(means, quats, scales, opacities, colors),
-            camera=(viewmats, Ks, camera_model, render_mode),
-            size=size,
+        ### wrapper config-relatived data
+        config = ConfigData(
             sh_degree=active_sh_degree,
             tile_size=tile_size,
-            camtoworlds=camtoworlds,
-            bg_color=bg_color,
+            render_mode=render_mode,
+            scale_log=True,
+            opacity_logit=True,
+            channel_first=splats["is_channel_first"],
+            bg_color=_resolve_bg_color(splats)
         )
+
+        ### invoke enhance api
+        render_colors, render_depth, render_alphas, info =\
+            self.rasterize(gs, camera, config)
         return render_colors, render_depth, info
 
     def _rasterization(
         self,
-        gs,
-        camera,
-        size: Tuple,
-        sh_degree: Optional[int] = None,
-        tile_size: int = 32,
-        camtoworlds: Optional[Tensor] = None,
-        rast_ctx: Optional[RastCtx] = None,
-        bg_color: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor, Dict]:
-        means, quats, scales, opacities, colors = gs
-        viewmats, Ks, camera_model, render_mode = camera
+        gs: GaussianData,
+        camera: CameraData,
+        config: ConfigData,
+        rast_ctx: Optional[RastCtx] = None
+    ) -> Tuple[Tensor, Tensor, Optional[Tensor], Dict]:
+        means, quats, scales, opacities = gs.means, gs.quats, gs.scales, gs.opacities
+        scales = torch.exp(scales) if config.scale_log else scales
+        opacities = torch.sigmoid(opacities) if config.opacity_logit else opacities
+        colors = torch.cat([gs.features_dc, gs.features_sh], dim=0).contiguous()
+        width, height, viewmats, ks, camera_model = (camera.width, camera.height, camera.w2c,
+            camera.ks, camera.camera_model)
+        sh_degree, tile_size, render_mode, bg_color = (config.sh_degree, config.tile_size,
+            config.render_mode, config.bg_color)
 
         num_gs = means.shape[-1]
         C = viewmats.shape[0]
         B = 1
-        _validate_inputs(gs, camera, sh_degree, num_gs, C)
-        width, height = size
+        valid_gs = (means, quats, scales, opacities, colors)
+        valid_cam = (viewmats, ks, camera_model, render_mode)
+        _validate_inputs(valid_gs, valid_cam, sh_degree, num_gs, C)
 
-        if camtoworlds is None:
-            camtoworlds = torch.inverse(viewmats)
         if C > 1:
             rendered = []
             depths_per_view = []
+            alphas_per_view = []
             infos = []
             for camera_index in range(C):
                 if colors.dim() == 4 or (sh_degree is None and colors.dim() == 3):
@@ -197,23 +254,30 @@ class Rasterizer:
                 else:
                     view_colors = colors
                 # Each view needs its projection buffers until its backward pass.
-                image, depth, info = self._rasterization(
-                    (means, quats, scales, opacities, view_colors),
-                    (viewmats[camera_index:camera_index + 1], Ks[camera_index:camera_index + 1],
-                     camera_model, render_mode),
-                    size, sh_degree, tile_size, camtoworlds[camera_index:camera_index + 1],
-                    RastCtx(),
-                    bg_color=bg_color,
+                gs_per_view = gs
+                gs_per_view.features_dc = view_colors[0, :, :].contiguous()
+                gs_per_view.features_sh = view_colors[1:, :, :].contiguous()
+
+                cam_per_view = cam
+                cam_per_view.w2c = viewmats[camera_index:camera_index + 1]
+                cam_per_view.ks = ks[camera_index:camera_index + 1]
+
+                image, depth, alpha, info = self._rasterization(
+                    gs_per_view, cam_per_view, config, RastCtx()
                 )
                 rendered.append(image)
                 depths_per_view.append(depth)
+                alphas_per_view.append(alpha)
                 infos.append(info)
             meta = infos[0].copy()
             for key in ("means2d", "radii", "proj_filter"):
                 meta[key] = torch.cat([info[key] for info in infos], dim=1)
             meta["gaussian_ids"] = None
             meta["n_cameras"] = C
-            return torch.cat(rendered, dim=0), torch.cat(depths_per_view, dim=0), meta
+            return (torch.cat(rendered, dim=0), torch.cat(depths_per_view, dim=0),
+                torch.cat(alphas_per_view, dim=0), meta)
+
+        camtoworlds = torch.inverse(viewmats)
         if sh_degree is None:
             # Post-activation colors: [3, N] or [C, 3, N].
             colors = colors.unsqueeze(0) if colors.dim() == 2 else colors
@@ -240,7 +304,7 @@ class Rasterizer:
             scales.reshape(B, 3, num_gs),
             opacities.reshape(B, num_gs),
             viewmats.reshape(B, C, 4, 4).contiguous(),
-            Ks.reshape(B, C, 3, 3),
+            ks.reshape(B, C, 3, 3),
             vi, sigma,
             rast_ctx,
             width,
@@ -353,4 +417,4 @@ class Rasterizer:
             "proj_filter": proj_filter,
             "n_gaussians": num_gs,
         }
-        return render_colors, render_depths, meta
+        return render_colors, render_depths, None, meta

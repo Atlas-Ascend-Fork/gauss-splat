@@ -28,6 +28,9 @@ from rasterization.config import Config
 from gsplat.strategy import DefaultStrategy
 from gauss_splat import fused_ssim
 from gauss_splat import Rasterizer as _GSRasterizer
+from gauss_splat import GaussianData
+from gauss_splat import CameraData
+from gauss_splat import ConfigData
 
 
 def is_arch35() -> bool:
@@ -51,6 +54,18 @@ def _to_CN2(t):
     return t
 
 
+def _to_gaussian_data(splats: dict) -> GaussianData:
+    colors = splats["sh"]
+    return GaussianData(
+        means=splats["means"],
+        quats=splats["quats"],
+        scales=splats["scales"],  
+        opacities=splats["opacities"],
+        features_dc=colors[:1].contiguous(),
+        features_sh=colors[1:].contiguous()
+    )
+
+
 class Rasterizer:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
@@ -58,23 +73,16 @@ class Rasterizer:
 
     def ascend_rasterize_splats(
         self,
-        cam: Tuple,
-        size: Tuple,
-        tile_size: int,
-        active_sh_degree: int,
         splats: dict,
+        camera: CameraData,
+        config: ConfigData
     ) -> Tuple:
-        camtoworlds, Ks, render_mode = cam
         if not self.cfg.is_channel_first:
             from rasterization.utils import to_channel_first
             splats = to_channel_first(splats)
-        return self._impl.rasterization(
-            cam=(camtoworlds, Ks, render_mode),
-            size=size,
-            tile_size=tile_size,
-            active_sh_degree=active_sh_degree,
-            splats=splats,
-            camera_model=self.cfg.camera_model,
+        gs = _to_gaussian_data(splats)
+        return self._impl.rasterize(
+            gs, camera, config
         )
 
 
@@ -286,13 +294,20 @@ class Runner:
 
             if self.cfg.profiling and step == 0:
                 self.profiler.start()
-            renders, render_depth, info = self.raserizer.ascend_rasterize_splats(
-                cam=(camtoworlds, Ks, render_mode),
-                size=(width, height),
-                tile_size=cfg.tile_size,
-                active_sh_degree=sh_degree_to_use,
-                splats=self.splats,
+            camera = CameraData(
+                width=width,
+                height=height,
+                w2c=torch.linalg.inv(camtoworlds),
+                ks=Ks
             )
+            config = ConfigData(
+                sh_degree=sh_degree_to_use,
+                tile_size=self.cfg.tile_size,
+                channel_first=self.cfg.is_channel_first,
+                render_mode=render_mode
+            )
+            renders, render_depth, render_alphas, info =\
+                self.raserizer.ascend_rasterize_splats(self.splats, camera, config)
             if renders.shape[-1] == 4:
                 colors, depths = renders[..., 0:3], renders[..., 3:4]
             else:
@@ -483,12 +498,20 @@ class Runner:
 
             torch_npu.npu.synchronize()
             tic = time.time()
-            colors, depths, info = self.raserizer.ascend_rasterize_splats(
-                cam=(camtoworlds, Ks, render_mode),
-                size=(width, height),
-                tile_size=cfg.tile_size,
-                active_sh_degree=cfg.sh_degree,
-                splats=self.splats,
+            camera = CameraData(
+                width=width,
+                height=height,
+                w2c=torch.linalg.inv(camtoworlds),
+                ks=Ks
+            )
+            config = ConfigData(
+                sh_degree=cfg.sh_degree,
+                tile_size=self.cfg.tile_size,
+                channel_first=self.cfg.is_channel_first,
+                render_mode=render_mode
+            )
+            colors, depths, alphas, info = self.raserizer.ascend_rasterize_splats(
+                self.splats, camera, config
             )
             torch_npu.npu.synchronize()
             ellipse_time += time.time() - tic
@@ -566,14 +589,21 @@ class Runner:
             pixels = data["image"].to(device) / 255.0
             height, width = pixels.shape[1:3]
             render_mode = "RGB+ED" if cfg.depth_loss else "RGB"
+            camera = CameraData(
+                width=width,
+                height=height,
+                w2c=torch.linalg.inv(camtoworlds),
+                ks=Ks
+            )
+            config = ConfigData(
+                sh_degree=cfg.sh_degree,
+                tile_size=self.cfg.tile_size,
+                channel_first=self.cfg.is_channel_first,
+                render_mode=render_mode
+            )
             with torch.no_grad():
-                renders, render_depth, info = self.raserizer.ascend_rasterize_splats(
-                    cam=(camtoworlds, Ks, render_mode),
-                    size=(width, height),
-                    tile_size=cfg.tile_size,
-                    active_sh_degree=cfg.sh_degree,
-                    splats=self.splats,
-                )
+                renders, render_depth, render_alphas, info =\
+                    self.raserizer.ascend_rasterize_splats(self.splats, camera, config)
             torch.npu.synchronize()
             print(f"  [perf_fwd] step {step} done", flush=True)
 
@@ -601,13 +631,20 @@ class Runner:
             pixels = data["image"].to(device) / 255.0
             height, width = pixels.shape[1:3]
             render_mode = "RGB+ED" if cfg.depth_loss else "RGB"
-            renders, render_depth, info = self.raserizer.ascend_rasterize_splats(
-                cam=(camtoworlds, Ks, render_mode),
-                size=(width, height),
-                tile_size=cfg.tile_size,
-                active_sh_degree=cfg.sh_degree,
-                splats=self.splats,
+            camera = CameraData(
+                width=width,
+                height=height,
+                w2c=torch.linalg.inv(camtoworlds),
+                ks=Ks
             )
+            config = ConfigData(
+                sh_degree=cfg.sh_degree,
+                tile_size=self.cfg.tile_size,
+                channel_first=self.cfg.is_channel_first,
+                render_mode=render_mode
+            )
+            renders, render_depth, render_alphas, info =\
+                self.raserizer.ascend_rasterize_splats(self.splats, camera, config)
             if renders.shape[-1] == 4:
                 colors, depths = renders[..., 0:3], renders[..., 3:4]
             else:

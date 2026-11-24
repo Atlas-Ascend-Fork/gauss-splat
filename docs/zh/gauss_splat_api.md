@@ -27,7 +27,7 @@
 - `cam` (Tuple): 相机参数元组
   - `camtoworlds` (Tensor): 相机到世界变换矩阵，形状 (C, 4, 4)
   - `Ks` (Tensor): 相机内参矩阵，形状 (C, 3, 3)
-  - `render_mode` (str): 渲染模式，可选值: "RGB", "D", "ED", "RGB+D", "RGB+ED"
+  - `render_mode` (str): 模式标识，可选值: "RGB", "D", "ED", "RGB+D", "RGB+ED"；当前实现仅校验标识，不据此切换渲染计算或返回值，详见[渲染模式](#渲染模式)
 - `size` (Tuple): 图像尺寸 (width, height)
 - `tile_size` (int): 分块大小，默认为32
 - `active_sh_degree` (int): 激活的球谐函数阶数
@@ -404,11 +404,9 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 
 ### 渲染模式
 
-- **RGB**: 仅渲染颜色
-- **D**: 仅渲染深度
-- **ED**: 仅渲染边缘深度
-- **RGB+D**: 渲染颜色和深度
-- **RGB+ED**: 渲染颜色和边缘深度
+`render_mode` 接受 "RGB"、"D"、"ED"、"RGB+D" 和 "RGB+ED"。当前 `Rasterizer` 只检查该标识是否合法，所有标识均使用相同的颜色与深度计算路径，并返回 `(render_colors, render_depth, info)`。
+
+该参数当前不提供仅颜色、仅深度或单独的 `ED` 计算分支。需要单个输出时，应选择对应的返回张量；不能依靠模式标识省略另一输出的计算。
 
 ---
 

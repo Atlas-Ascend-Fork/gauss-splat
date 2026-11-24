@@ -27,7 +27,7 @@ Renders 3D Gaussian point clouds to 2D images.
 - `cam` (Tuple): Camera parameter tuple
   - `camtoworlds` (Tensor): Camera-to-world transformation matrix, shape (C, 4, 4)
   - `Ks` (Tensor): Camera intrinsic matrix, shape (C, 3, 3)
-  - `render_mode` (str): Render mode, optional values: "RGB", "D", "ED", "RGB+D", "RGB+ED"
+  - `render_mode` (str): Mode label, accepted values: "RGB", "D", "ED", "RGB+D", "RGB+ED"; the current implementation validates this label without selecting a different rendering path or return value; see [Render Mode](#render-mode)
 - `size` (Tuple): Image size (width, height)
 - `tile_size` (int): Tile size, default is 32
 - `active_sh_degree` (int): Active spherical harmonics degree
@@ -406,11 +406,9 @@ Three camera models are supported:
 
 ### Render Mode
 
-- **RGB**: Render colors only
-- **D**: Render depth only
-- **ED**: Render edge depth only
-- **RGB+D**: Render colors and depth
-- **RGB+ED**: Render colors and edge depth
+`render_mode` accepts "RGB", "D", "ED", "RGB+D", and "RGB+ED". The current `Rasterizer` only validates the label. All labels use the same color and depth calculation path and return `(render_colors, render_depth, info)`.
+
+This parameter currently provides no color-only, depth-only, or separate `ED` calculation branch. Select the corresponding returned tensor when only one output is needed; the mode label does not omit calculation of the other output.
 
 ---
 

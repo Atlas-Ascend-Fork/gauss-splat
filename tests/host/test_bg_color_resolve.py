@@ -23,35 +23,41 @@ except Exception:  # pragma: no cover - 无 CANN/扩展时跳过
 
 @unittest.skipUnless(IMPORTS_OK, "gauss_splat extension is not importable")
 class TestResolveBgColor(unittest.TestCase):
+    @staticmethod
+    def _splats(**extra):
+        splats = {"means": torch.zeros(3, 4, dtype=torch.float32)}
+        splats.update(extra)
+        return splats
+
     def test_disabled(self):
-        self.assertIsNone(_resolve_bg_color({}, "cpu"))
+        self.assertIsNone(_resolve_bg_color(self._splats()))
 
     def test_tuple_and_list(self):
-        bg = _resolve_bg_color({"bg_color": (0.1, 0.2, 0.3)}, "cpu")
+        bg = _resolve_bg_color(self._splats(bg_color=(0.1, 0.2, 0.3)))
         self.assertEqual(tuple(bg.shape), (3,))
         self.assertEqual(bg.dtype, torch.float32)
         self.assertAlmostEqual(float(bg[0]), 0.1, places=6)
 
-        bg = _resolve_bg_color({"bg_color": [1.0, 0.0, 0.5]}, "cpu")
+        bg = _resolve_bg_color(self._splats(bg_color=[1.0, 0.0, 0.5]))
         self.assertEqual(tuple(bg.shape), (3,))
 
     def test_tensor_and_parameter(self):
         src = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float64)
-        bg = _resolve_bg_color({"bg_color": src}, "cpu")
+        bg = _resolve_bg_color(self._splats(bg_color=src))
         self.assertEqual(bg.dtype, torch.float32)
         self.assertFalse(bg.requires_grad)
 
         param = torch.nn.Parameter(torch.tensor([0.1, 0.2, 0.3]))
-        bg = _resolve_bg_color({"bg_color": param}, param.device)
+        bg = _resolve_bg_color(self._splats(bg_color=param))
         self.assertTrue(bg.requires_grad)
         bg.sum().backward()
         self.assertIsNotNone(param.grad)
 
     def test_invalid_numel(self):
         with self.assertRaises(ValueError):
-            _resolve_bg_color({"bg_color": (0.1, 0.2)}, "cpu")
+            _resolve_bg_color(self._splats(bg_color=(0.1, 0.2)))
         with self.assertRaises(ValueError):
-            _resolve_bg_color({"bg_color": (0.1, 0.2, 0.3, 0.4)}, "cpu")
+            _resolve_bg_color(self._splats(bg_color=(0.1, 0.2, 0.3, 0.4)))
 
 
 @unittest.skipUnless(IMPORTS_OK, "gauss_splat extension is not importable")
@@ -90,6 +96,7 @@ class TestRasterizationBgWiring(unittest.TestCase):
             "scales": torch.zeros(3, n, dtype=torch.float32),
             "opacities": torch.zeros(n, dtype=torch.float32),
             "sh": torch.zeros(1, 3, n, dtype=torch.float32),
+            "is_channel_first": True,
         }
         data.update(extra)
         return data
@@ -114,10 +121,9 @@ class TestRasterizationBgWiring(unittest.TestCase):
 
         captured = {}
 
-        def fake(self, gs, camera, size, sh_degree=None, tile_size=32,
-                 camtoworlds=None, rast_ctx=None, bg_color=None):
-            captured["bg"] = bg_color
-            return (torch.zeros(1, 3, 8, 8), torch.zeros(1, 8, 8), {})
+        def fake(self, gs, camera, config, rast_ctx=None):
+            captured["bg"] = config.bg_color
+            return (torch.zeros(1, 3, 8, 8), torch.zeros(1, 8, 8), None, {})
 
         with mock.patch.object(Rasterizer, "_rasterization", fake):
             rasterizer = Rasterizer()

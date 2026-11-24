@@ -12,7 +12,7 @@ import math
 import types
 import unittest
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, NamedTuple, Optional, Tuple
 from unittest import mock
 
 import numpy as np
@@ -23,8 +23,8 @@ ROOT = Path(__file__).resolve().parents[2]
 try:
     from gauss_splat.ops.rendering import _resolve_bg_color as _resolve_bg_color_impl
 except Exception:  # pragma: no cover - 无 CANN/扩展时降级
-    def _resolve_bg_color_impl(splats, device):
-        return None, 0
+    def _resolve_bg_color_impl(splats):
+        return None
 
 
 class Array:
@@ -48,6 +48,9 @@ class Array:
     def __getitem__(self, index):
         return Array(self.values[index], self.device)
 
+    def contiguous(self):
+        return self
+
     def to(self, device):
         return Array(self.values, device)
 
@@ -55,7 +58,10 @@ class Array:
 def load_rasterizer():
     path = ROOT / "gauss_splat" / "ops" / "rendering.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    rasterizer = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Rasterizer")
+    wanted = ("GaussianData", "CameraData", "ConfigData", "Rasterizer")
+    nodes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name in wanted]
+    assert [node.name for node in nodes] == list(wanted), \
+        f"rendering.py 缺少类定义: {sorted(set(wanted) - {node.name for node in nodes})}"
     fake_torch = types.SimpleNamespace(
         arange=np.arange,
         meshgrid=np.meshgrid,
@@ -67,11 +73,12 @@ def load_rasterizer():
     )
     namespace = {
         "Dict": Dict, "Optional": Optional, "Tuple": Tuple, "Tensor": object,
+        "NamedTuple": NamedTuple,
         "RastCtx": object, "math": math, "torch": fake_torch,
         # 模块级解析函数不在抽取范围内：优先注入真实实现，仅在扩展不可导入时降级。
         "_resolve_bg_color": _resolve_bg_color_impl,
     }
-    exec(compile(ast.Module(body=[rasterizer], type_ignores=[]), str(path), "exec"), namespace)
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), namespace)
     return namespace["Rasterizer"]()
 
 
@@ -81,16 +88,17 @@ def render(rasterizer, size, tile_size, device="cpu"):
         "quats": np.zeros((4, 1)),
         "scales": np.zeros((3, 1)),
         "opacities": np.zeros(1),
-        "sh": np.zeros((1, 3, 1)),
+        "sh": Array(np.zeros((1, 3, 1)), device),
+        "is_channel_first": True,
     }
     camera = (np.eye(4)[None], np.eye(3)[None], "RGB")
 
-    def mock_pipeline(*args, **kwargs):
-        width, height = kwargs["size"]
+    def mock_pipeline(gs, camera, config, rast_ctx=None):
+        width, height = camera.width, camera.height
         tile_pixels = rasterizer.tile_size ** 2
         tiles = Array(np.zeros((rasterizer.tile_grid.shape[0], tile_pixels, 3)))
         image = rasterizer.tile2image(tiles, height, width)
-        return image, None, {}
+        return image, None, None, {}
 
     with mock.patch.object(rasterizer, "_rasterization", side_effect=mock_pipeline):
         image, _, _ = rasterizer.rasterization(camera, size, tile_size, 0, splats)

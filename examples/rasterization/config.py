@@ -79,6 +79,10 @@ class Config:
 
     # Enable GS densification
     densify: bool = False
+    # External DFX knob for the GS count cap when densification is enabled.
+    # Internally this overrides Strategy.cap_max; <=0 keeps the strategy default
+    # (ADCStrategy 6,000,000 / DefaultStrategy 3,000,000).
+    max_n_gaussian: int = 0
 
     # Parameters only for DefaultStrategy
     prune_opa: float = 0.005

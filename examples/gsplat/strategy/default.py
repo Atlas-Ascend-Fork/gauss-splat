@@ -13,7 +13,7 @@ from typing import Any, Dict, Tuple, Union
 import torch
 from typing_extensions import Literal
 
-from .base import Strategy
+from .base import Strategy, density_stats
 from .ops import duplicate, remove, reset_opa, split
 
 
@@ -179,16 +179,21 @@ class DefaultStrategy(Strategy):
         packed: bool = False,
     ):
         """Callback function to be executed after the `loss.backward()` call."""
+        before = len(params["means"])
         if step >= self.refine_stop_iter:
-            return
+            return density_stats(before, before)
 
         self._update_state(params, state, info, packed=packed)
 
-        if (
+        n_dupli = n_split = n_prune = n_capped = 0
+        refined = (
             step > self.refine_start_iter
+            and self.refine_every > 0
             and step % self.refine_every == 0
-            and step % self.reset_every >= self.pause_refine_after_reset
-        ):
+            and (self.reset_every <= 0
+                 or step % self.reset_every >= self.pause_refine_after_reset)
+        )
+        if refined:
             # grow GSs
             n_dupli, n_split = self._grow_gs(params, optimizers, state, step)
             if self.verbose:
@@ -207,14 +212,14 @@ class DefaultStrategy(Strategy):
 
             # hard cap: if over cap_max, remove the lowest-opacity excess GSs
             if self.cap_max > 0 and len(params["means"]) > self.cap_max:
-                n_excess = len(params["means"]) - self.cap_max
+                n_capped = len(params["means"]) - self.cap_max
                 opa = torch.sigmoid(params["opacities"].flatten())
-                _, low_ids = torch.topk(opa, k=n_excess, largest=False)
+                _, low_ids = torch.topk(opa, k=n_capped, largest=False)
                 cap_mask = torch.zeros(len(opa), dtype=torch.bool, device=opa.device)
                 cap_mask[low_ids] = True
                 remove(params=params, optimizers=optimizers, state=state, mask=cap_mask)
                 if self.verbose:
-                    print(f"Step {step}: capped to {self.cap_max} GSs (removed {n_excess}).")
+                    print(f"Step {step}: capped to {self.cap_max} GSs (removed {n_capped}).")
 
             # reset running stats
             state["grad2d"].zero_()
@@ -224,13 +229,24 @@ class DefaultStrategy(Strategy):
 
         # opacity reset as anti-saturation CAP (not force-low). Fixed `&`->`and` precedence
         # bug so it actually fires; value=reset_value caps opacity to prevent saturation.
-        if step % self.reset_every == 0 and step > 0:
+        if self.reset_every > 0 and step % self.reset_every == 0 and step > 0:
             reset_opa(
                 params=params,
                 optimizers=optimizers,
                 state=state,
                 value=self.reset_value,
             )
+
+        after = len(params["means"])
+        return density_stats(
+            before,
+            after,
+            dup=n_dupli,
+            split=n_split,
+            prune=n_prune,
+            capped=n_capped,
+            refined=refined,
+        )
 
     def _update_state(
         self,

@@ -5,6 +5,7 @@
 
 import json
 import os
+import sys
 import time
 import datetime
 from collections import defaultdict
@@ -187,6 +188,8 @@ class Runner:
                 self.strategy = cfg.strategy
                 if hasattr(self.strategy, "set_channel_first"):
                     self.strategy.set_channel_first(cfg.is_channel_first)
+                if cfg.max_n_gaussian > 0:
+                    self.strategy.cap_max = cfg.max_n_gaussian
                 self.strategy.check_sanity(self.splats, self.optimizers)
                 self.strategy_state = self.strategy.initialize_state(
                     scene_scale=self.scene_scale
@@ -201,20 +204,37 @@ class Runner:
                     reset_every=cfg.reset_every,
                     verbose=(world_rank == 0),
                 )
+                if cfg.max_n_gaussian > 0:
+                    self.strategy.cap_max = cfg.max_n_gaussian
                 self.strategy.check_sanity(self.splats, self.optimizers)
                 self.strategy_state = self.strategy.initialize_state(
                     scene_scale=self.scene_scale
                 )
-                if world_rank == 0:
-                    print(
-                        f"[Densify] DefaultStrategy enabled "
-                        f"(refine [{cfg.refine_start_iter}-{cfg.refine_stop_iter}] "
-                        f"every {cfg.refine_every}, reset every {cfg.reset_every}, "
-                        f"grow_grad2d={cfg.grow_grad2d})"
-                    )
         else:
             self.strategy_state = None
             self.strategy = None
+
+        strategy_name = self.strategy_name if cfg.densify else "off"
+        max_n_gaussian = self.strategy.cap_max if cfg.densify else "off"
+        print(
+            f"[GS]init rank={world_rank} world_size={world_size} "
+            f"num_GS={self.splats['means'].shape[self._n_dim]} "
+            f"strategy={strategy_name} "
+            f"max_n_gaussian={max_n_gaussian} (cfg.max_n_gaussian={cfg.max_n_gaussian})",
+            flush=True,
+        )
+        if cfg.densify:
+            print(
+                f"[DENSIFY][config] rank={world_rank} world_size={world_size} "
+                f"strategy={self.strategy_name} "
+                f"refine=[{self.strategy.refine_start_iter}-"
+                f"{self.strategy.refine_stop_iter}]/{self.strategy.refine_every} "
+                f"reset_every={self.strategy.reset_every} "
+                f"pause_refine_after_reset={self.strategy.pause_refine_after_reset} "
+                f"grow_grad2d={self.strategy.grow_grad2d} "
+                f"prune_opa={self.strategy.prune_opa}",
+                flush=True,
+            )
 
         if cfg.profiling:
             name = cfg.data_dir.split("/")[-2]
@@ -378,8 +398,9 @@ class Runner:
 
             loss.backward()
 
+            dstats = None
             if cfg.densify and "view_infos" in info:
-                self.strategy.step_post_backward(
+                dstats = self.strategy.step_post_backward(
                     self.splats, self.optimizers, self.strategy_state, step, info,
                 )
             elif cfg.densify and self.strategy_name == "adc":
@@ -388,7 +409,7 @@ class Runner:
                 strategy_info["means2d"] = SimpleNamespace(grad=means2d_grad)
                 strategy_info["radii"] = info["radii"].permute(0, 1, 3, 2)[0, 0]
                 strategy_info["proj_filter"] = info["proj_filter"][0, 0]
-                self.strategy.step_post_backward(
+                dstats = self.strategy.step_post_backward(
                     self.splats,
                     self.optimizers,
                     self.strategy_state,
@@ -404,10 +425,22 @@ class Runner:
                     proxy_info = dict(info)
                     proxy_info["means2d"] = proxy_m2d
                     proxy_info["radii"] = radii_cn2
-                    self.strategy.step_post_backward(
+                    dstats = self.strategy.step_post_backward(
                         self.splats, self.optimizers,
                         self.strategy_state, step, proxy_info,
                     )
+
+            if cfg.densify and dstats is not None and dstats["refined"]:
+                pbar.write(
+                    f"[DENSIFY] rank={world_rank} step={step} "
+                    f"strategy={self.strategy_name} "
+                    f"before={dstats['before']} removed={dstats['removed']} "
+                    f"added={dstats['added']} net={dstats['net']} after={dstats['after']} "
+                    f"cap(dup={dstats['dup']} split={dstats['split']} "
+                    f"prune={dstats['prune']} capped={dstats['capped']})",
+                    file=sys.stderr,
+                )
+                sys.stderr.flush()
 
             desc = f"loss={loss.item():.3f}| " f"sh degree={sh_degree_to_use}| "
             if cfg.depth_loss:
@@ -433,6 +466,19 @@ class Runner:
                 if cfg.depth_loss:
                     self.writer.add_scalar("train/depthloss", depthloss.item(), step)
                 self.writer.flush()
+
+            if (
+                cfg.tb_every > 0
+                and (step % cfg.tb_every == 0 or step == max_steps - 1)
+            ):
+                max_n_gaussian = self.strategy.cap_max if cfg.densify else "off"
+                pbar.write(
+                    f"[GS]step={step} rank={world_rank} "
+                    f"num_GS={self.splats['means'].shape[self._n_dim]} "
+                    f"max_n_gaussian={max_n_gaussian}",
+                    file=sys.stderr,
+                )
+                sys.stderr.flush()
 
             # save checkpoint before updating the model
             if step in [i - 1 for i in cfg.save_steps] or step == max_steps - 1:

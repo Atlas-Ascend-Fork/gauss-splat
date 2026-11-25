@@ -9,7 +9,7 @@ from typing import Any, Dict, Tuple, Union
 import torch
 from typing_extensions import Literal
 
-from .base import Strategy
+from .base import Strategy, density_stats
 from .ops import duplicate, remove, reset_opa, split
 
 
@@ -21,7 +21,7 @@ class ADCStrategy(Strategy):
          average by visibility count)
       2. 3D-scale-aware clone/split (small -> clone, large -> split)
       3. screen-space pruning (track max screen-space radius, prune too-large GSs)
-      4. hard cap on number of GSs (cap_max, default 4,000,000)
+      4. hard cap on number of GSs (cap_max, default 6,000,000)
       5. periodic opacity reset (also resets the optimizer state for opacities)
 
     This differs from the per-pixel-error "Revising Densification" variant; it is the
@@ -90,21 +90,29 @@ class ADCStrategy(Strategy):
                 tensor.retain_grad()
 
     def step_post_backward(self, params, optimizers, state, step, info, packed: bool = False):
+        before = self._get_n(params["means"])
         if step >= self.refine_stop_iter:
-            return
+            return density_stats(before, before)
+
         self._update_state(params, state, info, packed=packed)
 
-        if (step > self.refine_start_iter
-                and step % self.refine_every == 0
-                and step % self.reset_every >= self.pause_refine_after_reset):
+        n_dupli = n_split = n_prune = n_capped = 0
+        refined = (
+            step > self.refine_start_iter
+            and self.refine_every > 0
+            and step % self.refine_every == 0
+            and (self.reset_every <= 0
+                 or step % self.reset_every >= self.pause_refine_after_reset)
+        )
+        if refined:
             n_dupli, n_split = self._grow_gs(params, optimizers, state, step, info)
             n_prune = self._prune_gs(params, optimizers, state, step, info)
             # (4) hard cap: grow freely, then if N>cap_max remove the lowest-opacity excess
             n_cur = self._get_n(params["means"])
-            if n_cur > self.cap_max:
-                n_excess = n_cur - self.cap_max
+            if self.cap_max > 0 and n_cur > self.cap_max:
+                n_capped = n_cur - self.cap_max
                 opa = torch.sigmoid(params["opacities"].flatten())
-                _, low_ids = torch.topk(opa, k=n_excess, largest=False)
+                _, low_ids = torch.topk(opa, k=n_capped, largest=False)
                 cap_mask = torch.zeros(n_cur, dtype=torch.bool, device=opa.device)
                 cap_mask[low_ids] = True
                 remove(params=params, optimizers=optimizers, state=state, mask=cap_mask, is_channel_first=self._is_channel_first)
@@ -117,10 +125,21 @@ class ADCStrategy(Strategy):
             torch.npu.empty_cache()
 
         # (5) periodic opacity reset (reset_opa also zeros the opacity optimizer state)
-        if self.reset_opacity and step % self.reset_every == 0 and step > 0:
+        if self.reset_opacity and self.reset_every > 0 and step % self.reset_every == 0 and step > 0:
             # cap opacities at reset_value (prevents saturation; NOT a force-low reset)
             reset_opa(params=params, optimizers=optimizers, state=state,
                       value=self.reset_value)
+
+        after = self._get_n(params["means"])
+        return density_stats(
+            before,
+            after,
+            dup=n_dupli,
+            split=n_split,
+            prune=n_prune,
+            capped=n_capped,
+            refined=refined,
+        )
 
     def _get_n(self, t):
         if self._is_channel_first and t.dim() == 2 and t.shape[0] == 3:

@@ -14,7 +14,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import Dict, Union
+from typing import Any, Dict, Union
 
 import torch
 
@@ -63,3 +63,35 @@ class Strategy:
     ):
         """Callback function to be executed after the `loss.backward()` call."""
         pass
+
+
+def density_stats(
+    before: int,
+    after: int,
+    *,
+    dup: int = 0,
+    split: int = 0,
+    prune: int = 0,
+    capped: int = 0,
+    refined: bool = False,
+) -> Dict[str, Any]:
+    """Uniform per-step densification counters for DFX logging.
+
+    ``added`` is the net growth from clone/split (a split replaces one source
+    with two Gaussians, so it adds one). ``removed`` counts permanent removals
+    (regular prune + hard-cap trim); split sources are replaced, not removed.
+    """
+    added = dup + split
+    removed = prune + capped
+    return {
+        "before": before,
+        "after": after,
+        "dup": dup,
+        "split": split,
+        "prune": prune,
+        "capped": capped,
+        "added": added,
+        "removed": removed,
+        "net": after - before,
+        "refined": refined,
+    }

@@ -378,7 +378,11 @@ class Runner:
 
             loss.backward()
 
-            if cfg.densify and self.strategy_name == "adc":
+            if cfg.densify and "view_infos" in info:
+                self.strategy.step_post_backward(
+                    self.splats, self.optimizers, self.strategy_state, step, info,
+                )
+            elif cfg.densify and self.strategy_name == "adc":
                 means2d_grad = info["means2d"].grad.permute(0, 1, 3, 2)[0, 0]  # [N,2]
                 strategy_info = dict(info)
                 strategy_info["means2d"] = SimpleNamespace(grad=means2d_grad)

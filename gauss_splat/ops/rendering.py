@@ -44,7 +44,7 @@ class CameraData(NamedTuple):
 
 
 class ConfigData(NamedTuple):
-    sh_degree: Optional[int] = None      # 球谐系数
+    sh_degree: int = 3                   # 球谐系数
     tile_size: int = 32                  # 分块大小
     render_mode: str = "RGB"             # 渲染模式，支持：RGB，RGB+D
     scale_log: bool = True               # scale数据域，True: scale数据处于log域，内部将取exp操作
@@ -61,35 +61,27 @@ def assert_check(condition, message):
 def _validate_inputs(
     gs: Tuple,
     camera: Tuple,
-    sh_degree: Optional[int],
+    sh_degree: int,
     N: int,
     C: int
 ) -> None:
-    means, quats, scales, opacities, colors = gs
+    means, quats, scales, opacities, shs = gs
     viewmats, ks, camera_model, render_mode = camera
     # Pure channel-first op: [D,N] / [K,3,N].
-    assert_check(means.shape == (3, N), f"Invalid shape for means: {means.shape}")
-    assert_check(quats.shape == (4, N), f"Invalid shape for quats: {quats.shape}")
-    assert_check(scales.shape == (3, N), f"Invalid shape for scales: {scales.shape}")
+    assert_check(means.shape == (3, N), f"Invalid shape for means: {means.shape}; expected [3,N]")
+    assert_check(quats.shape == (4, N), f"Invalid shape for quats: {quats.shape}; expected [4,N]")
+    assert_check(scales.shape == (3, N), f"Invalid shape for scales: {scales.shape}; expected [3,N]")
     assert_check(opacities.shape == (N,), f"Invalid shape for opacities: {opacities.shape}")
     assert_check(viewmats.shape == (C, 4, 4), f"Invalid shape for viewmats: {viewmats.shape}")
     assert_check(ks.shape == (C, 3, 3), f"Invalid shape for ks: {ks.shape}")
     assert_check(camera_model in ["pinhole", "ortho", "fisheye"], f"Invalid camera_model: {camera_model}")
     assert_check(render_mode in ["RGB", "D", "ED", "RGB+D", "RGB+ED"], f"Invalid render_mode: {render_mode}")
 
-    if sh_degree is None:
-        assert_check((colors.dim() == 2 and colors.shape[-1] == N) or
-                    (colors.dim() == 3 and colors.shape[0] == C and colors.shape[-1] == N),
-                    f"Invalid shape for colors: {colors.shape}")
-    else:
-        assert_check((colors.dim() == 3 and colors.shape[1] == 3 and colors.shape[2] == N) or
-                    (colors.dim() == 4 and colors.shape[0] == C and colors.shape[2] == 3 and colors.shape[3] == N),
-                    f"Invalid shape for colors: {colors.shape}")
+    assert_check((shs.dim() == 3 and shs.shape[1] == 3 and shs.shape[2] == N), f"Invalid shape for shs: {shs.shape}; expected [K,3,N]")
 
-        max_coeffs = (sh_degree + 1) ** 2
-        num_coeffs = colors.shape[-3] if colors.dim() == 3 else colors.shape[1]
-        assert_check(max_coeffs <= num_coeffs,
-                    f"Invalid sh_degree for colors shape: {colors.shape}")
+    max_coeffs = (sh_degree + 1) ** 2
+    num_coeffs = shs.shape[0]
+    assert_check(max_coeffs <= num_coeffs, f"Invalid sh_degree for shs shape: {shs.shape}")
 
 
 def _resolve_bg_color(splats: dict) -> Optional[Tensor]:
@@ -184,13 +176,15 @@ class Rasterizer:
     ) -> Tuple[Tensor, Tensor, Dict]:
         ### wrapper gaussian-relatived data
         colors = splats["sh"]
+        features_dc = colors[..., :1, :, :].contiguous()
+        features_sh = colors[..., 1:, :, :].contiguous()
         gs = GaussianData(
             means=splats["means"],                          # [3, N]
             quats=splats["quats"],                          # [4, N]
             scales=splats["scales"],                        # [3, N]
             opacities=splats["opacities"],                  # [N]
-            features_dc=colors[:1].contiguous(),            # [1, 3, N]
-            features_sh=colors[1:].contiguous()             # [K-1, 3, N]
+            features_dc=features_dc,                        # [1, 3, N]
+            features_sh=features_sh                         # [K-1, 3, N]
         )
 
         ### wrapper camera-relatived data
@@ -211,7 +205,7 @@ class Rasterizer:
             render_mode=render_mode,
             scale_log=True,
             opacity_logit=True,
-            channel_first=splats["is_channel_first"],
+            channel_first=splats.get("is_channel_first", True),
             bg_color=_resolve_bg_color(splats)
         )
 
@@ -230,7 +224,7 @@ class Rasterizer:
         means, quats, scales, opacities = gs.means, gs.quats, gs.scales, gs.opacities
         scales = torch.exp(scales) if config.scale_log else scales
         opacities = torch.sigmoid(opacities) if config.opacity_logit else opacities
-        colors = torch.cat([gs.features_dc, gs.features_sh], dim=0).contiguous()
+        shs = torch.cat([gs.features_dc, gs.features_sh], dim=0).contiguous()
         width, height, viewmats, ks, camera_model = (camera.width, camera.height, camera.w2c,
             camera.ks, camera.camera_model)
         sh_degree, tile_size, render_mode, bg_color = (config.sh_degree, config.tile_size,
@@ -239,7 +233,7 @@ class Rasterizer:
         num_gs = means.shape[-1]
         C = viewmats.shape[0]
         B = 1
-        valid_gs = (means, quats, scales, opacities, colors)
+        valid_gs = (means, quats, scales, opacities, shs)
         valid_cam = (viewmats, ks, camera_model, render_mode)
         _validate_inputs(valid_gs, valid_cam, sh_degree, num_gs, C)
 
@@ -249,18 +243,12 @@ class Rasterizer:
             alphas_per_view = []
             infos = []
             for camera_index in range(C):
-                if colors.dim() == 4 or (sh_degree is None and colors.dim() == 3):
-                    view_colors = colors[camera_index]
-                else:
-                    view_colors = colors
                 # Each view needs its projection buffers until its backward pass.
                 gs_per_view = gs
-                gs_per_view.features_dc = view_colors[0, :, :].contiguous()
-                gs_per_view.features_sh = view_colors[1:, :, :].contiguous()
-
-                cam_per_view = cam
-                cam_per_view.w2c = viewmats[camera_index:camera_index + 1]
-                cam_per_view.ks = ks[camera_index:camera_index + 1]
+                cam_per_view = camera._replace(
+                    w2c=viewmats[camera_index:camera_index + 1],
+                    ks=ks[camera_index:camera_index + 1],
+                )
 
                 image, depth, alpha, info = self._rasterization(
                     gs_per_view, cam_per_view, config, RastCtx()
@@ -270,27 +258,27 @@ class Rasterizer:
                 alphas_per_view.append(alpha)
                 infos.append(info)
             meta = infos[0].copy()
+            # Keep graph-connected tensors and per-view compacted Gaussian mappings.
+            # The concatenated means2d below is metadata, not an ancestor of the loss.
+            meta["view_infos"] = infos
             for key in ("means2d", "radii", "proj_filter"):
                 meta[key] = torch.cat([info[key] for info in infos], dim=1)
             meta["gaussian_ids"] = None
             meta["n_cameras"] = C
+            alphas = (torch.cat(alphas_per_view, dim=0)
+                      if all(alpha is not None for alpha in alphas_per_view) else None)
             return (torch.cat(rendered, dim=0), torch.cat(depths_per_view, dim=0),
-                torch.cat(alphas_per_view, dim=0), meta)
+                alphas, meta)
 
         camtoworlds = torch.inverse(viewmats)
-        if sh_degree is None:
-            # Post-activation colors: [3, N] or [C, 3, N].
-            colors = colors.unsqueeze(0) if colors.dim() == 2 else colors
-        else:
-            shs = colors.unsqueeze(0) if colors.dim() == 3 else colors
-            rays_d = sh_preprocess(camtoworlds, means)   # [B, 3, N] unit dirs
-            k = (sh_degree + 1) ** 2
-            colors = spherical_harmonics(
-                sh_degree,
-                rays_d.reshape(B, 3, num_gs),
-                shs[0, :k, :, :].reshape(B, k, 3, num_gs),
-            )
-            colors = (colors + 0.5).clip(min=0.0)
+        rays_d = sh_preprocess(camtoworlds, means)   # [B, 3, N] unit dirs
+        k = (sh_degree + 1) ** 2
+        colors = spherical_harmonics(
+            sh_degree,
+            rays_d.reshape(B, 3, num_gs),
+            shs[:k].reshape(B, k, 3, num_gs),
+        )
+        colors = (colors + 0.5).clip(min=0.0)
 
         rast_ctx = self.rast_ctx if rast_ctx is None else rast_ctx
         rast_ctx.prealloc_if_need(B, C, num_gs, means.device)

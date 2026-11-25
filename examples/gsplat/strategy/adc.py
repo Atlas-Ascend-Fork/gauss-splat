@@ -83,8 +83,11 @@ class ADCStrategy(Strategy):
             assert key in params, f"{key} is required in params but missing."
 
     def step_pre_backward(self, params, optimizers, state, step, info):
-        assert self.key_for_gradient in info, "means2d is required but missing."
-        info[self.key_for_gradient].retain_grad()
+        for view_info in info.get("view_infos", [info]):
+            assert self.key_for_gradient in view_info, "means2d is required but missing."
+            tensor = view_info[self.key_for_gradient]
+            if tensor.requires_grad:
+                tensor.retain_grad()
 
     def step_post_backward(self, params, optimizers, state, step, info, packed: bool = False):
         if step >= self.refine_stop_iter:
@@ -127,6 +130,27 @@ class ADCStrategy(Strategy):
         return t.shape[0]
 
     def _update_state(self, params, state, info, packed: bool = False):
+        if "view_infos" in info:
+            # Accumulate every view before step_post_backward mutates the Gaussians.
+            for view_info in info["view_infos"]:
+                tensor = view_info[self.key_for_gradient]
+                gradient = tensor.absgrad if self.absgrad else tensor.grad
+                if gradient is None:
+                    raise RuntimeError("Per-view means2d gradient is missing; call step_pre_backward before backward")
+                proxy = torch.empty_like(gradient[0, 0].transpose(0, 1))
+                if self.absgrad:
+                    proxy.absgrad = gradient[0, 0].transpose(0, 1)
+                else:
+                    proxy.grad = gradient[0, 0].transpose(0, 1)
+                per_view = dict(view_info)
+                per_view[self.key_for_gradient] = proxy
+                per_view["radii"] = view_info["radii"][0, 0].transpose(0, 1)
+                per_view["proj_filter"] = view_info["proj_filter"][0, 0]
+                # Undo the camera averaging in the training loss consistently.
+                per_view["n_cameras"] = info["n_cameras"]
+                self._update_state(params, state, per_view, packed=False)
+            return
+
         for key in ["width", "height", "n_cameras", "radii", "gaussian_ids",
                     self.key_for_gradient]:
             assert key in info, f"{key} is required but missing."

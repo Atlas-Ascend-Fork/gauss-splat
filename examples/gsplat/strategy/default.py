@@ -163,9 +163,11 @@ class DefaultStrategy(Strategy):
         info: Dict[str, Any],
     ):
         """Callback function to be executed before the `loss.backward()` call."""
-        assert self.key_for_gradient in info, "means2d is required but missing."
-        if info[self.key_for_gradient].requires_grad:
-            info[self.key_for_gradient].retain_grad()
+        for view_info in info.get("view_infos", [info]):
+            assert self.key_for_gradient in view_info, "means2d is required but missing."
+            tensor = view_info[self.key_for_gradient]
+            if tensor.requires_grad:
+                tensor.retain_grad()
 
     def step_post_backward(
         self,
@@ -237,6 +239,27 @@ class DefaultStrategy(Strategy):
         info: Dict[str, Any],
         packed: bool = False,
     ):
+        if "view_infos" in info:
+            # Accumulate every view before step_post_backward mutates the Gaussians.
+            for view_info in info["view_infos"]:
+                tensor = view_info[self.key_for_gradient]
+                gradient = tensor.absgrad if self.absgrad else tensor.grad
+                if gradient is None:
+                    raise RuntimeError("Per-view means2d gradient is missing; call step_pre_backward before backward")
+                proxy = torch.empty_like(gradient[0, 0].transpose(0, 1))
+                if self.absgrad:
+                    proxy.absgrad = gradient[0, 0].transpose(0, 1)
+                else:
+                    proxy.grad = gradient[0, 0].transpose(0, 1)
+                per_view = dict(view_info)
+                per_view[self.key_for_gradient] = proxy
+                per_view["radii"] = view_info["radii"][0, 0].transpose(0, 1)
+                per_view["proj_filter"] = view_info["proj_filter"][0, 0]
+                # Undo the camera averaging in the training loss consistently.
+                per_view["n_cameras"] = info["n_cameras"]
+                self._update_state(params, state, per_view, packed=False)
+            return
+
         for key in [
             "width",
             "height",

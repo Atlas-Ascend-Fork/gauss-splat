@@ -91,12 +91,11 @@ rasterizer = gauss_splat.Rasterizer()
 # 2. 准备高斯点云数据
 N = 10000  # 高斯点数量
 splats = {
-    "means": torch.randn(N, 3, device='npu:0'),           # 位置
-    "quats": torch.randn(N, 4, device='npu:0'),           # 四元数
-    "scales": torch.randn(N, 3, device='npu:0'),          # 缩放（log空间）
+    "means": torch.randn(3, N, device='npu:0'),           # 位置
+    "quats": torch.randn(4, N, device='npu:0'),           # 四元数
+    "scales": torch.randn(3, N, device='npu:0'),          # 缩放（log空间）
     "opacities": torch.randn(N, device='npu:0'),          # 不透明度（logits）
-    "sh0": torch.randn(N, 1, 3, device='npu:0'),          # 球谐第0阶
-    "shN": torch.randn(N, 15, 3, device='npu:0'),         # 球谐高阶
+    "sh": torch.randn(16, 3, N, device='npu:0'),          # 0至3阶球谐系数
 }
 
 # 3. 准备相机参数

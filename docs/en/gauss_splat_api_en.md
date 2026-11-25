@@ -32,12 +32,11 @@ Renders 3D Gaussian point clouds to 2D images.
 - `tile_size` (int): Tile size, default is 32
 - `active_sh_degree` (int): Active spherical harmonics degree
 - `splats` (dict): Gaussian point cloud dictionary, containing:
-  - `means` (Tensor): Gaussian center positions, shape (N, 3)
-  - `quats` (Tensor): Quaternions for rotation, shape (N, 4)
-  - `scales` (Tensor): Scale parameters (log space), shape (N, 3)
+  - `means` (Tensor): Gaussian center positions, shape (3, N)
+  - `quats` (Tensor): Quaternions for rotation, shape (4, N)
+  - `scales` (Tensor): Scale parameters (log space), shape (3, N)
   - `opacities` (Tensor): Opacities (logits), shape (N,)
-  - `sh0` (Tensor): Spherical harmonics coefficients degree 0, shape (N, 1, 3)
-  - `shN` (Tensor): Spherical harmonics coefficients higher degrees, shape (N, K, 3)
+  - `sh` (Tensor): Combined spherical harmonic coefficients, shape (K, 3, N), where K is at least (active_sh_degree + 1)²
   - `bg_color` (Tensor/tuple/list, optional): background RGB for A5 `clip_lastids`, shape (3,); None disables it; passing it enables background blending; the Tensor may have `requires_grad`.
 - `camera_model` (str): Camera model, optional values: "pinhole", "ortho", "fisheye", default is "pinhole"
 
@@ -182,8 +181,8 @@ render_colors_bg, render_depths_bg = gauss_splat.calc_render(
 **Parameters**:
 
 - `degrees_to_use` (int): Spherical harmonics degree, range 0-4
-- `dirs` (Tensor): Direction vectors, shape (B, N, 3)
-- `coeffs` (Tensor): Spherical harmonics coefficients, shape (B, N, K, 3), where K=(degrees_to_use+1)^2
+- `dirs` (Tensor): Direction vectors, shape (B, 3, N)
+- `coeffs` (Tensor): Spherical harmonics coefficients, shape (B, K, 3, N), where K=(degrees_to_use+1)^2
 
 **Return Values**:
 
@@ -394,7 +393,7 @@ Operator inputs generally reside on NPU. `get_render_schedule_cpp` is an excepti
 - **Quaternions**: Quaternions used to represent rotation (w, x, y, z)
 - **Scales**: Scale factors in log space, converted through `torch.exp(scales)` during rendering
 - **Opacities**: In logit form, converted through `torch.sigmoid(opacities)` during rendering
-- **Spherical harmonics coefficients**: Used for view-dependent colors, shape (N, K, 3), where K is the number of coefficients
+- **Spherical harmonics coefficients**: Rasterizer uses `splats["sh"]` with shape (K, 3, N), where K is the number of coefficients. The separate `spherical_harmonics` API uses `dirs` (B, 3, N) and `coeffs` (B, K, 3, N).
 
 ### Camera Model
 
@@ -424,12 +423,11 @@ rasterizer = gauss_splat.Rasterizer()
 # 2. Prepare Gaussian point cloud data
 N = 10000  # Number of Gaussian points
 splats = {
-    "means": torch.randn(N, 3, device='npu:0'),           # Positions
-    "quats": torch.randn(N, 4, device='npu:0'),           # Quaternions
-    "scales": torch.randn(N, 3, device='npu:0'),          # Scales (log space)
+    "means": torch.randn(3, N, device='npu:0'),           # Positions
+    "quats": torch.randn(4, N, device='npu:0'),           # Quaternions
+    "scales": torch.randn(3, N, device='npu:0'),          # Scales (log space)
     "opacities": torch.randn(N, device='npu:0'),          # Opacities (logits)
-    "sh0": torch.randn(N, 1, 3, device='npu:0'),          # Spherical harmonics degree 0
-    "shN": torch.randn(N, 15, 3, device='npu:0'),         # Spherical harmonics higher degrees
+    "sh": torch.randn(16, 3, N, device='npu:0'),          # SH coefficients for degrees 0 to 3
 }
 
 # 3. Prepare camera parameters

@@ -92,12 +92,11 @@ rasterizer = gauss_splat.Rasterizer()
 # 2. Prepare Gaussian point cloud data
 N = 10000  # Number of Gaussian points
 splats = {
-    "means": torch.randn(N, 3, device='npu:0'),           # Positions
-    "quats": torch.randn(N, 4, device='npu:0'),           # Quaternions
-    "scales": torch.randn(N, 3, device='npu:0'),          # Scales (log space)
+    "means": torch.randn(3, N, device='npu:0'),           # Positions
+    "quats": torch.randn(4, N, device='npu:0'),           # Quaternions
+    "scales": torch.randn(3, N, device='npu:0'),          # Scales (log space)
     "opacities": torch.randn(N, device='npu:0'),          # Opacities (logits)
-    "sh0": torch.randn(N, 1, 3, device='npu:0'),          # Spherical harmonics degree 0
-    "shN": torch.randn(N, 15, 3, device='npu:0'),         # Spherical harmonics higher degrees
+    "sh": torch.randn(16, 3, N, device='npu:0'),          # SH coefficients for degrees 0 to 3
 }
 
 # 3. Prepare camera parameters

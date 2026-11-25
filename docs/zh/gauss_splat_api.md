@@ -32,12 +32,11 @@
 - `tile_size` (int): 分块大小，默认为32
 - `active_sh_degree` (int): 激活的球谐函数阶数
 - `splats` (dict): 高斯点云字典，包含:
-  - `means` (Tensor): 高斯中心位置，形状 (N, 3)
-  - `quats` (Tensor): 四元数表示旋转，形状 (N, 4)
-  - `scales` (Tensor): 缩放参数（log空间），形状 (N, 3)
+  - `means` (Tensor): 高斯中心位置，形状 (3, N)
+  - `quats` (Tensor): 四元数表示旋转，形状 (4, N)
+  - `scales` (Tensor): 缩放参数（log空间），形状 (3, N)
   - `opacities` (Tensor): 不透明度（logits），形状 (N,)
-  - `sh0` (Tensor): 球谐系数第0阶，形状 (N, 1, 3)
-  - `shN` (Tensor): 球谐系数高阶，形状 (N, K, 3)
+  - `sh` (Tensor): 合并后的球谐系数，形状 (K, 3, N)，其中 K 至少为 (active_sh_degree + 1)²
   - `bg_color` (Tensor/tuple/list, optional): A5 `clip_lastids` 专用背景色 RGB，形状 (3,)；None 表示关闭；传入即启用背景色；Tensor 可设置 `requires_grad`。
 - `camera_model` (str): 相机模型，可选值: "pinhole", "ortho", "fisheye"，默认为"pinhole"
 
@@ -179,8 +178,8 @@ render_colors_bg, render_depths_bg = gauss_splat.calc_render(
 **参数**:
 
 - `degrees_to_use` (int): 球谐函数阶数，范围0-4
-- `dirs` (Tensor): 方向向量，形状 (B, N, 3)
-- `coeffs` (Tensor): 球谐系数，形状 (B, N, K, 3)，其中K=(degrees_to_use+1)²
+- `dirs` (Tensor): 方向向量，形状 (B, 3, N)
+- `coeffs` (Tensor): 球谐系数，形状 (B, K, 3, N)，其中K=(degrees_to_use+1)²
 
 **返回值**:
 
@@ -392,7 +391,7 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 - **四元数**: 用于表示旋转的四元数 (w, x, y, z)
 - **缩放**: log空间的缩放因子，渲染时通过`torch.exp(scales)`转换
 - **不透明度**: logit形式，渲染时通过`torch.sigmoid(opacities)`转换
-- **球谐系数**: 用于视角相关颜色，形状为 (N, K, 3)，K为系数数量
+- **球谐系数**: Rasterizer 的 `splats["sh"]` 形状为 (K, 3, N)，K为系数数量；独立的 `spherical_harmonics` 接口使用 `dirs` (B, 3, N)、`coeffs` (B, K, 3, N) 布局。
 
 ### 相机模型
 
@@ -422,12 +421,11 @@ rasterizer = gauss_splat.Rasterizer()
 # 2. 准备高斯点云数据
 N = 10000  # 高斯点数量
 splats = {
-    "means": torch.randn(N, 3, device='npu:0'),           # 位置
-    "quats": torch.randn(N, 4, device='npu:0'),           # 四元数
-    "scales": torch.randn(N, 3, device='npu:0'),          # 缩放（log空间）
+    "means": torch.randn(3, N, device='npu:0'),           # 位置
+    "quats": torch.randn(4, N, device='npu:0'),           # 四元数
+    "scales": torch.randn(3, N, device='npu:0'),          # 缩放（log空间）
     "opacities": torch.randn(N, device='npu:0'),          # 不透明度（logits）
-    "sh0": torch.randn(N, 1, 3, device='npu:0'),          # 球谐第0阶
-    "shN": torch.randn(N, 15, 3, device='npu:0'),         # 球谐高阶
+    "sh": torch.randn(16, 3, N, device='npu:0'),          # 0至3阶球谐系数
 }
 
 # 3. 准备相机参数

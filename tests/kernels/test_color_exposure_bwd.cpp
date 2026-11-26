@@ -45,6 +45,10 @@ const float kBoundaryColors[kBoundaryCount][3] = {
     {0.299f, 0.587f, 0.114f},
 };
 
+// cnt 生成模式: FULL = 全部有效 (cnt = N); MIXED = 按平坦下标取
+// 0 / 1 / N/2 / N, 覆盖整相机跳过、单高斯、块内截断、全量四种路径
+enum CntMode { CNT_FULL = 0, CNT_MIXED = 1 };
+
 float NextUniform(uint32_t& state)
 {
     state = state * 1664525u + 1013904223u;
@@ -54,6 +58,24 @@ float NextUniform(uint32_t& state)
 float Clamp01(float v)
 {
     return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
+
+int64_t GenCnt(int64_t flatIdx, int64_t n, CntMode mode)
+{
+    if (mode == CNT_FULL) {
+        return n;
+    }
+    const int64_t r = flatIdx % 4;
+    if (r == 0) {
+        return 0;
+    }
+    if (r == 1) {
+        return 1;
+    }
+    if (r == 2) {
+        return n / 2;
+    }
+    return n;
 }
 
 void GenRandomAffine(uint32_t& rng, float* e)
@@ -188,12 +210,14 @@ VerifyReport VerifyClose(const vector<float>& actual, const vector<float>& expec
 struct BwdCase {
     const char* name;
     int64_t batch;
+    int64_t camera;
     int64_t gauss;
     int32_t gridW;
     int32_t gridH;
     int32_t gridD;
     bool clamp;
     bool calcExpGrad;
+    CntMode cntMode;
     uint32_t seed;
 };
 
@@ -201,6 +225,7 @@ struct BwdTensors {
     void* colorsAddr = nullptr;
     void* vColorsInAddr = nullptr;
     void* exposureAddr = nullptr;
+    void* cntAddr = nullptr;
     void* indexAddr = nullptr;
     void* weightAddr = nullptr;
     void* vColorsOutAddr = nullptr;
@@ -208,6 +233,7 @@ struct BwdTensors {
     aclTensor* colorsTensor = nullptr;
     aclTensor* vColorsInTensor = nullptr;
     aclTensor* exposureTensor = nullptr;
+    aclTensor* cntTensor = nullptr;
     aclTensor* indexTensor = nullptr;
     aclTensor* weightTensor = nullptr;
     aclTensor* vColorsOutTensor = nullptr;
@@ -220,6 +246,7 @@ void DestroyBwdTensors(BwdTensors& t)
     if (t.colorsTensor) aclDestroyTensor(t.colorsTensor);
     if (t.vColorsInTensor) aclDestroyTensor(t.vColorsInTensor);
     if (t.exposureTensor) aclDestroyTensor(t.exposureTensor);
+    if (t.cntTensor) aclDestroyTensor(t.cntTensor);
     if (t.indexTensor) aclDestroyTensor(t.indexTensor);
     if (t.weightTensor) aclDestroyTensor(t.weightTensor);
     if (t.vColorsOutTensor) aclDestroyTensor(t.vColorsOutTensor);
@@ -227,6 +254,7 @@ void DestroyBwdTensors(BwdTensors& t)
     if (t.colorsAddr) aclrtFree(t.colorsAddr);
     if (t.vColorsInAddr) aclrtFree(t.vColorsInAddr);
     if (t.exposureAddr) aclrtFree(t.exposureAddr);
+    if (t.cntAddr) aclrtFree(t.cntAddr);
     if (t.indexAddr) aclrtFree(t.indexAddr);
     if (t.weightAddr) aclrtFree(t.weightAddr);
     if (t.vColorsOutAddr) aclrtFree(t.vColorsOutAddr);
@@ -234,11 +262,23 @@ void DestroyBwdTensors(BwdTensors& t)
     if (t.workspaceAddr) aclrtFree(t.workspaceAddr);
 }
 
+// 布局: colors / vColorsIn / vColorsOut [B, C, 3, N]; index / weight [B, C, 3, N]
+inline int64_t ColorOffset(int64_t b, int64_t c, int64_t cam, int64_t ch, int64_t n)
+{
+    return ((b * cam + c) * 3 + ch) * n;
+}
+
+inline int64_t Means2dOffset(int64_t b, int64_t c, int64_t cam, int64_t ch, int64_t n)
+{
+    return ((b * cam + c) * 2 + ch) * n;
+}
+
 bool RunBwdCase(const BwdCase& cs, aclrtStream stream)
 {
     const int64_t b = cs.batch;
+    const int64_t cam = cs.camera;
     const int64_t n = cs.gauss;
-    const int64_t bcn = b * n;
+    const int64_t bcn = b * cam * n;
     const bool useGrid = cs.gridW > 0;
     const int64_t gridCells = useGrid ?
         static_cast<int64_t>(cs.gridW) * cs.gridH * cs.gridD : 1;
@@ -248,52 +288,71 @@ bool RunBwdCase(const BwdCase& cs, aclrtStream stream)
     vector<float> vColorsInHost(bcn * 3, 0.0f);
     vector<float> means2dHost(bcn * 2, 0.0f);
     vector<float> exposureHost(expNumel, 0.0f);
+    vector<int32_t> cntHost(b * cam, 0);
     uint32_t rng = cs.seed;
 
     for (int64_t i = 0; i < bcn * 3; i++) {
         colorsHost[i] = (NextUniform(rng) * 2.0f - 1.0f) * 0.5f;
         vColorsInHost[i] = (NextUniform(rng) * 2.0f - 1.0f) * 0.5f;
     }
-    for (int64_t i = 0; i < bcn; i++) {
-        means2dHost[i] = (NextUniform(rng) * 1.2f - 0.1f) * static_cast<float>(kImageWidth);
-        means2dHost[bcn + i] = (NextUniform(rng) * 1.2f - 0.1f) * static_cast<float>(kImageHeight);
+    for (int64_t bi = 0; bi < b; bi++) {
+        for (int64_t ci = 0; ci < cam; ci++) {
+            for (int64_t j = 0; j < n; j++) {
+                means2dHost[Means2dOffset(bi, ci, cam, 0, n) + j] =
+                    (NextUniform(rng) * 1.2f - 0.1f) * static_cast<float>(kImageWidth);
+                means2dHost[Means2dOffset(bi, ci, cam, 1, n) + j] =
+                    (NextUniform(rng) * 1.2f - 0.1f) * static_cast<float>(kImageHeight);
+            }
+        }
     }
     for (int64_t c = 0; c < gridCells; c++) {
         GenRandomAffine(rng, exposureHost.data() + c * 12);
     }
+    for (int64_t bi = 0; bi < b; bi++) {
+        for (int64_t ci = 0; ci < cam; ci++) {
+            cntHost[bi * cam + ci] = static_cast<int32_t>(
+                GenCnt(bi * cam + ci, n, cs.cntMode));
+        }
+    }
 
     const int64_t k = min(static_cast<int64_t>(kBoundaryCount), n);
     for (int64_t bi = 0; bi < b; bi++) {
-        for (int64_t j = 0; j < k; j++) {
-            for (int c = 0; c < 3; c++) {
-                colorsHost[(bi * 3 + c) * n + j] = kBoundaryColors[j][c];
-            }
-            for (int c = 0; c < 2; c++) {
-                means2dHost[(bi * 2 + c) * n + j] = kBoundaryXy[j][c];
+        for (int64_t ci = 0; ci < cam; ci++) {
+            for (int64_t j = 0; j < k; j++) {
+                for (int c = 0; c < 3; c++) {
+                    colorsHost[ColorOffset(bi, ci, cam, c, n) + j] = kBoundaryColors[j][c];
+                }
+                for (int c = 0; c < 2; c++) {
+                    means2dHost[Means2dOffset(bi, ci, cam, c, n) + j] = kBoundaryXy[j][c];
+                }
             }
         }
     }
 
+    // index / weight 按前向语义生成: 仅 [0, cnt) 有效, 其余位置保持 0
     vector<int32_t> indexHost(useGrid ? bcn * 3 : 0, 0);
     vector<float> weightHost(useGrid ? bcn * 3 : 0.0f);
     const float invW = 1.0f / static_cast<float>(kImageWidth);
     const float invH = 1.0f / static_cast<float>(kImageHeight);
     if (useGrid) {
         for (int64_t bi = 0; bi < b; bi++) {
-            for (int64_t j = 0; j < n; j++) {
-                const float r = colorsHost[(bi * 3 + 0) * n + j];
-                const float g = colorsHost[(bi * 3 + 1) * n + j];
-                const float bl = colorsHost[(bi * 3 + 2) * n + j];
-                const float x = means2dHost[(bi * 2 + 0) * n + j];
-                const float y = means2dHost[(bi * 2 + 1) * n + j];
-                const float grey = 0.299f * r + 0.587f * g + 0.114f * bl;
-                const GridCoord c = MapToGrid(x, y, grey, cs.gridW, cs.gridH, cs.gridD, invW, invH);
-                indexHost[(bi * 3 + 0) * n + j] = c.ix;
-                indexHost[(bi * 3 + 1) * n + j] = c.iy;
-                indexHost[(bi * 3 + 2) * n + j] = c.iz;
-                weightHost[(bi * 3 + 0) * n + j] = c.wx;
-                weightHost[(bi * 3 + 1) * n + j] = c.wy;
-                weightHost[(bi * 3 + 2) * n + j] = c.wz;
+            for (int64_t ci = 0; ci < cam; ci++) {
+                const int64_t validCnt = cntHost[bi * cam + ci];
+                for (int64_t j = 0; j < validCnt; j++) {
+                    const float r = colorsHost[ColorOffset(bi, ci, cam, 0, n) + j];
+                    const float g = colorsHost[ColorOffset(bi, ci, cam, 1, n) + j];
+                    const float bl = colorsHost[ColorOffset(bi, ci, cam, 2, n) + j];
+                    const float x = means2dHost[Means2dOffset(bi, ci, cam, 0, n) + j];
+                    const float y = means2dHost[Means2dOffset(bi, ci, cam, 1, n) + j];
+                    const float grey = 0.299f * r + 0.587f * g + 0.114f * bl;
+                    const GridCoord c = MapToGrid(x, y, grey, cs.gridW, cs.gridH, cs.gridD, invW, invH);
+                    indexHost[ColorOffset(bi, ci, cam, 0, n) + j] = c.ix;
+                    indexHost[ColorOffset(bi, ci, cam, 1, n) + j] = c.iy;
+                    indexHost[ColorOffset(bi, ci, cam, 2, n) + j] = c.iz;
+                    weightHost[ColorOffset(bi, ci, cam, 0, n) + j] = c.wx;
+                    weightHost[ColorOffset(bi, ci, cam, 1, n) + j] = c.wy;
+                    weightHost[ColorOffset(bi, ci, cam, 2, n) + j] = c.wz;
+                }
             }
         }
     }
@@ -301,92 +360,97 @@ bool RunBwdCase(const BwdCase& cs, aclrtStream stream)
     vector<float> goldenVColors(bcn * 3, 0.0f);
     vector<double> goldenVExp(cs.calcExpGrad ? expNumel : 0, 0.0);
     for (int64_t bi = 0; bi < b; bi++) {
-        for (int64_t j = 0; j < n; j++) {
-            const float r = colorsHost[(bi * 3 + 0) * n + j];
-            const float g = colorsHost[(bi * 3 + 1) * n + j];
-            const float bl = colorsHost[(bi * 3 + 2) * n + j];
-            float vr = vColorsInHost[(bi * 3 + 0) * n + j];
-            float vg = vColorsInHost[(bi * 3 + 1) * n + j];
-            float vb = vColorsInHost[(bi * 3 + 2) * n + j];
-            float e[12];
-            int32_t id[8];
-            float w[8];
-            if (useGrid) {
-                const GridCoord c = {
-                    indexHost[(bi * 3 + 0) * n + j],
-                    indexHost[(bi * 3 + 1) * n + j],
-                    indexHost[(bi * 3 + 2) * n + j],
-                    weightHost[(bi * 3 + 0) * n + j],
-                    weightHost[(bi * 3 + 1) * n + j],
-                    weightHost[(bi * 3 + 2) * n + j]};
-                InterpolateAffine(exposureHost.data(), c, cs.gridH, cs.gridD, e);
-                if (cs.calcExpGrad) {
-                    const float wxl = 1.0f - c.wx;
-                    const float wxr = c.wx;
-                    const float wyl = 1.0f - c.wy;
-                    const float wyr = c.wy;
-                    const float wzl = 1.0f - c.wz;
-                    const float wzr = c.wz;
-                    w[0] = wxl * wyl * wzl;
-                    w[1] = wxl * wyl * wzr;
-                    w[2] = wxl * wyr * wzl;
-                    w[3] = wxl * wyr * wzr;
-                    w[4] = wxr * wyl * wzl;
-                    w[5] = wxr * wyl * wzr;
-                    w[6] = wxr * wyr * wzl;
-                    w[7] = wxr * wyr * wzr;
-                    id[0] = (c.ix * cs.gridH + c.iy) * cs.gridD + c.iz;
-                    id[1] = id[0] + 1;
-                    id[2] = (c.ix * cs.gridH + c.iy + 1) * cs.gridD + c.iz;
-                    id[3] = id[2] + 1;
-                    id[4] = ((c.ix + 1) * cs.gridH + c.iy) * cs.gridD + c.iz;
-                    id[5] = id[4] + 1;
-                    id[6] = ((c.ix + 1) * cs.gridH + c.iy + 1) * cs.gridD + c.iz;
-                    id[7] = id[6] + 1;
-                }
-            } else {
-                for (int t = 0; t < 12; t++) {
-                    e[t] = exposureHost[t];
-                }
-            }
-            if (cs.clamp) {
-                if (ApplyAffineRow(e, 0, r, g, bl) < 0.0f) {
-                    vr = 0.0f;
-                }
-                if (ApplyAffineRow(e, 1, r, g, bl) < 0.0f) {
-                    vg = 0.0f;
-                }
-                if (ApplyAffineRow(e, 2, r, g, bl) < 0.0f) {
-                    vb = 0.0f;
-                }
-            }
-            for (int col = 0; col < 3; col++) {
-                goldenVColors[(bi * 3 + col) * n + j] = ApplyVjpCol(e, col, vr, vg, vb);
-            }
-            if (cs.calcExpGrad) {
-                double grad[12];
-                grad[0] = static_cast<double>(r) * vr;
-                grad[1] = static_cast<double>(g) * vr;
-                grad[2] = static_cast<double>(bl) * vr;
-                grad[3] = vr;
-                grad[4] = static_cast<double>(r) * vg;
-                grad[5] = static_cast<double>(g) * vg;
-                grad[6] = static_cast<double>(bl) * vg;
-                grad[7] = vg;
-                grad[8] = static_cast<double>(r) * vb;
-                grad[9] = static_cast<double>(g) * vb;
-                grad[10] = static_cast<double>(bl) * vb;
-                grad[11] = vb;
+        for (int64_t ci = 0; ci < cam; ci++) {
+            // cnt 过滤: cnt 之外高斯不产生任何梯度
+            const int64_t validCnt = cntHost[bi * cam + ci];
+            for (int64_t j = 0; j < validCnt; j++) {
+                const float r = colorsHost[ColorOffset(bi, ci, cam, 0, n) + j];
+                const float g = colorsHost[ColorOffset(bi, ci, cam, 1, n) + j];
+                const float bl = colorsHost[ColorOffset(bi, ci, cam, 2, n) + j];
+                float vr = vColorsInHost[ColorOffset(bi, ci, cam, 0, n) + j];
+                float vg = vColorsInHost[ColorOffset(bi, ci, cam, 1, n) + j];
+                float vb = vColorsInHost[ColorOffset(bi, ci, cam, 2, n) + j];
+                float e[12];
+                int32_t id[8];
+                float w[8];
                 if (useGrid) {
-                    for (int kk = 0; kk < 8; kk++) {
-                        const int64_t base = static_cast<int64_t>(id[kk]) * 12;
-                        for (int m = 0; m < 12; m++) {
-                            goldenVExp[base + m] += static_cast<double>(w[kk]) * grad[m];
-                        }
+                    const GridCoord c = {
+                        indexHost[ColorOffset(bi, ci, cam, 0, n) + j],
+                        indexHost[ColorOffset(bi, ci, cam, 1, n) + j],
+                        indexHost[ColorOffset(bi, ci, cam, 2, n) + j],
+                        weightHost[ColorOffset(bi, ci, cam, 0, n) + j],
+                        weightHost[ColorOffset(bi, ci, cam, 1, n) + j],
+                        weightHost[ColorOffset(bi, ci, cam, 2, n) + j]};
+                    InterpolateAffine(exposureHost.data(), c, cs.gridH, cs.gridD, e);
+                    if (cs.calcExpGrad) {
+                        const float wxl = 1.0f - c.wx;
+                        const float wxr = c.wx;
+                        const float wyl = 1.0f - c.wy;
+                        const float wyr = c.wy;
+                        const float wzl = 1.0f - c.wz;
+                        const float wzr = c.wz;
+                        w[0] = wxl * wyl * wzl;
+                        w[1] = wxl * wyl * wzr;
+                        w[2] = wxl * wyr * wzl;
+                        w[3] = wxl * wyr * wzr;
+                        w[4] = wxr * wyl * wzl;
+                        w[5] = wxr * wyl * wzr;
+                        w[6] = wxr * wyr * wzl;
+                        w[7] = wxr * wyr * wzr;
+                        id[0] = (c.ix * cs.gridH + c.iy) * cs.gridD + c.iz;
+                        id[1] = id[0] + 1;
+                        id[2] = (c.ix * cs.gridH + c.iy + 1) * cs.gridD + c.iz;
+                        id[3] = id[2] + 1;
+                        id[4] = ((c.ix + 1) * cs.gridH + c.iy) * cs.gridD + c.iz;
+                        id[5] = id[4] + 1;
+                        id[6] = ((c.ix + 1) * cs.gridH + c.iy + 1) * cs.gridD + c.iz;
+                        id[7] = id[6] + 1;
                     }
                 } else {
-                    for (int m = 0; m < 12; m++) {
-                        goldenVExp[m] += grad[m];
+                    for (int t = 0; t < 12; t++) {
+                        e[t] = exposureHost[t];
+                    }
+                }
+                if (cs.clamp) {
+                    if (ApplyAffineRow(e, 0, r, g, bl) < 0.0f) {
+                        vr = 0.0f;
+                    }
+                    if (ApplyAffineRow(e, 1, r, g, bl) < 0.0f) {
+                        vg = 0.0f;
+                    }
+                    if (ApplyAffineRow(e, 2, r, g, bl) < 0.0f) {
+                        vb = 0.0f;
+                    }
+                }
+                for (int col = 0; col < 3; col++) {
+                    goldenVColors[ColorOffset(bi, ci, cam, col, n) + j] =
+                        ApplyVjpCol(e, col, vr, vg, vb);
+                }
+                if (cs.calcExpGrad) {
+                    double grad[12];
+                    grad[0] = static_cast<double>(r) * vr;
+                    grad[1] = static_cast<double>(g) * vr;
+                    grad[2] = static_cast<double>(bl) * vr;
+                    grad[3] = vr;
+                    grad[4] = static_cast<double>(r) * vg;
+                    grad[5] = static_cast<double>(g) * vg;
+                    grad[6] = static_cast<double>(bl) * vg;
+                    grad[7] = vg;
+                    grad[8] = static_cast<double>(r) * vb;
+                    grad[9] = static_cast<double>(g) * vb;
+                    grad[10] = static_cast<double>(bl) * vb;
+                    grad[11] = vb;
+                    if (useGrid) {
+                        for (int kk = 0; kk < 8; kk++) {
+                            const int64_t base = static_cast<int64_t>(id[kk]) * 12;
+                            for (int m = 0; m < 12; m++) {
+                                goldenVExp[base + m] += static_cast<double>(w[kk]) * grad[m];
+                            }
+                        }
+                    } else {
+                        for (int m = 0; m < 12; m++) {
+                            goldenVExp[m] += grad[m];
+                        }
                     }
                 }
             }
@@ -398,7 +462,8 @@ bool RunBwdCase(const BwdCase& cs, aclrtStream stream)
     }
 
     BwdTensors t;
-    vector<int64_t> colorsShape = {b, 3, n};
+    vector<int64_t> colorsShape = {b, cam, 3, n};
+    vector<int64_t> cntShape = {b, cam};
     vector<int64_t> expShape = useGrid ?
         vector<int64_t>{cs.gridW, cs.gridH, cs.gridD, 12} : vector<int64_t>{12};
     vector<float> zeroVColors(bcn * 3, 0.0f);
@@ -425,6 +490,14 @@ bool RunBwdCase(const BwdCase& cs, aclrtStream stream)
     ok = CHECK_RET(ret == ACL_SUCCESS);
     if (!ok) {
         LOG_PRINT("CreateAclTensor exposure failed. ERROR: %d\n", ret);
+        DestroyBwdTensors(t);
+        return false;
+    }
+    ret = CreateAclTensor(cntHost, cntShape, &t.cntAddr,
+                          aclDataType::ACL_INT32, &t.cntTensor);
+    ok = CHECK_RET(ret == ACL_SUCCESS);
+    if (!ok) {
+        LOG_PRINT("CreateAclTensor cnt failed. ERROR: %d\n", ret);
         DestroyBwdTensors(t);
         return false;
     }
@@ -466,7 +539,7 @@ bool RunBwdCase(const BwdCase& cs, aclrtStream stream)
     uint64_t workspaceSize = 0;
     aclOpExecutor* executor = nullptr;
     ret = aclnnColorExposureBwdGetWorkspaceSize(t.colorsTensor, t.vColorsInTensor, t.exposureTensor,
-                                                t.indexTensor, t.weightTensor,
+                                                t.cntTensor, t.indexTensor, t.weightTensor,
                                                 cs.clamp ? 1 : 0, cs.calcExpGrad ? 1 : 0,
                                                 t.vColorsOutTensor, t.vExposureTensor,
                                                 &workspaceSize, &executor);
@@ -531,8 +604,12 @@ bool RunBwdCase(const BwdCase& cs, aclrtStream stream)
     vExpRep.mismatchCount = 0;
     vExpRep.firstBadIndex = -1;
     if (cs.calcExpGrad) {
+        int64_t totalGauss = 0;
+        for (int64_t i = 0; i < b * cam; i++) {
+            totalGauss += cntHost[i];
+        }
         const double vExpRtol = 2e-4;
-        const double vExpAtol = 1e-5 + 5e-8 * static_cast<double>(bcn);
+        const double vExpAtol = 1e-5 + 5e-8 * static_cast<double>(totalGauss);
         vExpRep = VerifyClose(actualVExp, goldenVExpF, vExpRtol, vExpAtol);
         pass = pass && vExpRep.pass;
     }
@@ -540,17 +617,20 @@ bool RunBwdCase(const BwdCase& cs, aclrtStream stream)
     DestroyBwdTensors(t);
 
     if (pass) {
-        LOG_PRINT("[bwd:%s] B=%ld N=%ld exposure=%s clamp=%d calc=%d A=rand PASS vcolors_max_diff=%.3e",
-                  cs.name, static_cast<long>(b), static_cast<long>(n), expDesc.c_str(),
-                  cs.clamp ? 1 : 0, cs.calcExpGrad ? 1 : 0, vColorsRep.maxAbsDiff);
+        LOG_PRINT("[bwd:%s] B=%ld C=%ld N=%ld exposure=%s clamp=%d calc=%d cnt=%s A=rand PASS "
+                  "vcolors_max_diff=%.3e",
+                  cs.name, static_cast<long>(b), static_cast<long>(cam), static_cast<long>(n),
+                  expDesc.c_str(), cs.clamp ? 1 : 0, cs.calcExpGrad ? 1 : 0,
+                  cs.cntMode == CNT_FULL ? "full" : "mixed", vColorsRep.maxAbsDiff);
         if (cs.calcExpGrad) {
             LOG_PRINT(" vexp_max_diff=%.3e", vExpRep.maxAbsDiff);
         }
         LOG_PRINT("\n");
     } else {
-        LOG_PRINT("[bwd:%s] B=%ld N=%ld exposure=%s clamp=%d calc=%d A=rand FAIL",
-                  cs.name, static_cast<long>(b), static_cast<long>(n), expDesc.c_str(),
-                  cs.clamp ? 1 : 0, cs.calcExpGrad ? 1 : 0);
+        LOG_PRINT("[bwd:%s] B=%ld C=%ld N=%ld exposure=%s clamp=%d calc=%d cnt=%s A=rand FAIL",
+                  cs.name, static_cast<long>(b), static_cast<long>(cam), static_cast<long>(n),
+                  expDesc.c_str(), cs.clamp ? 1 : 0, cs.calcExpGrad ? 1 : 0,
+                  cs.cntMode == CNT_FULL ? "full" : "mixed");
         if (!vColorsRep.pass) {
             const int64_t i = vColorsRep.firstBadIndex;
             LOG_PRINT(" vcolors mismatch=%ld first@%ld act=%.7f exp=%.7f diff=%.3e",
@@ -586,11 +666,16 @@ int main()
     }
 
     const BwdCase cases[] = {
-        {"global_clamp_calc", 1, 257, 0, 0, 0, true, true, 11},
-        {"global_nocalc", 2, 128, 0, 0, 0, false, false, 22},
-        {"grid_clamp_calc", 2, 517, 5, 5, 6, true, true, 33},
-        {"grid_nocalc", 1, 4096, 3, 5, 4, false, false, 44},
-        {"grid_large", 1, 100000, 12, 12, 8, true, true, 55},
+        {"global_clamp_calc", 1, 1, 257, 0, 0, 0, true, true, CNT_FULL, 11},
+        {"global_nocalc", 2, 1, 128, 0, 0, 0, false, false, CNT_FULL, 22},
+        {"grid_clamp_calc", 2, 1, 517, 5, 5, 6, true, true, CNT_FULL, 33},
+        {"grid_nocalc", 1, 1, 4096, 3, 5, 4, false, false, CNT_FULL, 44},
+        {"grid_large", 1, 1, 100000, 12, 12, 8, true, true, CNT_FULL, 55},
+        {"grid_max_16x16x8", 2, 2, 517, 16, 16, 8, true, true, CNT_FULL, 111},
+        {"global_multi_camera", 2, 3, 257, 0, 0, 0, true, true, CNT_FULL, 66},
+        {"grid_cnt_mixed", 2, 3, 517, 4, 4, 4, true, true, CNT_MIXED, 77},
+        {"grid_cnt_mixed_nocalc", 2, 2, 123, 3, 3, 4, false, false, CNT_MIXED, 88},
+        {"grid_cnt_mixed_large", 1, 4, 100000, 12, 12, 8, true, true, CNT_MIXED, 99},
     };
     const int caseCount = static_cast<int>(sizeof(cases) / sizeof(cases[0]));
     int failed = 0;

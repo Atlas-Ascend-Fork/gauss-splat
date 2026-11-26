@@ -16,42 +16,47 @@ using namespace NPU_NAME_SPACE;
 using namespace std;
 
 namespace {
-static const int64_t COLORS_DIM = 3;
-static const int64_t MEANS2D_DIM = 3;
+static const int64_t COLORS_DIM = 4;
+static const int64_t MEANS2D_DIM = 4;
 static const int64_t INDEX_CHANNEL_NUM = 3;
 static const int64_t WEIGHT_CHANNEL_NUM = 3;
 static const int64_t EXPOSURE_NUM = 12;
 static const int64_t BATCH_INDEX = 0;
-static const int64_t CHANNEL_INDEX = 1;
-static const int64_t GAUSS_INDEX = 2;
+static const int64_t CAMERA_INDEX = 1;
+static const int64_t CHANNEL_INDEX = 2;
+static const int64_t GAUSS_INDEX = 3;
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor> color_exposure_fwd(
-    at::Tensor& colors, at::Tensor& means2d, at::Tensor& exposure, 
+    at::Tensor& colors, at::Tensor& means2d, at::Tensor& exposure, at::Tensor& cnt,
     int32_t width, int32_t height, int32_t clamp)
 {
+    TORCH_CHECK(torch_npu::utils::is_npu(colors), "colors must be NPU tensor");
+    TORCH_CHECK(torch_npu::utils::is_npu(means2d), "means2d must be NPU tensor");
     TORCH_CHECK(torch_npu::utils::is_npu(exposure), "exposure must be NPU tensor");
-    TORCH_CHECK(colors.dim() == COLORS_DIM, "colors's dim should be 3.");
-    TORCH_CHECK(means2d.dim() == MEANS2D_DIM, "means2d's dim should be 3.");
+    TORCH_CHECK(torch_npu::utils::is_npu(cnt), "cnt must be NPU tensor");
+    TORCH_CHECK(colors.dim() == COLORS_DIM, "colors's dim should be 4.");
+    TORCH_CHECK(means2d.dim() == MEANS2D_DIM, "means2d's dim should be 4.");
 
     auto batchSize = colors.sizes()[BATCH_INDEX];
+    auto cameraNum = colors.sizes()[CAMERA_INDEX];
     auto channelNum = colors.sizes()[CHANNEL_INDEX];
     auto gaussNum = colors.sizes()[GAUSS_INDEX];
     bool useGrid = exposure.numel() > EXPOSURE_NUM;
 
-    at::Tensor output = at::zeros({batchSize, channelNum, gaussNum}, colors.options().dtype(at::kFloat));
-    at::Tensor index, weight;
+    at::Tensor colorsOut = at::zeros({batchSize, cameraNum, channelNum, gaussNum}, colors.options().dtype(at::kFloat));
+    at::Tensor gridIndex, gridWeight;
     if (useGrid) {
         // index/weight need output for backward if use grid.
-        index = at::zeros({batchSize, INDEX_CHANNEL_NUM, gaussNum}, colors.options().dtype(at::kInt));
-        weight = at::zeros({batchSize, WEIGHT_CHANNEL_NUM, gaussNum}, colors.options().dtype(at::kFloat));
+        gridIndex= at::zeros({batchSize, cameraNum, INDEX_CHANNEL_NUM, gaussNum}, colors.options().dtype(at::kInt));
+        gridWeight = at::zeros({batchSize, cameraNum, WEIGHT_CHANNEL_NUM, gaussNum}, colors.options().dtype(at::kFloat));
     } else {
-        index = at::empty({0}, colors.options().dtype(at::kInt));
-        weight = at::empty({0}, colors.options().dtype(at::kFloat));
+        gridIndex = at::empty({0}, colors.options().dtype(at::kInt));
+        gridWeight = at::empty({0}, colors.options().dtype(at::kFloat));
     }
 
-    EXEC_NPU_CMD(aclnnColorExposureFwd, colors, means2d, exposure,
-        width, height, clamp, output, index, weight);
+    EXEC_NPU_CMD(aclnnColorExposureFwd, colors, means2d, exposure, cnt,
+        width, height, clamp, colorsOut, gridIndex, gridWeight);
 
-    return std::tie(output, index, weight);
+    return std::tie(colorsOut, gridIndex, gridWeight);
 }

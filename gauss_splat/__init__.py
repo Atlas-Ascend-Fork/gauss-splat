@@ -9,6 +9,7 @@
 
 __all__ = [
     "projection_three_dims_gaussian_fused",
+    "color_exposure",
     "calc_render",
     "gaussian_sort",
     "get_render_schedule_cpp",
@@ -31,6 +32,7 @@ import gauss_splat.gsplat_c as _C
 from gauss_splat.gsplat_c import _init_op_api_so_path
 
 from .ops.projection_three_dims_gaussian_fused import projection_three_dims_gaussian_fused
+from .ops.color_exposure import color_exposure
 from .ops.calc_render import calc_render
 from .ops.gaussian_sort import gaussian_sort
 from .ops.get_render_schedule import get_render_schedule_cpp

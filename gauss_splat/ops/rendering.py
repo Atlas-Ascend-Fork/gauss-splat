@@ -18,6 +18,7 @@ import acl
 from .spherical_harmonics import spherical_harmonics
 from .sh_preprocess import sh_preprocess
 from .projection_three_dims_gaussian_fused import projection_three_dims_gaussian_fused
+from .color_exposure import color_exposure
 from .flash_gaussian_build_mask import flash_gaussian_build_mask
 from .gaussian_sort import gaussian_sort
 from .calc_render import calc_render
@@ -50,6 +51,7 @@ class ConfigData(NamedTuple):
     scale_log: bool = True               # scale数据域，True: scale数据处于log域，内部将取exp操作
     opacity_logit: bool = True           # opacity数据域，True: opacity数据处于logit域，内部将取sigmoid操作
     channel_first: bool = False          # 数据布局方式, True：通道数据为第一维
+    clamp_color_min: bool = True         # 颜色曝光时是否做clamp到0的处理
     bg_color: Optional[Tensor] = None    # 背景色
 
 
@@ -298,6 +300,16 @@ class Rasterizer:
             width,
             height
         )
+
+        # apply color exposure
+        if camera.exposure is not None:
+            exposure = camera.exposure
+            if exposure.shape[-2:] == (4, 3):
+                exposure = exposure.transpose(-2, -1)
+            if exposure.shape[-2:] == (3, 4):
+                exposure = exposure.reshape(*exposure.shape[:-2], -1)
+            exposure = exposure.contiguous()
+            colors = color_exposure(colors, means2d, exposure, cnt, width, height, config.clamp_color_min)
 
         # Baseline (migration source) fed inverse depth (1/z) to the render stage,
         # while this projection op already returns camera-space z. Restore the

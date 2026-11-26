@@ -19,7 +19,7 @@ template<int Threads>
 __simt_vf__ __aicore__ __launch_bounds__(Threads)
     inline void ApplyGridExposureVF(
         __ubuf__ float *wxy, __ubuf__ float *wz, __ubuf__ int32_t *index,
-        __ubuf__ float *gridExp, __ubuf__ float *colors, __ubuf__ float *output,
+        __ubuf__ float *gridExp, __ubuf__ float *colors, __ubuf__ float *colorsOut,
         bool clamp, uint32_t validTaskNum, uint32_t taskNum, int32_t gh, int32_t gd
     )
 {
@@ -81,9 +81,9 @@ __simt_vf__ __aicore__ __launch_bounds__(Threads)
             cg0 = max(cg0, 0.0f);
             cb0 = max(cb0, 0.0f);
         }
-        output[i] = cr0;
-        output[i + taskNum] = cg0;
-        output[i + 2 * taskNum] = cb0;
+        colorsOut[i] = cr0;
+        colorsOut[i + taskNum] = cg0;
+        colorsOut[i + 2 * taskNum] = cb0;
     }
 }
 #endif // APPLY_GRID_EXPOSURE_VF_H_H

@@ -16,28 +16,31 @@ using namespace NPU_NAME_SPACE;
 using namespace std;
 
 namespace {
-static const int64_t COLORS_DIM = 3;
+static const int64_t COLORS_DIM = 4;
 static const int64_t BATCH_INDEX = 0;
-static const int64_t CHANNEL_INDEX = 1;
-static const int64_t GAUSS_INDEX = 2;
+static const int64_t CAMERA_INDEX = 1;
+static const int64_t CHANNEL_INDEX = 2;
+static const int64_t GAUSS_INDEX = 3;
 }
 
 std::tuple<at::Tensor, at::Tensor> color_exposure_bwd(
-    at::Tensor& colors, at::Tensor& vColorsIn, at::Tensor& exposure,
-    const c10::optional<at::Tensor> &index, const c10::optional<at::Tensor>& weight,
+    at::Tensor& colors, at::Tensor& vColorsIn, at::Tensor& exposure, at::Tensor& cnt,
+    const c10::optional<at::Tensor> &gridIndex, const c10::optional<at::Tensor>& gridWeight,
     int32_t clamp, int32_t calcExpGrad)
 {
-    TORCH_CHECK(torch_npu::utils::is_npu(exposure), "exposure must be NPU tensor");
     TORCH_CHECK(torch_npu::utils::is_npu(colors), "colors must be NPU tensor");
     TORCH_CHECK(torch_npu::utils::is_npu(vColorsIn), "vColorsIn must be NPU tensor");
+    TORCH_CHECK(torch_npu::utils::is_npu(exposure), "exposure must be NPU tensor");
+    TORCH_CHECK(torch_npu::utils::is_npu(cnt), "cnt must be NPU tensor");
     TORCH_CHECK(colors.dim() == COLORS_DIM, "colors's dim should be 3.");
     TORCH_CHECK(vColorsIn.dim() == COLORS_DIM, "vColorsIn's dim should be 3.");
 
     auto batchSize = vColorsIn.sizes()[BATCH_INDEX];
+    auto cameraNum = vColorsIn.sizes()[CAMERA_INDEX];
     auto channelNum = vColorsIn.sizes()[CHANNEL_INDEX];
     auto gaussNum = vColorsIn.sizes()[GAUSS_INDEX];
 
-    at::Tensor vColorsOut = at::zeros({batchSize, channelNum, gaussNum}, vColorsIn.options().dtype(at::kFloat));
+    at::Tensor vColorsOut = at::zeros({batchSize, cameraNum, channelNum, gaussNum}, vColorsIn.options().dtype(at::kFloat));
     at::Tensor vExposure;
     if (calcExpGrad) {
         vExposure = at::zeros_like(exposure);
@@ -45,8 +48,8 @@ std::tuple<at::Tensor, at::Tensor> color_exposure_bwd(
         vExposure = at::empty({0}, colors.options().dtype(at::kFloat));
     }
 
-    EXEC_NPU_CMD(aclnnColorExposureBwd, colors, vColorsIn, exposure,
-        index, weight, clamp, calcExpGrad, vColorsOut, vExposure);
+    EXEC_NPU_CMD(aclnnColorExposureBwd, colors, vColorsIn, exposure, cnt,
+        gridIndex, gridWeight, clamp, calcExpGrad, vColorsOut, vExposure);
 
     return std::tie(vColorsOut, vExposure);
 }

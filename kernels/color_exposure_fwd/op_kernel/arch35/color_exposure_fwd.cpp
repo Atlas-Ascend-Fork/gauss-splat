@@ -31,6 +31,7 @@ public:
     __aicore__ inline void GetTilingData(const ColorExposureFwdTilingData *tiling_data)
     {
         batchSize_ = tiling_data->batchSize;
+        cameraNum_ = tiling_data->cameraNum;
         gaussNum_ = tiling_data->gaussNum;
         width_ = static_cast<float>(tiling_data->width);
         height_ = static_cast<float>(tiling_data->height);
@@ -51,49 +52,57 @@ public:
     }
 
     __aicore__ inline void Init(GM_ADDR colors, GM_ADDR means2d, GM_ADDR exposure,
-        GM_ADDR output, GM_ADDR index, GM_ADDR weight,
+        GM_ADDR cnt, GM_ADDR colorsOut, GM_ADDR gridIndex, GM_ADDR gridWeight,
         const ColorExposureFwdTilingData *tiling_data, TPipe* pipe)
     {
         PreInit(tiling_data);
         this->pipe_ = pipe;
         
-        uint64_t bcnSize = batchSize_ * gaussNum_;
+        uint64_t bcnSize = batchSize_ * cameraNum_ * gaussNum_;
         uint32_t exposureSize = gridWidth_ * gridHeight_ * gridDepth_;
         colorsGM_.SetGlobalBuffer((__gm__ float *)colors, bcnSize * 3);
         if (useGrid_) {
             means2dGM_.SetGlobalBuffer((__gm__ float *)means2d, bcnSize * 2);
-            indexGM_.SetGlobalBuffer((__gm__ int32_t *)index, bcnSize * 3);
-            weightGM_.SetGlobalBuffer((__gm__ float *)weight, bcnSize * 3);
+            gridIndexGM_.SetGlobalBuffer((__gm__ int32_t *)gridIndex, bcnSize * 3);
+            gridWeightGM_.SetGlobalBuffer((__gm__ float *)gridWeight, bcnSize * 3);
         }
         exposureGM_.SetGlobalBuffer((__gm__ float *)exposure, exposureSize * 12);
-        outputGM_.SetGlobalBuffer((__gm__ float *)output, bcnSize * 3);
+        cntGM_.SetGlobalBuffer((__gm__ int32_t *)cnt, batchSize_ * cameraNum_);
+        colorsOutGM_.SetGlobalBuffer((__gm__ float *)colorsOut, bcnSize * 3);
 
         uint32_t sizePerLoop = taskNumPerLoop_ * FLOAT_SIZE;
         this->pipe_->InitBuffer(colorsQue_, 2, sizePerLoop * 3);
-        this->pipe_->InitBuffer(outputQue_, 2, sizePerLoop * 3);
+        this->pipe_->InitBuffer(colorsOutQue_, 2, sizePerLoop * 3);
+        this->pipe_->InitBuffer(cntBuf_, batchSize_ * cameraNum_ * FLOAT_SIZE);
         if (useGrid_) {
             this->pipe_->InitBuffer(means2dQue_, 2, sizePerLoop * 2);
             this->pipe_->InitBuffer(gridExpBuf_, exposureSize * FLOAT_SIZE * 12);
-            this->pipe_->InitBuffer(indexBuf_, sizePerLoop * 3);
+            this->pipe_->InitBuffer(gridIndexBuf_, sizePerLoop * 3);
             this->pipe_->InitBuffer(greyBuf_, sizePerLoop);
             gridExpTensor_ = gridExpBuf_.Get<float>();
-            indexTensor_ = indexBuf_.Get<int32_t>();
+            gridIndexTensor_ = gridIndexBuf_.Get<int32_t>();
             greyTensor_ = greyBuf_.Get<float>();
         } else {
             this->pipe_->InitBuffer(expBuf_, exposureSize * FLOAT_SIZE * 12);
             expTensor_ = expBuf_.Get<float>();
         }
+        cntTensor_ = cntBuf_.Get<int32_t>();
     }
 
     __aicore__ inline void Process()
     {
-        CopyInExposure();
+        CopyInGlobal();
         for (uint32_t batchIdx = 0; batchIdx < batchSize_; batchIdx++) {
-            for (uint32_t taskLoopIdx = 0; taskLoopIdx < taskLoop_; taskLoopIdx++) {
-                ComputingTaskNum(taskLoopIdx);
-                CopyIn(batchIdx, taskLoopIdx);
-                ApplyExposure();
-                CopyOut(batchIdx, taskLoopIdx);
+            for (uint32_t cameraIdx = 0; cameraIdx < cameraNum_; cameraIdx++) {
+                cnt_ = cntTensor_[batchIdx * cameraNum_ + cameraIdx].GetValue(0);
+                for (uint32_t taskLoopIdx = 0; taskLoopIdx < taskLoop_; taskLoopIdx++) {
+                    if (!ComputingTaskNum(taskLoopIdx)) {
+                        break;
+                    }
+                    CopyIn(batchIdx, cameraIdx, taskLoopIdx);
+                    ApplyExposure();
+                    CopyOut(batchIdx, cameraIdx, taskLoopIdx);
+                }
             }
         }
     }
@@ -115,23 +124,27 @@ private:
         taskLoop_ = static_cast<int32_t>((taskNumPerCore_ + taskNumPerLoop_ - 1) / taskNumPerLoop_);
     }
 
-    __aicore__ inline void CopyInExposure()
+    __aicore__ inline void CopyInGlobal()
     {
         set_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
         wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
-        uint32_t exposureSize = gridWidth_ * gridHeight_ * gridDepth_;
-        DataCopyExtParams copyParams{1, exposureSize * FLOAT_SIZE * 12, 0, 0, 0};
+        uint32_t expSize = gridWidth_ * gridHeight_ * gridDepth_;
+        DataCopyExtParams copyParams{1, expSize * FLOAT_SIZE * 12, 0, 0, 0};
         DataCopyPadExtParams<float> padParams{false, 0, 0, 0};
         if (useGrid_) {
             DataCopyPad(gridExpTensor_, exposureGM_, copyParams, padParams);
         } else {
             DataCopyPad(expTensor_, exposureGM_, copyParams, padParams);
         }
+        uint32_t cntSize = batchSize_ * cameraNum_ * FLOAT_SIZE;
+        DataCopyExtParams copyCntParams{1, cntSize, 0, 0, 0};
+        DataCopyPadExtParams<int32_t> padCntParams{false, 0, 0, 0};
+        DataCopyPad(cntTensor_, cntGM_, copyCntParams, padCntParams);
         set_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
         wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
     }
 
-    __aicore__ inline void ComputingTaskNum(int32_t taskLoopIdx)
+    __aicore__ inline bool ComputingTaskNum(int32_t taskLoopIdx)
     {
         if (taskLoopIdx == taskLoop_ - 1) {
             taskNumPerCurLoop_ = taskNumPerCore_ - taskLoopIdx * taskNumPerLoop_;
@@ -140,21 +153,32 @@ private:
         }
         isTailBlock_ = (taskLoopIdx == taskLoop_ - 1) && tailNum_ != 0 &&
             (this->blockIndex_ == blockDim_ - 1);
+
+        uint64_t taskStart = taskStartIndex_ + taskLoopIdx * taskNumPerLoop_;
+        uint64_t taskEnd = isTailBlock_ ? taskStart + taskNumPerCurLoop_ - tailNum_
+            : taskStart + taskNumPerCurLoop_;
+        if (taskEnd > cnt_ && cnt_ > taskStart) {
+            uint32_t num = static_cast<uint32_t>(cnt_ - taskStart);
+            validTaskNum_ = isTailBlock_ ? min(taskNumPerCurLoop_ - tailNum_, num) : num;
+            isTailBlock_ = true; // force to tail block.
+        } else if (cnt_ >= taskEnd) {
+            validTaskNum_ = isTailBlock_ ? taskNumPerCurLoop_ - tailNum_ : taskNumPerCurLoop_;
+        }
+        return taskStart < cnt_;
     }
 
-    __aicore__ inline void CopyIn(uint32_t batchIdx, uint32_t taskLoopIndex)
+    __aicore__ inline void CopyIn(uint32_t batchIdx, uint32_t cameraIdx, uint32_t taskLoopIndex)
     {
         uint64_t taskCopyinIndex = taskStartIndex_ + taskLoopIndex * taskNumPerLoop_;
-        uint64_t baseOffset = batchIdx * gaussNum_;
+        uint64_t baseOffset = batchIdx * cameraNum_ * gaussNum_ + cameraIdx * gaussNum_;
 
         LocalTensor<float> colorsTensor = colorsQue_.AllocTensor<float>();
         const uint32_t colorDim = 3;
         for (uint32_t i = 0; i < colorDim; i++) {
             uint64_t offset = baseOffset * colorDim + i * gaussNum_ + taskCopyinIndex;
             if (isTailBlock_) {
-                uint32_t validTaskNum = taskNumPerCurLoop_ - tailNum_;
                 DataCopyExtParams copyParams {
-                    1, static_cast<uint32_t>(validTaskNum * FLOAT_SIZE), 0, 0, 0
+                    1, static_cast<uint32_t>(validTaskNum_ * FLOAT_SIZE), 0, 0, 0
                 };
                 DataCopyPadExtParams<float> padParams{false, 0, 0, 0};
                 DataCopyPad(colorsTensor[i * taskNumPerCurLoop_], colorsGM_[offset], copyParams, padParams);
@@ -170,9 +194,8 @@ private:
             for (uint32_t i = 0; i < means2dDim; i++) {
                 uint64_t offset = baseOffset * means2dDim + i * gaussNum_ + taskCopyinIndex;
                 if (isTailBlock_) {
-                    uint32_t validTaskNum = taskNumPerCurLoop_ - tailNum_;
                     DataCopyExtParams copyParams {
-                        1, static_cast<uint32_t>(validTaskNum * FLOAT_SIZE), 0, 0, 0
+                        1, static_cast<uint32_t>(validTaskNum_ * FLOAT_SIZE), 0, 0, 0
                     };
                     DataCopyPadExtParams<float> padParams{false, 0, 0, 0};
                     DataCopyPad(means2dTensor[i * taskNumPerCurLoop_], means2dGM_[offset], copyParams, padParams);                    
@@ -189,11 +212,11 @@ private:
     {
         uint32_t len = taskNumPerCurLoop_;
         uint16_t tiles = (uint16_t)((len + 63u) >> 6);
-        uint32_t remain = isTailBlock_ ? taskNumPerCurLoop_ - tailNum_ : taskNumPerCurLoop_;
+        uint32_t remain = isTailBlock_ ? validTaskNum_ : taskNumPerCurLoop_;
         __ubuf__ float *colors = (__ubuf__ float *)colorsTensor.GetPhyAddr();
         __ubuf__ float *means2d = (__ubuf__ float *)means2dTensor.GetPhyAddr();
         __ubuf__ float *grey = (__ubuf__ float *)greyTensor_.GetPhyAddr();
-        __ubuf__ int32_t *index = (__ubuf__ int32_t *)indexTensor_.GetPhyAddr();
+        __ubuf__ int32_t *index = (__ubuf__ int32_t *)gridIndexTensor_.GetPhyAddr();
         __VEC_SCOPE__
         {
             Reg::RegTensor<float> r, g, b, rx, ry, rz, tmp, one;
@@ -275,7 +298,7 @@ private:
         }
     }
 
-    __aicore__ inline void ApplyGridExposure(LocalTensor<float> &outputTensor)
+    __aicore__ inline void ApplyGridExposure(LocalTensor<float> &colorsOutTensor)
     {
         LocalTensor<float> colorsTensor = colorsQue_.DeQue<float>();
         LocalTensor<float> means2dTensor = means2dQue_.DeQue<float>();
@@ -284,12 +307,12 @@ private:
             dim3{THREAD_NUM, 1, 1},
             (__ubuf__ float *)means2dTensor.GetPhyAddr(),
             (__ubuf__ float *)greyTensor_.GetPhyAddr(),
-            (__ubuf__ int32_t *)indexTensor_.GetPhyAddr(),
+            (__ubuf__ int32_t *)gridIndexTensor_.GetPhyAddr(),
             (__ubuf__ float *)gridExpTensor_.GetPhyAddr(),
             (__ubuf__ float *)colorsTensor.GetPhyAddr(),
-            (__ubuf__ float *)outputTensor.GetPhyAddr(),
+            (__ubuf__ float *)colorsOutTensor.GetPhyAddr(),
             clamp_,
-            isTailBlock_ ? taskNumPerCurLoop_ - tailNum_ : taskNumPerCurLoop_,
+            isTailBlock_ ? validTaskNum_ : taskNumPerCurLoop_,
             taskNumPerCurLoop_,
             static_cast<int32_t>(gridHeight_),
             static_cast<int32_t>(gridDepth_)
@@ -298,15 +321,15 @@ private:
         means2dQue_.EnQue(means2dTensor);
     }
 
-    __aicore__ inline void ApplyGlobalExposure(LocalTensor<float> &outputTensor)
+    __aicore__ inline void ApplyGlobalExposure(LocalTensor<float> &colorsOutTensor)
     {
         uint32_t len = taskNumPerCurLoop_;
         uint16_t tiles = (uint16_t)((len + 63u) >> 6);
-        uint32_t remain = isTailBlock_ ? taskNumPerCurLoop_ - tailNum_ : taskNumPerCurLoop_;
+        uint32_t remain = isTailBlock_ ? validTaskNum_ : taskNumPerCurLoop_;
         LocalTensor<float> colorsTensor = colorsQue_.DeQue<float>();
         __ubuf__ float *colors = (__ubuf__ float *)colorsTensor.GetPhyAddr();
         __ubuf__ float *exposure = (__ubuf__ float *)expTensor_.GetPhyAddr();
-        __ubuf__ float *output = (__ubuf__ float *)outputTensor.GetPhyAddr();
+        __ubuf__ float *output = (__ubuf__ float *)colorsOutTensor.GetPhyAddr();
         __VEC_SCOPE__
         {
             Reg::RegTensor<float> r, g, b, r0, g0, b0, tmp;
@@ -371,13 +394,13 @@ private:
 
     __aicore__ inline void ApplyExposure()
     {
-        LocalTensor<float> outputTensor = outputQue_.AllocTensor<float>();
+        LocalTensor<float> colorsOutTensor = colorsOutQue_.AllocTensor<float>();
         if (useGrid_) {
-            ApplyGridExposure(outputTensor);
+            ApplyGridExposure(colorsOutTensor);
         } else {
-            ApplyGlobalExposure(outputTensor);
+            ApplyGlobalExposure(colorsOutTensor);
         }
-        outputQue_.EnQue(outputTensor);
+        colorsOutQue_.EnQue(colorsOutTensor);
     }
 
     __aicore__ inline void CopyOutIndexAndWeight(uint64_t baseOffset, uint64_t taskCopyinIndex)
@@ -390,27 +413,26 @@ private:
         const uint32_t weightDim = 3;
         uint64_t offset = 0;
         if (isTailBlock_) {
-            uint32_t validTaskNum = taskNumPerCurLoop_ - tailNum_;
             DataCopyExtParams copyParams {
-                1, static_cast<uint32_t>(validTaskNum * FLOAT_SIZE), 0, 0, 0
+                1, static_cast<uint32_t>(validTaskNum_ * FLOAT_SIZE), 0, 0, 0
             };
             for (uint32_t i = 0; i < channelDim; i++) {
                 offset = baseOffset * channelDim + i * gaussNum_ + taskCopyinIndex;
-                DataCopyPad(indexGM_[offset], indexTensor_[i * taskNumPerCurLoop_], copyParams);
+                DataCopyPad(gridIndexGM_[offset], gridIndexTensor_[i * taskNumPerCurLoop_], copyParams);
                 if (i == channelDim - 1) {
-                    DataCopyPad(weightGM_[offset], greyTensor_, copyParams);
+                    DataCopyPad(gridWeightGM_[offset], greyTensor_, copyParams);
                 } else {
-                    DataCopyPad(weightGM_[offset], means2dTensor[i * taskNumPerCurLoop_], copyParams);
+                    DataCopyPad(gridWeightGM_[offset], means2dTensor[i * taskNumPerCurLoop_], copyParams);
                 }
             }
         } else {
             for (uint32_t i = 0; i < channelDim; i++) {
                 offset = baseOffset * channelDim + i * gaussNum_ + taskCopyinIndex;
-                DataCopy(indexGM_[offset], indexTensor_[i * taskNumPerCurLoop_], taskNumPerCurLoop_);
+                DataCopy(gridIndexGM_[offset], gridIndexTensor_[i * taskNumPerCurLoop_], taskNumPerCurLoop_);
                 if (i == channelDim - 1) {
-                    DataCopy(weightGM_[offset], greyTensor_, taskNumPerCurLoop_);
+                    DataCopy(gridWeightGM_[offset], greyTensor_, taskNumPerCurLoop_);
                 } else {
-                    DataCopy(weightGM_[offset], means2dTensor[i * taskNumPerCurLoop_], taskNumPerCurLoop_);                    
+                    DataCopy(gridWeightGM_[offset], means2dTensor[i * taskNumPerCurLoop_], taskNumPerCurLoop_);                    
                 }
             }
         }
@@ -420,29 +442,28 @@ private:
         wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID0);
     }
 
-    __aicore__ inline void CopyOut(uint32_t batchIdx, int32_t taskLoopIndex)
+    __aicore__ inline void CopyOut(uint32_t batchIdx, uint32_t cameraIdx, int32_t taskLoopIndex)
     {
-        LocalTensor<float> outputTensor = outputQue_.DeQue<float>();
+        LocalTensor<float> colorsOutTensor = colorsOutQue_.DeQue<float>();
         uint64_t taskCopyinIndex = taskStartIndex_ + taskLoopIndex * taskNumPerLoop_;
-        uint64_t baseOffset = batchIdx * gaussNum_;
+        uint64_t baseOffset = batchIdx * cameraNum_ * gaussNum_ + cameraIdx * gaussNum_;
         const uint32_t colorDim = 3;
         uint64_t offset = 0;
         if (isTailBlock_) {
-            uint32_t validTaskNum = taskNumPerCurLoop_ - tailNum_;
             DataCopyExtParams copyParams {
-                1, static_cast<uint32_t>(validTaskNum * FLOAT_SIZE), 0, 0, 0
+                1, static_cast<uint32_t>(validTaskNum_ * FLOAT_SIZE), 0, 0, 0
             };
             for (uint32_t i = 0; i < colorDim; i++) {
                 offset = baseOffset * colorDim + i * gaussNum_ + taskCopyinIndex;
-                DataCopyPad(outputGM_[offset], outputTensor[i * taskNumPerCurLoop_], copyParams);
+                DataCopyPad(colorsOutGM_[offset], colorsOutTensor[i * taskNumPerCurLoop_], copyParams);
             }
         } else {
             for (uint32_t i = 0; i < colorDim; i++) {
                 offset = baseOffset * colorDim + i * gaussNum_ + taskCopyinIndex;
-                DataCopy(outputGM_[offset], outputTensor[i * taskNumPerCurLoop_], taskNumPerCurLoop_);
+                DataCopy(colorsOutGM_[offset], colorsOutTensor[i * taskNumPerCurLoop_], taskNumPerCurLoop_);
             }
         }
-        outputQue_.FreeTensor(outputTensor);
+        colorsOutQue_.FreeTensor(colorsOutTensor);
 
         if (useGrid_) {
             CopyOutIndexAndWeight(baseOffset, taskCopyinIndex);
@@ -451,38 +472,39 @@ private:
 
 private:
     TPipe *pipe_;
-    TBuf<TPosition::VECCALC> expBuf_, gridExpBuf_;
-    TBuf<TPosition::VECCALC> indexBuf_, greyBuf_;
+    TBuf<TPosition::VECCALC> expBuf_, gridExpBuf_, cntBuf_;
+    TBuf<TPosition::VECCALC> gridIndexBuf_, greyBuf_;
     TQue<QuePosition::VECIN, 1> colorsQue_, means2dQue_;
-    TQue<QuePosition::VECOUT, 1> outputQue_;
+    TQue<QuePosition::VECOUT, 1> colorsOutQue_;
     LocalTensor<float> expTensor_, gridExpTensor_, greyTensor_;
-    LocalTensor<int32_t> indexTensor_;
+    LocalTensor<int32_t> gridIndexTensor_, cntTensor_;
 
     GlobalTensor<float> colorsGM_;
     GlobalTensor<float> means2dGM_;
     GlobalTensor<float> exposureGM_;
-    GlobalTensor<float> outputGM_;
-    GlobalTensor<int32_t> indexGM_;
-    GlobalTensor<float> weightGM_;
+    GlobalTensor<int32_t> cntGM_;
+    GlobalTensor<float> colorsOutGM_;
+    GlobalTensor<int32_t> gridIndexGM_;
+    GlobalTensor<float> gridWeightGM_;
 
-    uint32_t batchSize_, gaussNum_, gridWidth_, gridHeight_, gridDepth_;
+    uint32_t batchSize_, cameraNum_, gaussNum_, gridWidth_, gridHeight_, gridDepth_;
     float width_, height_;
     bool useGrid_, clamp_, isTailBlock_;
-    uint32_t totalTaskNum_, tailNum_, taskNumPerScore_, taskNumPerLcore_;
+    uint32_t totalTaskNum_, tailNum_, taskNumPerScore_, taskNumPerLcore_, cnt_, validTaskNum_;
     uint32_t numScore_, numLcore_, blockDim_, ubTotalSize_;
     uint64_t blockIndex_;
     uint32_t taskNumPerLoop_, taskNumPerCurLoop_, taskNumPerCore_, taskStartIndex_, taskLoop_;
 };
 
-extern "C" __global__ __aicore__ void color_exposure_fwd(GM_ADDR colors, GM_ADDR means2d, GM_ADDR exposure,
-    GM_ADDR output, GM_ADDR index, GM_ADDR weight, GM_ADDR workspace, GM_ADDR tiling)
+extern "C" __global__ __aicore__ void color_exposure_fwd(GM_ADDR colors, GM_ADDR means2d, GM_ADDR exposure, GM_ADDR cnt,
+    GM_ADDR colorsOut, GM_ADDR gridIndex, GM_ADDR gridWeight, GM_ADDR workspace, GM_ADDR tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     TPipe pipe;
     GET_TILING_DATA(tiling_data, tiling);
     if (TILING_KEY_IS(1)) {
         ColorExposureFwd op;
-        op.Init(colors, means2d, exposure, output, index, weight,
+        op.Init(colors, means2d, exposure, cnt, colorsOut, gridIndex, gridWeight,
             &tiling_data, &pipe);
         op.Process();
     }

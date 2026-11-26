@@ -14,11 +14,12 @@
 namespace {
 const uint32_t COLORS_PTR_INDEX = 0;
 const uint32_t EXPOSURE_PTR_INDEX = 2;
-const uint32_t INDEX_PTR_INDEX = 3;
-const uint32_t WEIGHT_PTR_INDEX = 4;
+const uint32_t INDEX_PTR_INDEX = 4;
+const uint32_t WEIGHT_PTR_INDEX = 5;
 
 const uint32_t BATCH_DIM_INDEX = 0;
-const uint32_t GAUSS_DIM_INDEX = 2;
+const uint32_t CAMERA_DIM_INDEX = 1;
+const uint32_t GAUSS_DIM_INDEX = 3;
 
 const uint32_t GRID_WIDTH_DIM_INDEX = 0;
 const uint32_t GRID_HEIGHT_DIM_INDEX = 1;
@@ -29,7 +30,7 @@ const uint32_t CALC_EXP_GRAD_INDEX = 1;
 
 const uint32_t ALIGN_VALUE = 8;
 const int32_t FLOAT_SIZE = 4;
-const float UB_RATIO = 0.8;
+const float UB_RATIO = 1.0;
 
 const uint32_t EXPOSURE_NUM = 12;
 const uint32_t COLOR_NUM = 3;
@@ -64,6 +65,7 @@ static ge::graphStatus InitColorExposureBwdTilingData(gert::TilingContext* conte
     }
 
     uint32_t batchSize = colorsShape->GetStorageShape().GetDim(BATCH_DIM_INDEX);
+    uint32_t cameraNum = colorsShape->GetStorageShape().GetDim(CAMERA_DIM_INDEX);
     uint32_t gaussNum = colorsShape->GetStorageShape().GetDim(GAUSS_DIM_INDEX);
 
     // feature needs to calculate exposure grad
@@ -93,6 +95,7 @@ static ge::graphStatus InitColorExposureBwdTilingData(gert::TilingContext* conte
     }
 
     tiling.set_batchSize(batchSize);
+    tiling.set_cameraNum(cameraNum);
     tiling.set_gaussNum(gaussNum);
     tiling.set_gridWidth(gridWidth);
     tiling.set_gridHeight(gridHeight);
@@ -106,6 +109,7 @@ static ge::graphStatus CalcColorExposureBwdTilingData(gert::TilingContext* conte
     ColorExposureBwdTilingData &tiling)
 {
     uint32_t blockDim = tiling.get_blockDim();
+    uint32_t bcSize = tiling.get_batchSize() * tiling.get_cameraNum();
     uint32_t gaussNum = tiling.get_gaussNum();
     uint64_t ubTotalSize = tiling.get_ubTotalSize();
     uint32_t totalTaskNum;
@@ -132,19 +136,26 @@ static ge::graphStatus CalcColorExposureBwdTilingData(gert::TilingContext* conte
     uint32_t gridHeight = tiling.get_gridHeight();
     uint32_t gridDepth = tiling.get_gridDepth();
     bool useGrid = ((tiling.get_supportFeatures() & SF_USE_GRID) != 0);
+    bool calcExpGrad = ((tiling.get_supportFeatures() & SF_CALC_EXP_GRAD) != 0);
     uint32_t expSize = (gridWidth * gridHeight * gridDepth) * EXPOSURE_NUM;
     if (expSize > MAX_GRID_DIMS) {
         return ge::GRAPH_FAILED;
     }
     uint32_t bufferSize = COLOR_NUM * 3 * 2;
-    expSize = 2 * expSize * FLOAT_SIZE + DCACHE_SIZE;
+    uint32_t fixedSize = (expSize + bcSize) * FLOAT_SIZE + DCACHE_SIZE;
     if (useGrid) {
         // index / weight
         bufferSize += 6 * 2;
     }
+    if (calcExpGrad) {
+        fixedSize += expSize * FLOAT_SIZE;
+    }
     context->SetDynUBufSize(ubTotalSize - DCACHE_SIZE);
-    uint32_t taskNumPerLoop = static_cast<int32_t>((ubTotalSize * UB_RATIO - expSize)/ (bufferSize * FLOAT_SIZE));
-    taskNumPerLoop = static_cast<int32_t>((taskNumPerLoop + ALIGN_VALUE - 1) / ALIGN_VALUE * ALIGN_VALUE);
+    uint32_t taskNumPerLoop = static_cast<int32_t>((ubTotalSize * UB_RATIO - fixedSize)/ (bufferSize * FLOAT_SIZE));
+    // Align DOWN: align-up could push the tile past the usable UB budget
+    // (ubTotalSize - DCACHE_SIZE), e.g. grid 12x12x8 + calcExpGrad: raw 921 -> up 928
+    // makes kernel buffers 221968B > 221184B usable UB.
+    taskNumPerLoop = static_cast<int32_t>(taskNumPerLoop / ALIGN_VALUE * ALIGN_VALUE);
 
     tiling.set_totalTaskNum(totalTaskNum);
     tiling.set_tailNum(tailNum);
@@ -242,12 +253,17 @@ public:
             .DataType({ge::DT_FLOAT})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
-        this->Input("index")
+        this->Input("cnt")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_INT32})
+            .Format({ge::FORMAT_ND})
+            .UnknownShapeFormat({ge::FORMAT_ND});
+        this->Input("gridIndex")
             .ParamType(OPTIONAL)
             .DataType({ge::DT_INT32})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
-        this->Input("weight")
+        this->Input("gridWeight")
             .ParamType(OPTIONAL)
             .DataType({ge::DT_FLOAT})
             .Format({ge::FORMAT_ND})

@@ -21,26 +21,27 @@ class ColorExposure(torch.autograd.Function):
                 colors: torch.Tensor,
                 means2d: torch.Tensor,
                 exposure: torch.Tensor,
+                cnt: torch.Tensor,
                 width: int,
                 height: int,
                 clamp: bool = True,
                 calc_exp_grad: bool = True):
-        if colors.dim() != 3 or means2d.dim() != 3:
-            raise ValueError("colors and means2d need [B, C, N] dimensions.")
-        output, index, weight = color_exposure_fwd(
-            colors, means2d, exposure, width, height, clamp)
+        if colors.dim() != 4 or means2d.dim() != 4:
+            raise ValueError("colors and means2d need [B, C, D, N] dimensions.")
+        colors_out, grid_index, grid_weight = color_exposure_fwd(
+            colors, means2d, exposure, cnt, width, height, clamp)
         ctx.clamp = clamp
         ctx.calc_exp_grad = calc_exp_grad
-        ctx.save_for_backward(colors, exposure, index, weight)
-        return output
+        ctx.save_for_backward(colors, exposure, cnt, grid_index, grid_weight)
+        return colors_out
 
     @staticmethod
     def backward(ctx, *v_args):
         v_colors_in = v_args[0].contiguous()
-        colors, exposure, index, weight = ctx.saved_tensors
+        colors, exposure, cnt, grid_index, grid_weight = ctx.saved_tensors
         v_colors_out, v_exposure = color_exposure_bwd(
-            colors, v_colors_in, exposure, index, weight, ctx.clamp, ctx.calc_exp_grad)
-        return v_colors_out, None, v_exposure if ctx.calc_exp_grad else None, \
+            colors, v_colors_in, exposure, cnt, grid_index, grid_weight, ctx.clamp, ctx.calc_exp_grad)
+        return v_colors_out, None, v_exposure if ctx.calc_exp_grad else None, None, \
             None, None, None, None
 
 color_exposure = ColorExposure.apply

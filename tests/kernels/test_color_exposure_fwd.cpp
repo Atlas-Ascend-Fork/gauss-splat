@@ -45,6 +45,10 @@ const float kBoundaryColors[kBoundaryCount][3] = {
     {0.299f, 0.587f, 0.114f},
 };
 
+// cnt 生成模式: FULL = 全部有效 (cnt = N); MIXED = 按平坦下标取
+// 0 / 1 / N/2 / N, 覆盖整相机跳过、单高斯、块内截断、全量四种路径
+enum CntMode { CNT_FULL = 0, CNT_MIXED = 1 };
+
 float NextUniform(uint32_t& state)
 {
     state = state * 1664525u + 1013904223u;
@@ -54,6 +58,24 @@ float NextUniform(uint32_t& state)
 float Clamp01(float v)
 {
     return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
+
+int64_t GenCnt(int64_t flatIdx, int64_t n, CntMode mode)
+{
+    if (mode == CNT_FULL) {
+        return n;
+    }
+    const int64_t r = flatIdx % 4;
+    if (r == 0) {
+        return 0;
+    }
+    if (r == 1) {
+        return 1;
+    }
+    if (r == 2) {
+        return n / 2;
+    }
+    return n;
 }
 
 struct GridCoord {
@@ -192,6 +214,7 @@ VerifyReport VerifyExactInt(const vector<int32_t>& actual, const vector<int32_t>
 struct FwdCase {
     const char* name;
     int64_t batch;
+    int64_t camera;
     int64_t gauss;
     int32_t gridW;
     int32_t gridH;
@@ -199,6 +222,7 @@ struct FwdCase {
     bool clamp;
     bool exposure5d;
     bool identityExposure;
+    CntMode cntMode;
     uint32_t seed;
 };
 
@@ -206,12 +230,14 @@ struct FwdTensors {
     void* colorsAddr = nullptr;
     void* means2dAddr = nullptr;
     void* exposureAddr = nullptr;
+    void* cntAddr = nullptr;
     void* outputAddr = nullptr;
     void* indexAddr = nullptr;
     void* weightAddr = nullptr;
     aclTensor* colorsTensor = nullptr;
     aclTensor* means2dTensor = nullptr;
     aclTensor* exposureTensor = nullptr;
+    aclTensor* cntTensor = nullptr;
     aclTensor* outputTensor = nullptr;
     aclTensor* indexTensor = nullptr;
     aclTensor* weightTensor = nullptr;
@@ -223,23 +249,37 @@ void DestroyFwdTensors(FwdTensors& t)
     if (t.colorsTensor) aclDestroyTensor(t.colorsTensor);
     if (t.means2dTensor) aclDestroyTensor(t.means2dTensor);
     if (t.exposureTensor) aclDestroyTensor(t.exposureTensor);
+    if (t.cntTensor) aclDestroyTensor(t.cntTensor);
     if (t.outputTensor) aclDestroyTensor(t.outputTensor);
     if (t.indexTensor) aclDestroyTensor(t.indexTensor);
     if (t.weightTensor) aclDestroyTensor(t.weightTensor);
     if (t.colorsAddr) aclrtFree(t.colorsAddr);
     if (t.means2dAddr) aclrtFree(t.means2dAddr);
     if (t.exposureAddr) aclrtFree(t.exposureAddr);
+    if (t.cntAddr) aclrtFree(t.cntAddr);
     if (t.outputAddr) aclrtFree(t.outputAddr);
     if (t.indexAddr) aclrtFree(t.indexAddr);
     if (t.weightAddr) aclrtFree(t.weightAddr);
     if (t.workspaceAddr) aclrtFree(t.workspaceAddr);
 }
 
+// 布局: colors / output [B, C, 3, N]; means2d [B, C, 2, N]; index / weight [B, C, 3, N]
+inline int64_t ColorOffset(int64_t b, int64_t c, int64_t cam, int64_t ch, int64_t n)
+{
+    return ((b * cam + c) * 3 + ch) * n;
+}
+
+inline int64_t Means2dOffset(int64_t b, int64_t c, int64_t cam, int64_t ch, int64_t n)
+{
+    return ((b * cam + c) * 2 + ch) * n;
+}
+
 bool RunFwdCase(const FwdCase& cs, aclrtStream stream)
 {
     const int64_t b = cs.batch;
+    const int64_t cam = cs.camera;
     const int64_t n = cs.gauss;
-    const int64_t bcn = b * n;
+    const int64_t bcn = b * cam * n;
     const bool useGrid = cs.gridW > 0;
     const int64_t expNumel = useGrid ?
         static_cast<int64_t>(cs.gridW) * cs.gridH * cs.gridD * 12 : 12;
@@ -247,14 +287,21 @@ bool RunFwdCase(const FwdCase& cs, aclrtStream stream)
     vector<float> colorsHost(bcn * 3, 0.0f);
     vector<float> means2dHost(bcn * 2, 0.0f);
     vector<float> exposureHost(expNumel, 0.0f);
+    vector<int32_t> cntHost(b * cam, 0);
     uint32_t rng = cs.seed;
 
     for (int64_t i = 0; i < bcn * 3; i++) {
         colorsHost[i] = (NextUniform(rng) * 2.0f - 1.0f) * 0.5f;
     }
-    for (int64_t i = 0; i < bcn; i++) {
-        means2dHost[i] = (NextUniform(rng) * 1.2f - 0.1f) * static_cast<float>(kImageWidth);
-        means2dHost[bcn + i] = (NextUniform(rng) * 1.2f - 0.1f) * static_cast<float>(kImageHeight);
+    for (int64_t bi = 0; bi < b; bi++) {
+        for (int64_t ci = 0; ci < cam; ci++) {
+            for (int64_t j = 0; j < n; j++) {
+                means2dHost[Means2dOffset(bi, ci, cam, 0, n) + j] =
+                    (NextUniform(rng) * 1.2f - 0.1f) * static_cast<float>(kImageWidth);
+                means2dHost[Means2dOffset(bi, ci, cam, 1, n) + j] =
+                    (NextUniform(rng) * 1.2f - 0.1f) * static_cast<float>(kImageHeight);
+            }
+        }
     }
     if (cs.identityExposure) {
         const float identity[12] = {1.0f, 0.0f, 0.0f, 0.0f,
@@ -268,15 +315,23 @@ bool RunFwdCase(const FwdCase& cs, aclrtStream stream)
             exposureHost[i] = (NextUniform(rng) * 2.0f - 1.0f) * 0.1f;
         }
     }
+    for (int64_t bi = 0; bi < b; bi++) {
+        for (int64_t ci = 0; ci < cam; ci++) {
+            cntHost[bi * cam + ci] = static_cast<int32_t>(
+                GenCnt(bi * cam + ci, n, cs.cntMode));
+        }
+    }
 
     const int64_t k = min(static_cast<int64_t>(kBoundaryCount), n);
     for (int64_t bi = 0; bi < b; bi++) {
-        for (int64_t j = 0; j < k; j++) {
-            for (int c = 0; c < 3; c++) {
-                colorsHost[(bi * 3 + c) * n + j] = kBoundaryColors[j][c];
-            }
-            for (int c = 0; c < 2; c++) {
-                means2dHost[(bi * 2 + c) * n + j] = kBoundaryXy[j][c];
+        for (int64_t ci = 0; ci < cam; ci++) {
+            for (int64_t j = 0; j < k; j++) {
+                for (int c = 0; c < 3; c++) {
+                    colorsHost[ColorOffset(bi, ci, cam, c, n) + j] = kBoundaryColors[j][c];
+                }
+                for (int c = 0; c < 2; c++) {
+                    means2dHost[Means2dOffset(bi, ci, cam, c, n) + j] = kBoundaryXy[j][c];
+                }
             }
         }
     }
@@ -288,41 +343,46 @@ bool RunFwdCase(const FwdCase& cs, aclrtStream stream)
     const float invH = 1.0f / static_cast<float>(kImageHeight);
 
     for (int64_t bi = 0; bi < b; bi++) {
-        for (int64_t j = 0; j < n; j++) {
-            const float r = colorsHost[(bi * 3 + 0) * n + j];
-            const float g = colorsHost[(bi * 3 + 1) * n + j];
-            const float bl = colorsHost[(bi * 3 + 2) * n + j];
-            float e[12];
-            if (useGrid) {
-                const float x = means2dHost[(bi * 2 + 0) * n + j];
-                const float y = means2dHost[(bi * 2 + 1) * n + j];
-                const float grey = 0.299f * r + 0.587f * g + 0.114f * bl;
-                const GridCoord c = MapToGrid(x, y, grey, cs.gridW, cs.gridH, cs.gridD, invW, invH);
-                InterpolateAffine(exposureHost.data(), c, cs.gridH, cs.gridD, e);
-                goldenIndex[(bi * 3 + 0) * n + j] = c.ix;
-                goldenIndex[(bi * 3 + 1) * n + j] = c.iy;
-                goldenIndex[(bi * 3 + 2) * n + j] = c.iz;
-                goldenWeight[(bi * 3 + 0) * n + j] = c.wx;
-                goldenWeight[(bi * 3 + 1) * n + j] = c.wy;
-                goldenWeight[(bi * 3 + 2) * n + j] = c.wz;
-            } else {
-                for (int t = 0; t < 12; t++) {
-                    e[t] = exposureHost[t];
+        for (int64_t ci = 0; ci < cam; ci++) {
+            // cnt 过滤: 仅前 cnt 个高斯参与计算, 其余位置保持输出 tensor 的 0 初值
+            const int64_t validCnt = cntHost[bi * cam + ci];
+            for (int64_t j = 0; j < validCnt; j++) {
+                const float r = colorsHost[ColorOffset(bi, ci, cam, 0, n) + j];
+                const float g = colorsHost[ColorOffset(bi, ci, cam, 1, n) + j];
+                const float bl = colorsHost[ColorOffset(bi, ci, cam, 2, n) + j];
+                float e[12];
+                if (useGrid) {
+                    const float x = means2dHost[Means2dOffset(bi, ci, cam, 0, n) + j];
+                    const float y = means2dHost[Means2dOffset(bi, ci, cam, 1, n) + j];
+                    const float grey = 0.299f * r + 0.587f * g + 0.114f * bl;
+                    const GridCoord c = MapToGrid(x, y, grey, cs.gridW, cs.gridH, cs.gridD, invW, invH);
+                    InterpolateAffine(exposureHost.data(), c, cs.gridH, cs.gridD, e);
+                    goldenIndex[ColorOffset(bi, ci, cam, 0, n) + j] = c.ix;
+                    goldenIndex[ColorOffset(bi, ci, cam, 1, n) + j] = c.iy;
+                    goldenIndex[ColorOffset(bi, ci, cam, 2, n) + j] = c.iz;
+                    goldenWeight[ColorOffset(bi, ci, cam, 0, n) + j] = c.wx;
+                    goldenWeight[ColorOffset(bi, ci, cam, 1, n) + j] = c.wy;
+                    goldenWeight[ColorOffset(bi, ci, cam, 2, n) + j] = c.wz;
+                } else {
+                    for (int t = 0; t < 12; t++) {
+                        e[t] = exposureHost[t];
+                    }
                 }
-            }
-            for (int row = 0; row < 3; row++) {
-                float out = ApplyAffineRow(e, row, r, g, bl);
-                if (cs.clamp && out < 0.0f) {
-                    out = 0.0f;
+                for (int row = 0; row < 3; row++) {
+                    float out = ApplyAffineRow(e, row, r, g, bl);
+                    if (cs.clamp && out < 0.0f) {
+                        out = 0.0f;
+                    }
+                    goldenOut[ColorOffset(bi, ci, cam, row, n) + j] = out;
                 }
-                goldenOut[(bi * 3 + row) * n + j] = out;
             }
         }
     }
 
     FwdTensors t;
-    vector<int64_t> colorsShape = {b, 3, n};
-    vector<int64_t> means2dShape = {b, 2, n};
+    vector<int64_t> colorsShape = {b, cam, 3, n};
+    vector<int64_t> means2dShape = {b, cam, 2, n};
+    vector<int64_t> cntShape = {b, cam};
     vector<int64_t> expShape;
     if (useGrid) {
         if (cs.exposure5d) {
@@ -333,8 +393,8 @@ bool RunFwdCase(const FwdCase& cs, aclrtStream stream)
     } else {
         expShape = {12};
     }
-    vector<int64_t> outShape = {b, 3, n};
-    vector<int64_t> indexShape = {b, 3, n};
+    vector<int64_t> outShape = {b, cam, 3, n};
+    vector<int64_t> indexShape = {b, cam, 3, n};
     vector<float> zeroOut(bcn * 3, 0.0f);
     vector<int32_t> zeroIndex(bcn * 3, 0);
     vector<float> zeroWeight(bcn * 3, 0.0f);
@@ -360,6 +420,14 @@ bool RunFwdCase(const FwdCase& cs, aclrtStream stream)
     ok = CHECK_RET(ret == ACL_SUCCESS);
     if (!ok) {
         LOG_PRINT("CreateAclTensor exposure failed. ERROR: %d\n", ret);
+        DestroyFwdTensors(t);
+        return false;
+    }
+    ret = CreateAclTensor(cntHost, cntShape, &t.cntAddr,
+                          aclDataType::ACL_INT32, &t.cntTensor);
+    ok = CHECK_RET(ret == ACL_SUCCESS);
+    if (!ok) {
+        LOG_PRINT("CreateAclTensor cnt failed. ERROR: %d\n", ret);
         DestroyFwdTensors(t);
         return false;
     }
@@ -391,7 +459,8 @@ bool RunFwdCase(const FwdCase& cs, aclrtStream stream)
     uint64_t workspaceSize = 0;
     aclOpExecutor* executor = nullptr;
     ret = aclnnColorExposureFwdGetWorkspaceSize(t.colorsTensor, t.means2dTensor, t.exposureTensor,
-                                                kImageWidth, kImageHeight, cs.clamp ? 1 : 0,
+                                                t.cntTensor, kImageWidth, kImageHeight,
+                                                cs.clamp ? 1 : 0,
                                                 t.outputTensor, t.indexTensor, t.weightTensor,
                                                 &workspaceSize, &executor);
     if (!CHECK_RET(ret == ACL_SUCCESS)) {
@@ -470,16 +539,19 @@ bool RunFwdCase(const FwdCase& cs, aclrtStream stream)
     DestroyFwdTensors(t);
 
     if (pass) {
-        LOG_PRINT("[fwd:%s] B=%ld N=%ld exposure=%s clamp=%d PASS output_max_diff=%.3e",
-                  cs.name, static_cast<long>(b), static_cast<long>(n), expDesc.c_str(),
-                  cs.clamp ? 1 : 0, outRep.maxAbsDiff);
+        LOG_PRINT("[fwd:%s] B=%ld C=%ld N=%ld exposure=%s clamp=%d cnt=%s PASS output_max_diff=%.3e",
+                  cs.name, static_cast<long>(b), static_cast<long>(cam), static_cast<long>(n),
+                  expDesc.c_str(), cs.clamp ? 1 : 0,
+                  cs.cntMode == CNT_FULL ? "full" : "mixed", outRep.maxAbsDiff);
         if (useGrid) {
             LOG_PRINT(" index_exact weight_max_diff=%.3e", weightRep.maxAbsDiff);
         }
         LOG_PRINT("\n");
     } else {
-        LOG_PRINT("[fwd:%s] B=%ld N=%ld exposure=%s clamp=%d FAIL", cs.name, static_cast<long>(b),
-                  static_cast<long>(n), expDesc.c_str(), cs.clamp ? 1 : 0);
+        LOG_PRINT("[fwd:%s] B=%ld C=%ld N=%ld exposure=%s clamp=%d cnt=%s FAIL", cs.name,
+                  static_cast<long>(b), static_cast<long>(cam), static_cast<long>(n),
+                  expDesc.c_str(), cs.clamp ? 1 : 0,
+                  cs.cntMode == CNT_FULL ? "full" : "mixed");
         if (!outRep.pass) {
             const int64_t i = outRep.firstBadIndex;
             LOG_PRINT(" output mismatch=%ld first@%ld act=%.7f exp=%.7f diff=%.3e",
@@ -514,14 +586,19 @@ int main()
     }
 
     const FwdCase cases[] = {
-        {"global_basic", 1, 4096, 0, 0, 0, false, false, false, 42},
-        {"global_identity_exact", 2, 257, 0, 0, 0, false, false, true, 7},
-        {"global_clamp_tail", 2, 123, 0, 0, 0, true, false, false, 1234},
-        {"grid_aligned", 1, 4096, 7, 7, 8, false, false, false, 99},
-        {"grid_clamp_tail", 3, 13, 2, 2, 2, true, false, false, 555},
-        {"grid_tiny", 1, 7, 5, 4, 3, false, false, false, 77},
-        {"grid_5d_exposure", 2, 512, 4, 5, 6, true, true, false, 2026},
-        {"grid_large", 1, 100000, 12, 12, 8, true, false, false, 8888},
+        {"global_basic", 1, 1, 4096, 0, 0, 0, false, false, false, CNT_FULL, 42},
+        {"global_identity_exact", 2, 1, 257, 0, 0, 0, false, false, true, CNT_FULL, 7},
+        {"global_clamp_tail", 2, 1, 123, 0, 0, 0, true, false, false, CNT_FULL, 1234},
+        {"grid_aligned", 1, 1, 4096, 7, 7, 8, false, false, false, CNT_FULL, 99},
+        {"grid_clamp_tail", 3, 1, 13, 2, 2, 2, true, false, false, CNT_FULL, 555},
+        {"grid_tiny", 1, 1, 7, 5, 4, 3, false, false, false, CNT_FULL, 77},
+        {"grid_5d_exposure", 2, 1, 512, 4, 5, 6, true, true, false, CNT_FULL, 2026},
+        {"grid_large", 1, 1, 100000, 12, 12, 8, true, false, false, CNT_FULL, 8888},
+        {"grid_max_16x16x8", 2, 2, 517, 16, 16, 8, true, false, false, CNT_FULL, 5656},
+        {"global_multi_camera", 2, 3, 257, 0, 0, 0, true, false, false, CNT_FULL, 1717},
+        {"grid_multi_camera_cnt_mixed", 2, 3, 517, 5, 5, 6, true, false, false, CNT_MIXED, 2929},
+        {"grid_cnt_mixed_tail", 2, 2, 123, 3, 3, 4, true, false, false, CNT_MIXED, 3131},
+        {"grid_cnt_mixed_large", 1, 4, 100000, 12, 12, 8, true, false, false, CNT_MIXED, 4141},
     };
     const int caseCount = static_cast<int>(sizeof(cases) / sizeof(cases[0]));
     int failed = 0;

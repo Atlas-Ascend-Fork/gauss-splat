@@ -15,6 +15,7 @@
 namespace optiling {
 BEGIN_TILING_DATA_DEF(ColorExposureFwdTilingData)
     TILING_DATA_FIELD_DEF(uint32_t, batchSize);
+    TILING_DATA_FIELD_DEF(uint32_t, cameraNum);
     TILING_DATA_FIELD_DEF(uint32_t, gaussNum);
     TILING_DATA_FIELD_DEF(uint32_t, width);
     TILING_DATA_FIELD_DEF(uint32_t, height);

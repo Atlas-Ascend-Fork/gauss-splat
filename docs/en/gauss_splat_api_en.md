@@ -361,15 +361,16 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 ---
 ### 10. color_exposure
 
-**Function**: Applies exposure processing to gaussian colors.
+**Function**: Applies exposure processing to gaussian colors. Applies a learnable per-gaussian exposure affine transform (12 parameters), supporting both global and grid exposure modes, and filters invalid gaussians by `cnt`.
 
 **Location**: `gauss_splat.color_exposure`
 
 **Parameters**:
 
-- `colors` (Tensor): Gaussian colors, shape (B, 3, N), float32
-- `means2d` (Tensor): Projected 2D coordinates of the gaussians, shape (B, 2, N), float32
-- `exposure` (Tensor): Exposure matrix; global exposure [12], grid exposure [W, H, D, 12]
+- `colors` (Tensor): Gaussian colors, shape (B, C, 3, N), float32; B is the batch, C the number of cameras per batch, and N the per-camera gaussian capacity
+- `means2d` (Tensor): Projected 2D coordinates of the gaussians, shape (B, C, 2, N), float32 (used only in grid exposure mode)
+- `exposure` (Tensor): Exposure parameters, float32; global exposure [12] / (3, 4) / (1, 1, 1, 12), grid exposure [W, H, D, 12] / [W, H, D, 3, 4] (every dimension ≥ 2 and W·H·D ≤ 2048, i.e. maximum 16×16×8)
+- `cnt` (Tensor): Valid gaussian count per (batch, camera), shape (B, C), int32; comes from the upstream projection / filtering operator. Only the first `cnt[b, c]` gaussians of each camera are computed; the remaining positions output 0
 - `width` (int): Width of the rendered image
 - `height` (int): Height of the rendered image
 - `clamp` (bool): Whether to clamp the output to zero, default: True
@@ -377,7 +378,7 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 
 **Return Values**:
 
-- `output` (Tensor): Transformed gaussian colors, shape [B, 3, N]
+- `output` (Tensor): Transformed gaussian colors, shape (B, C, 3, N), float32; positions with `n >= cnt[b, c]` are 0
 
 ---
 

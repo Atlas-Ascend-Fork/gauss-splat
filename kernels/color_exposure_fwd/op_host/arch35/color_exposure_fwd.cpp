@@ -17,7 +17,8 @@ const uint32_t MEANS2D_PTR_INDEX = 1;
 const uint32_t EXPOSURE_PTR_INDEX = 2;
 
 const uint32_t BATCH_DIM_INDEX = 0;
-const uint32_t GAUSS_DIM_INDEX = 2;
+const uint32_t CAMERA_DIM_INDEX = 1;
+const uint32_t GAUSS_DIM_INDEX = 3;
 
 const uint32_t GRID_WIDTH_DIM_INDEX = 0;
 const uint32_t GRID_HEIGHT_DIM_INDEX = 1;
@@ -63,6 +64,7 @@ static ge::graphStatus InitColorExposureFwdTilingData(gert::TilingContext* conte
     }
 
     uint32_t batchSize = colorsShape->GetStorageShape().GetDim(BATCH_DIM_INDEX);
+    uint32_t cameraNum = colorsShape->GetStorageShape().GetDim(CAMERA_DIM_INDEX);
     uint32_t gaussNum = colorsShape->GetStorageShape().GetDim(GAUSS_DIM_INDEX);
 
     auto attrsPtr = context->GetAttrs();
@@ -87,6 +89,7 @@ static ge::graphStatus InitColorExposureFwdTilingData(gert::TilingContext* conte
     }
 
     tiling.set_batchSize(batchSize);
+    tiling.set_cameraNum(cameraNum);
     tiling.set_gaussNum(gaussNum);
     tiling.set_width(width);
     tiling.set_height(height);
@@ -102,6 +105,7 @@ static ge::graphStatus CalcColorExposureFwdTilingData(gert::TilingContext* conte
     ColorExposureFwdTilingData &tiling)
 {
     uint32_t blockDim = tiling.get_blockDim();
+    uint32_t bcSize = tiling.get_batchSize() * tiling.get_cameraNum();
     uint32_t gaussNum = tiling.get_gaussNum();
     uint64_t ubTotalSize = tiling.get_ubTotalSize();
     uint32_t totalTaskNum;
@@ -132,7 +136,7 @@ static ge::graphStatus CalcColorExposureFwdTilingData(gert::TilingContext* conte
     if (expSize > MAX_GRID_DIMS) {
         return ge::GRAPH_FAILED;
     }
-    expSize = expSize * FLOAT_SIZE;
+    expSize = (expSize + bcSize) * FLOAT_SIZE;
     uint32_t bufferSize = 0;
     if (useGrid) {
         // colors input/output, ids, means2d, grey, exposure
@@ -242,17 +246,22 @@ public:
             .DataType({ge::DT_FLOAT})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
-        this->Output("output")
-            .ParamType(REQUIRED)
-            .DataType({ge::DT_FLOAT})
-            .Format({ge::FORMAT_ND})
-            .UnknownShapeFormat({ge::FORMAT_ND});
-        this->Output("index")
+        this->Input("cnt")
             .ParamType(REQUIRED)
             .DataType({ge::DT_INT32})
             .Format({ge::FORMAT_ND})
             .UnknownShapeFormat({ge::FORMAT_ND});
-        this->Output("weight")
+        this->Output("colorsOut")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_FLOAT})
+            .Format({ge::FORMAT_ND})
+            .UnknownShapeFormat({ge::FORMAT_ND});
+        this->Output("gridIndex")
+            .ParamType(REQUIRED)
+            .DataType({ge::DT_INT32})
+            .Format({ge::FORMAT_ND})
+            .UnknownShapeFormat({ge::FORMAT_ND});
+        this->Output("gridWeight")
             .ParamType(REQUIRED)
             .DataType({ge::DT_FLOAT})
             .Format({ge::FORMAT_ND})

@@ -359,15 +359,16 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 
 ### 10. color_exposure
 
-**功能**: 高斯球颜色曝光处理。
+**功能**: 高斯球颜色曝光处理。对逐高斯颜色施加可学习的曝光仿射变换（12 参数），支持全局曝光与网格曝光两种模式，并按 `cnt` 过滤无效高斯。
 
 **位置**: `gauss_splat.color_exposure`
 
 **参数**:
 
-- `colors` (Tensor): 高斯球颜色，形状 (B, C, N)，float32
-- `means2d` (Tensor): 高斯球投影后的平面坐标，形状 (B, C, N)，float32
-- `exposure` (tensor): 曝光矩阵，全局曝光[12], 网格曝光[W, H, D, 12]
+- `colors` (Tensor): 高斯球颜色，形状 (B, C, 3, N)，float32；B 为 batch，C 为每 batch 的相机数，N 为每相机的高斯容量
+- `means2d` (Tensor): 高斯球投影后的平面坐标，形状 (B, C, 2, N)，float32（仅网格曝光模式参与计算）
+- `exposure` (Tensor): 曝光参数，float32；全局曝光 [12] / (3, 4) / (1, 1, 1, 12)，网格曝光 [W, H, D, 12] / [W, H, D, 3, 4]（各维 ≥ 2，且 W·H·D ≤ 2048，即最大 16×16×8）
+- `cnt` (Tensor): 逐 (batch, camera) 的有效高斯计数，形状 (B, C)，int32；来自上游投影 / 过滤算子，仅每相机前 `cnt[b, c]` 个高斯参与计算，其余位置输出 0
 - `width` (int): 渲染图像宽度
 - `height` (int): 渲染图像高度
 - `clamp` (bool): 是否对输出钳制到0, 默认值: True
@@ -375,7 +376,7 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 
 **返回值**:
 
-- `output` (Tensor): 转换后的高斯球颜色，形状[B, C, N]
+- `output` (Tensor): 转换后的高斯球颜色，形状 (B, C, 3, N)，float32；`n >= cnt[b, c]` 的位置为 0
 
 ---
 

@@ -88,12 +88,12 @@ fused_ssim_backward(at::Tensor &grad_ssim_map, at::Tensor &img1, at::Tensor &img
                     int window_size, int need_grad_img2);
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor> color_exposure_fwd(
-    at::Tensor& colors, at::Tensor& means2d, at::Tensor& exposure, 
+    at::Tensor& colors, at::Tensor& means2d, at::Tensor& exposure, at::Tensor& cnt,
     int32_t width, int32_t height, int32_t clamp);
 
 std::tuple<at::Tensor, at::Tensor> color_exposure_bwd(
-    at::Tensor& colors, at::Tensor& vColorsIn, at::Tensor& exposure,
-    const c10::optional<at::Tensor> &index, const c10::optional<at::Tensor>& weight,
+    at::Tensor& colors, at::Tensor& vColorsIn, at::Tensor& exposure, at::Tensor& cnt,
+    const c10::optional<at::Tensor> &gridIndex, const c10::optional<at::Tensor>& gridWeight,
     int32_t clamp, int32_t calcExpGrad);
 
 void fused_adam_multi_lr(std::vector<at::Tensor>& params, std::vector<at::Tensor>& grads,

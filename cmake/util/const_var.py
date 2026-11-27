@@ -31,14 +31,14 @@ WMODES = stat.S_IWUSR | stat.S_IRUSR
 SOC_MAP_EXT = {'ascend310p': 'Ascend310P3', 'ascend310b': 'Ascend310B1',
                'ascend910': 'Ascend910A', 'ascend910b': 'Ascend910B1',
                'ascend910_93': 'Ascend910_9391', 'ascend950': 'Ascend950PR_9599'}
-BIN_CMD = 'opc $1 --main_func={fun} --input_param={param} --soc_version={soc} \
---output=$2 --impl_mode={impl} --simplified_key_mode=0 --op_mode=dynamic\n'
+BIN_CMD = 'opc "$1" --main_func={fun} --input_param="{param}" --soc_version={soc} \
+--output="$2" --impl_mode={impl} --simplified_key_mode=0 --op_mode=dynamic\n'
 CHK_CMD = '''
-if ! test -f $2/{res_file} ; then
+if ! test -f "$2/{res_file}" ; then
   echo "$2/{res_file} not generated!"
   exit 1
 fi
 '''
-CHM_CMD = 'chmod -R 755 $2\n'
+CHM_CMD = 'chmod -R 755 "$2"\n'
 ATTR_DEF_VAL = {'str' : '', 'int': 0, 'float': 0.0, 'bool': False, 'list_bool': [],
                 'list_int': [], 'list_float': [], 'list_list_int': [[]]}

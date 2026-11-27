@@ -1,6 +1,7 @@
 # Copyright 2026 Huawei Technologies Co., Ltd
-CUR_DIR=$(dirname $(readlink -f $0))
-BUILD_PACKAGES_DIR=${CUR_DIR}/gauss_splat/packages
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+REPO_DIR="$(dirname "${SCRIPT_PATH}")"
+BUILD_PACKAGES_DIR="${REPO_DIR}/gauss_splat/packages"
 SUPPORTED_PY_VERSION=(3.12 3.13 3.14)
 PY_VERSION='3.12'
 SINGLE_OP=''
@@ -9,7 +10,7 @@ USE_ARCH35='false'
 
 function check_python_version() {
     matched_py_version='false'
-    for ver in ${SUPPORTED_PY_VERSION[*]}; do
+    for ver in "${SUPPORTED_PY_VERSION[@]}"; do
         if [ "${PY_VERSION}" = "${ver}" ]; then
             matched_py_version='true'
             return 0
@@ -48,11 +49,11 @@ function parse_script_args() {
 
 function main()
 {
-    if [ -z "$ASCEND_OPP_PATH" ]; then
+    if [ -z "${ASCEND_OPP_PATH}" ]; then
         echo "ImportError: libhccl.so: cannot open shared object file: No such file or directory. Please check that the cann package is installed. Please run 'source set_env.sh' in the CANN installation path."
         exit 1
     else
-        echo "ASCEND_OPP_PATH = $ASCEND_OPP_PATH"
+        echo "ASCEND_OPP_PATH = ${ASCEND_OPP_PATH}"
     fi
 
     if ! parse_script_args "$@"; then
@@ -62,12 +63,21 @@ function main()
 
     check_python_version
 
-    export BUILD_PYTHON_VERSION=${PY_VERSION}
+    export BUILD_PYTHON_VERSION="${PY_VERSION}"
     export USE_ARCH35
-    rm -rf ${BUILD_PACKAGES_DIR}
 
-    python"${PY_VERSION}" setup.py bdist_wheel
-    if [ $? != 0 ]; then
+    if [ -z "${SCRIPT_PATH}" ] || [ ! -f "${SCRIPT_PATH}" ]; then
+        echo "failed to resolve build.sh path: '${SCRIPT_PATH}'" 1>&2
+        exit 1
+    fi
+    if [ -z "${REPO_DIR}" ] || [ "${REPO_DIR}" = "/" ] || [ ! -f "${REPO_DIR}/setup.py" ] || [ ! -d "${REPO_DIR}/gauss_splat" ]; then
+        echo "invalid repository directory: '${REPO_DIR}'" 1>&2
+        exit 1
+    fi
+    rm -rf -- "${BUILD_PACKAGES_DIR}"
+
+    "python${PY_VERSION}" setup.py bdist_wheel
+    if [ $? -ne 0 ]; then
         echo "Failed to compile the wheel file. Please check the source code by yourself."
         exit 1
     fi

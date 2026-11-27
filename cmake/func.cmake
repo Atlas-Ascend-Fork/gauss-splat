@@ -242,10 +242,11 @@ function(add_bin_compile_target)
         COMMAND
           export HI_PYTHON=${ASCEND_PYTHON_EXECUTABLE} && export
           ASCEND_CUSTOM_OPP_PATH=${gauss_splat_PATH}/packages/vendors/${vendor_name}
-          && bash ${CMAKE_SOURCE_DIR}/scripts/retry.sh \"bash ${bin_script}
+          && bash ${CMAKE_SOURCE_DIR}/scripts/retry.sh bash ${bin_script}
           ${BINCMP_OUT_DIR}/src/${op_type}.py
-          ${BINCMP_KERNEL_DIR}/${BINCMP_COMPUTE_UNIT}/${op_file}\"
-        WORKING_DIRECTORY ${BINCMP_OUT_DIR})
+          ${BINCMP_KERNEL_DIR}/${BINCMP_COMPUTE_UNIT}/${op_file}
+        WORKING_DIRECTORY ${BINCMP_OUT_DIR}
+        VERBATIM)
       add_dependencies(${BINCMP_TARGET}_${op_file}_${op_index} ${BINCMP_TARGET}
                        ${BINCMP_TARGET}_${op_file}_copy)
       add_dependencies(${BINCMP_TARGET}_gen_ops_config

@@ -5,7 +5,7 @@ RETRY_DELAY=2
 COUNTER=0
 
 while [ $COUNTER -lt $MAX_RETRIES ]; do
-  eval "$@" && break
+  "$@" && break
   COUNTER=$((COUNTER+1))
   if [ $COUNTER -lt $MAX_RETRIES ]; then
     echo "Command failed. Retrying in $RETRY_DELAY seconds..."

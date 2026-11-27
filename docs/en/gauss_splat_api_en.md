@@ -89,7 +89,7 @@ render_colors, render_depth, info = rasterizer.rasterization(
 - `rast_ctx` (RastCtx, optional): Rasterization context; created automatically by default
 - `width` (int): Image width
 - `height` (int): Image height
-- `eps` (float): Minimum Gaussian radius threshold, default 0.3
+- `eps` (float): Regularization term added to both diagonal entries of the projected 2D covariance matrix, default 0.3; this is not a minimum Gaussian radius culling threshold
 - `near_plane` (float): Near plane distance, default 0.01
 - `far_plane` (float): Far plane distance, default 1e10
 - `calc_compensations` (bool): Whether to calculate compensation factors, default False

@@ -89,7 +89,7 @@ render_colors, render_depth, info = rasterizer.rasterization(
 - `rast_ctx` (RastCtx, optional): 光栅化上下文，默认自动创建
 - `width` (int): 图像宽度
 - `height` (int): 图像高度
-- `eps` (float): 最小高斯半径阈值，默认0.3
+- `eps` (float): 加到投影后2D协方差矩阵两个对角元素上的正则项，默认0.3；不是最小高斯半径筛选阈值
 - `near_plane` (float): 近平面距离，默认0.01
 - `far_plane` (float): 远平面距离，默认1e10
 - `calc_compensations` (bool): 是否计算补偿因子，默认False

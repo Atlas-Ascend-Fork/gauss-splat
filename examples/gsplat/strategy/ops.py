@@ -336,7 +336,7 @@ def split(
         v = info["opacities"]
         repeats = [2] + [1] * (v.dim() - 1)
         v_new = v[sel].repeat(repeats)
-        info["opacities"] = torch.cat((v, v[sel]))
+        info["opacities"] = torch.cat((v[rest], v_new))
 
 @torch.no_grad()
 def remove(

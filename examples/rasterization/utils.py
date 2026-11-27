@@ -54,7 +54,11 @@ class SSIM:
     @staticmethod
     def ssim(img1, img2, window_size=11, size_average=True):
         channel = img1.size(-3)
-        if SSIM.window_cache is not None:
+        if (
+            SSIM.window_cache is not None
+            and SSIM.window_cache.shape[0] == channel
+            and SSIM.window_cache.shape[-1] == window_size
+        ):
             window = SSIM.window_cache
         else:
             window = SSIM.create_window(window_size, channel)

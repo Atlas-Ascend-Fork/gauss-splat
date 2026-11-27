@@ -8,13 +8,17 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 import ast
+import struct
 import types
 import unittest
 from pathlib import Path
 from typing import Any, Dict, Optional
 from unittest.mock import patch
 
+import cv2
 import numpy as np
+import pytest
+from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -107,6 +111,116 @@ class ColmapDatasetTest(unittest.TestCase):
             self.assertEqual(data["points"].array.shape, (0, 2))
             self.assertEqual(data["depths"].array.shape, (0,))
 
+
+def _complete_colmap_binary_scene(tmp_path, model, size, intrinsics, distortion):
+    from examples.datasets.colmap import Parser
+
+    width, height = size
+    fx, fy, cx, cy = intrinsics
+    root = tmp_path / "colmap_scene"
+    sparse = root / "sparse" / "0"
+    sparse.mkdir(parents=True)
+    images = root / "images"
+    images.mkdir()
+    if model in (0, 2):
+        params = [fx, cx, cy] + list(distortion)
+    else:
+        params = [fx, fy, cx, cy] + list(distortion)
+    camera = struct.pack("<QIiQQ", 1, 1, model, width, height)
+    (sparse / "cameras.bin").write_bytes(camera + struct.pack("<" + "d" * len(params), *params))
+    record = struct.pack("<QI4d3dI", 1, 1, 1, 0, 0, 0, 0, 0, 0, 1)
+    record += b"image.png" + bytes(1) + struct.pack("<QddQ", 1, cx, cy, 1)
+    (sparse / "images.bin").write_bytes(record)
+    points = struct.pack("<QQ3d3BdQII", 1, 1, 0, 0, 2, 128, 64, 32, 0, 1, 1, 0)
+    (sparse / "points3D.bin").write_bytes(points)
+    image = np.arange(height * width * 3, dtype=np.uint8).reshape(height, width, 3)
+    Image.fromarray(image).save(images / "image.png")
+    parser = Parser(str(root), normalize=False, test_every=1)
+    return parser, image
+
+
+def _assert_complete_parser_sample(parser, image, maps, intrinsics, roi, mask):
+    from examples.datasets.colmap import Dataset
+
+    x, y, width, height = roi
+    expected_image = image
+    if maps is not None:
+        mapx, mapy = maps
+        np.testing.assert_allclose(parser.mapx_dict[1], mapx, rtol=0, atol=1e-6)
+        np.testing.assert_allclose(parser.mapy_dict[1], mapy, rtol=0, atol=1e-6)
+        assert list(parser.roi_undist_dict[1]) == list(roi)
+        expected_image = cv2.remap(image, mapx, mapy, cv2.INTER_LINEAR)
+        expected_image = expected_image[y:y + height, x:x + width]
+    np.testing.assert_allclose(parser.Ks_dict[1], intrinsics, rtol=0, atol=1e-6)
+    assert parser.imsize_dict[1] == (width, height)
+    sample = Dataset(parser, split="test", load_depths=True)[0]
+    np.testing.assert_array_equal(sample["image"].numpy(), expected_image.astype(np.float32))
+    np.testing.assert_allclose(sample["K"].numpy(), intrinsics, rtol=0, atol=1e-6)
+    np.testing.assert_array_equal(sample["depths"].numpy(), [2.0])
+    if mask is not None:
+        np.testing.assert_array_equal(parser.mask_dict[1], mask)
+        np.testing.assert_array_equal(sample["mask"].numpy(), mask)
+    else:
+        assert "mask" not in sample
+
+
+@pytest.mark.parametrize("size", [(13, 9), (9, 7)])
+@pytest.mark.parametrize("off_center", [False, True])
+@pytest.mark.parametrize("distortion", [(0.0, 0.0, 0.0, 0.0), (0.08, -0.01, 0.001, -0.0001)])
+def test_complete_parser_fisheye_projection(tmp_path, size, off_center, distortion):
+    width, height = size
+    cx, cy = (width * 0.3, height * 0.35) if off_center else ((width - 1) / 2, (height - 1) / 2)
+    fx, fy = 5.0, 6.0
+    parser, image = _complete_colmap_binary_scene(
+        tmp_path, 5, size, (fx, fy, cx, cy), distortion
+    )
+    intrinsics = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
+    xx, yy = np.meshgrid(np.arange(width), np.arange(height))
+    rays = np.stack(((xx - cx) / fx, (yy - cy) / fy, np.ones_like(xx)), axis=-1)
+    coefficients = np.array(distortion, dtype=np.float32).astype(np.float64)
+    projected, _ = cv2.fisheye.projectPoints(
+        rays.reshape(-1, 1, 3), np.zeros(3), np.zeros(3), intrinsics, coefficients
+    )
+    projected = projected.reshape(height, width, 2).astype(np.float32)
+    radius = np.linalg.norm(rays[..., :2], axis=-1)
+    theta = np.arctan(radius)
+    polynomial = sum(coefficient * theta ** (2 * index + 2) for index, coefficient in enumerate(coefficients))
+    scale = np.divide(theta * (1 + polynomial), radius, out=np.ones_like(radius), where=radius > 0)
+    analytic = np.stack((fx * rays[..., 0] * scale + cx, fy * rays[..., 1] * scale + cy), axis=-1)
+    np.testing.assert_allclose(projected, analytic, rtol=0, atol=1e-6)
+    mapx, mapy = projected[..., 0], projected[..., 1]
+    valid = (mapx > 0) & (mapy > 0) & (mapx < width - 1) & (mapy < height - 1)
+    rows, columns = np.nonzero(valid)
+    x, y = columns.min(), rows.min()
+    w, h = columns.max() + 1 - x, rows.max() + 1 - y
+    cropped_intrinsics = intrinsics.copy()
+    cropped_intrinsics[0, 2] -= x
+    cropped_intrinsics[1, 2] -= y
+    _assert_complete_parser_sample(
+        parser, image, (mapx, mapy), cropped_intrinsics, (x, y, w, h), valid[y:y + h, x:x + w]
+    )
+
+
+@pytest.mark.parametrize("model", [0, 1, 2, 4])
+def test_complete_parser_perspective_control(tmp_path, model):
+    width, height = 13, 9
+    fx, fy, cx, cy = 5.0, (5.0 if model in (0, 2) else 6.0), 4.0, 3.0
+    distortion = {0: (), 1: (), 2: (0.01,), 4: (0.01, -0.001, 0.0, 0.0)}[model]
+    parser, image = _complete_colmap_binary_scene(
+        tmp_path, model, (width, height), (fx, fy, cx, cy), distortion
+    )
+    intrinsics = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
+    maps, roi = None, (0, 0, width, height)
+    if distortion:
+        params = np.array([distortion[0], 0, 0, 0] if model == 2 else distortion, dtype=np.float32)
+        new_intrinsics, roi = cv2.getOptimalNewCameraMatrix(
+            intrinsics, params, (width, height), 0
+        )
+        maps = cv2.initUndistortRectifyMap(
+            intrinsics, params, None, new_intrinsics, (width, height), cv2.CV_32FC1
+        )
+        intrinsics = new_intrinsics
+    _assert_complete_parser_sample(parser, image, maps, intrinsics, roi, None)
 
 if __name__ == "__main__":
     unittest.main()

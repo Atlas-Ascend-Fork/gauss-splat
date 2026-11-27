@@ -308,27 +308,9 @@ class Parser:
                 )
                 mask = None
             elif camtype == "fisheye":
-                fx = K[0, 0]
-                fy = K[1, 1]
-                cx = K[0, 2]
-                cy = K[1, 2]
-                grid_x, grid_y = np.meshgrid(
-                    np.arange(width, dtype=np.float32),
-                    np.arange(height, dtype=np.float32),
-                    indexing="xy",
+                mapx, mapy = cv2.fisheye.initUndistortRectifyMap(
+                    K, params, np.eye(3), K, (width, height), cv2.CV_32FC1
                 )
-                x1 = (grid_x - cx) / fx
-                y1 = (grid_y - cy) / fy
-                theta = np.sqrt(x1**2 + y1**2)
-                r = (
-                    1.0
-                    + params[0] * theta**2
-                    + params[1] * theta**4
-                    + params[2] * theta**6
-                    + params[3] * theta**8
-                )
-                mapx = (fx * x1 * r + cx).astype(np.float32)
-                mapy = (fy * y1 * r + cy).astype(np.float32)
 
                 # Use mask to define ROI
                 mask = np.logical_and(

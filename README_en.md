@@ -47,7 +47,7 @@ conda activate 3dgs
 
 git clone -b ${tag_version} https://gitcode.com/cann/gauss-splat.git
 cd gauss-splat
-source ${CAN_INSTALL_PATH}/ascend-toolkit/set_env.sh
+source ${CANN_INSTALL_PATH}/ascend-toolkit/set_env.sh
 
 pip install "numpy>=1.26.0,<2.0.0" decorator sympy scipy attrs cloudpickle psutil synr==0.5.0 tornado cmake pyyaml expecttest protobuf pytest
 

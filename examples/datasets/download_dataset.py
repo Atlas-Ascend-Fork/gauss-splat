@@ -125,7 +125,7 @@ def download_and_extract(url: str, download_path: Path, extract_path: Path) -> N
         os.remove(download_path)
         print("Extraction complete.")
     except subprocess.CalledProcessError as e:
-        print(f"Extraction failed: {e}")
+        raise RuntimeError(f"Error extracting file: {e}") from e
 
 
 if __name__ == "__main__":

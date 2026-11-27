@@ -318,7 +318,11 @@ __aicore__ inline void CalcRenderFwdClipLastidsKernel::Process(int64_t tileIdx)
     Duplicate(pixOutG_, (float)0.0, (int32_t)calPixel_);
     Duplicate(pixOutB_, (float)0.0, (int32_t)calPixel_);
     Duplicate(pixOutD_, (float)0.0, (int32_t)calPixel_);
+#if GS_FWD_TRANS_MUL
+    Duplicate(lastCumsum_, (float)1.0, (int32_t)calPixel_);   // 乘性透射率：trans 初始 = 1
+#else
     Duplicate(lastCumsum_, (float)0.0, (int32_t)calPixel_);
+#endif
     Duplicate(error_, (float)0.0, (int32_t)calPixel_);
     Duplicate(lastIds_, (int32_t)0, (int32_t)calPixel_);         // 无贡献像素为 0（Interface.md）
     Duplicate(doneMaskUb_, (uint8_t)0, (int32_t)calPixel_);      // per-pixel done 复位（批界不复位）

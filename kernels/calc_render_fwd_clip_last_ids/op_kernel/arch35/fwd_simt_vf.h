@@ -57,6 +57,12 @@ constexpr float ALPHA_CLIP = 0.999f;                // 公式 #2：α 上界裁�
 constexpr float ALPHA_THRESHOLD = 1.0f / 255.0f;    // 公式 #3：微贡献跳过阈值（clip 2）
 constexpr float PER_PIXEL_DONE_THRESHOLD = 1.0e-4f; // 公式 #4：per-pixel done 阈值
 
+// fwd 乘性透射率开关（编译期，默认关）：把每对样本的 logf(1-alpha) + expf(s) + Kahan
+// 换成乘性 trans *= (1-alpha)（数学等价，仅 fp 舍入差异），省两个超越函数（无损，同 bwd trans-mul）
+#ifndef GS_FWD_TRANS_MUL
+#define GS_FWD_TRANS_MUL 0
+#endif
+
 // 属性布局（gsAttrBatch 16 float 段，前 10 列有效；沿用基线 ATTR_* 常量序）
 constexpr uint8_t ATTR_MEAN_X = 0, ATTR_MEAN_Y = 1;
 constexpr uint8_t ATTR_CONIC_0 = 2, ATTR_CONIC_1 = 3, ATTR_CONIC_2 = 4;
@@ -152,15 +158,21 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(THREAD_NUM) inline void FwdSimtCompute(
 
     if (!outbound) {
         // ===== 跨 VF 状态读回寄存器（T4：批界不重置，UB 累加器持久化；透射率寄存器化）=====
+#if GS_FWD_TRANS_MUL
+        // 乘性透射率：lastCumsum 存 trans（tile 开头置 1），跨批持久化
+        float trans = lastCumsum[pixIdx];       // T_{k-1}（首个 VF 读 tile 开头置的 1）
+        float s = 0.0f, err = 0.0f;             // log-domain 累加器（仅 GS_FWD_TRANS_MUL=0 分支使用）
+#else
         float s    = lastCumsum[pixIdx];      // ln 域累积透射率 s = Σ ln(1−α)
         float err  = kahanErr[pixIdx];        // Kahan 补偿项 e
+        float trans = expf(s);                // T_{k-1} = e^{s_{k-1}}（累加前透射率，T_ 保留位不传值）
+#endif
         float cR   = pixOutR[pixIdx];
         float cG   = pixOutG[pixIdx];
         float cB   = pixOutB[pixIdx];
         float cD   = pixOutD[pixIdx];
         int32_t lastId = lastIds[pixIdx];
         uint8_t done   = doneMask[pixIdx];
-        float trans = expf(s);                // T_{k-1} = e^{s_{k-1}}（累加前透射率，T_ 保留位不传值）
 
         // ===== 像素坐标读入寄存器（批内只读，一次性提循环外；消除每高斯 2 次 per-thread UB
         //       读，对齐 Meta 5.3：px/py 进循环前定格，内层循环零 per-thread UB 读）=====
@@ -222,18 +234,27 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(THREAD_NUM) inline void FwdSimtCompute(
                     }
                     // Kahan 块（done 触发位亦计入 s；保序串行，禁止并行化/重排；
                     // α ≤ 0.999 ⇒ ln(0.001) ≈ −6.9078 有界，无 −∞）
+#if GS_FWD_TRANS_MUL
+                    // 乘性透射率：trans *= (1-alpha)，省 logf + expf(s)（无损，同 bwd trans-mul）
+                    trans *= (1.0f - alpha);
+#else
                     const float y = logf(1.0f - alpha) - err;
                     const float tau = s + y;
                     err = (tau - s) - y;
                     s = tau;
                     trans = expf(s);                              // 下一高斯的累加前透射率
+#endif
                 }
             }
         }
 
         // ===== 末尾写回 UB 累加器（per-pixel 索引 pixIdx = tid 互斥，无并发写、无原子；
         //       T4 跨批持久化，批界不重置）=====
+#if GS_FWD_TRANS_MUL
+        lastCumsum[pixIdx] = trans;          // 乘性透射率持久化（tile 开头置 1）
+#else
         lastCumsum[pixIdx] = s;
+#endif
         // Kahan 补偿跨批状态写回（T4：本区段 tile 内承载补偿项、下批首读 e 续算；
         // 编排类侧阶段 5 写回 GM 前统一清零——error 输出为数学真值 0，spec.yaml
         // formula error = np.zeros(...)、golden.py 逐像素与 0 比对）；NaN 污染链

@@ -226,6 +226,7 @@ private:
         off = (off + 7) & ~static_cast<int64_t>(7);     // 32B alignment
         gsAttrBatchUb_ = ub[off]; off += KERNEL_GS_PER_BATCH * GS_ATTR_STRIDE;  // 16KB: 256 x 16 fp32
         gsIdsBatchUb_ = ub[off].ReinterpretCast<int64_t>(); off += KERNEL_GS_PER_BATCH * 2;   // 2KB: 256 x int64
+        off = (off + 7) & ~static_cast<int64_t>(7);     // 32B alignment
         tmpReduceUb_ = ub[off].ReinterpretCast<int32_t>(); off += LAST_IDS_UB_FLOATS;         // 4KB ReduceMax tmp
         off = (off + 7) & ~static_cast<int64_t>(7);
         maxLastIdsUb_ = ub[off].ReinterpretCast<int32_t>(); off += 8;          // 32B: 8 x int32 result
@@ -435,6 +436,7 @@ private:
         // —— 6. reverse batch loop (<= 256 gaussians per batch; R2 axis: batching only
         //        changes the copy granularity, never the in-thread order) ——
         int64_t i = loopUpperBound;
+        bool firstBatch = true;
         while (i >= loopLowerBound) {
             const int64_t batchEnd = i;
             const int64_t batchStart = MaxI64(loopLowerBound, i - (KERNEL_GS_PER_BATCH - 1));
@@ -449,6 +451,7 @@ private:
             scalarParamsUb_.SetValue(SCALAR_BATCH_SIZE, batchSize);
             scalarParamsUb_.SetValue(SCALAR_BATCH_START, batchStart);
             scalarParamsUb_.SetValue(SCALAR_NGAUSS, nGauss_);          // defensive (VJP unused)
+            scalarParamsUb_.SetValue(SCALAR_FIRST_BATCH, firstBatch ? 1 : 0);  // BWD trans-mul init
             SetFlag<HardEvent::S_V>(evtSV_);
             WaitFlag<HardEvent::S_V>(evtSV_);
 
@@ -488,6 +491,7 @@ private:
             }
             PipeBarrier<PIPE_ALL>();                     // batch isolation: VF writes -> next batch MTE2 reads
             i = batchStart - 1;
+            firstBatch = false;
         }
         PipeBarrier<PIPE_ALL>();                         // tile isolation
     }

@@ -523,9 +523,10 @@ public:
         uint32_t tileSumLaneCnt = 0;             // 当前 staging 块内已记录任务数
         uint32_t tileSumLaneBase = taskStart_;   // 块首任务平铺索引
         const uint32_t taskEnd = taskStart_ + taskNum_;
+        // 增量维护 bcIdx/tIdx（task 每次 +1，避免每 tile 两次慢整数除/模 -> 降标量）
+        uint32_t bcIdx = taskStart_ / numTile;
+        uint32_t tIdx = taskStart_ % numTile;
         for (uint32_t task = taskStart_; task < taskEnd; task++) {
-            const uint32_t bcIdx = task / numTile;  // view-major 解码
-            const uint32_t tIdx = task % numTile;
             if (bcIdx != curBcIdx_) {
                 // 视图切换：cnt 标量读（g < cnt 截断的循环上界；越界 cnt 按 golden 语义
                 // 钳到 [0, N]）+ 本核在该视图 tile 子段的 y 覆盖（段内全部 tile 扫描）
@@ -575,6 +576,8 @@ public:
                 tileSumLaneBase = task + 1;
                 tileSumLaneCnt = 0;
             }
+            tIdx++;
+            if (tIdx == numTile) { tIdx = 0; bcIdx++; }
         }
     }
 

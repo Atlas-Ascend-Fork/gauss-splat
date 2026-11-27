@@ -73,7 +73,8 @@ constexpr int SCALAR_CURR_OFFSET = 1;
 constexpr int SCALAR_BATCH_SIZE = 2;
 constexpr int SCALAR_BATCH_START = 3;
 constexpr int SCALAR_NGAUSS = 4;
-constexpr int SCALAR_PARAMS_COUNT = 5;
+constexpr int SCALAR_FIRST_BATCH = 5;   // BWD trans-mul: 1 = first batch of this tile (init trans from expf(logT))
+constexpr int SCALAR_PARAMS_COUNT = 6;
 
 // ---------------------------------------------------------------------------
 // Numerical thresholds (Kernel.md §9.2 — compile-time only, never in TilingData)
@@ -83,5 +84,34 @@ constexpr float ALPHA_UPPER_BOUND = 0.999f;           // alpha clip upper bound 
 constexpr float PER_PIXEL_DONE_THRESHOLD = 1e-4f;     // reserved (FWD done semantics; BWD unused)
 
 constexpr int LAST_IDS_UB_FLOATS = 1024;              // lastIdsUb capacity (int32 x 1024)
+
+// ---------------------------------------------------------------------------
+// GS_BWD_VA_FACTOR switch (compile-time; default ON, revertible/comparable).
+// When 1: factor the per-(pixel,gaussian) vGs 'va' so the four per-channel
+// divisions cumX/oneMinus become one reciprocal inv=1/oneMinus plus multiplies:
+//   va = trans*(cr*vr+cg*vg+cb*vb+cd*vd) - inv*(cumR*vr+cumG*vg+cumB*vb+cumD*vd)
+// Mathematically identical (tiny fp reassociation). Flip to 0 and rebuild to
+// compare/revert; 0 restores the original exact division form.
+// ---------------------------------------------------------------------------
+#ifndef GS_BWD_VA_FACTOR
+#define GS_BWD_VA_FACTOR 1
+#endif
+
+// ---------------------------------------------------------------------------
+// GS_BWD_TRANS_MUL switch (compile-time; default OFF).
+// The reverse loop currently reconstructs the log-transmittance
+//   sum -= log(1 - alpha); trans = expf(sum)
+// per (pixel,gaussian) pair (two transcendentals). Because the forward step is
+// the multiplicative tPrev*(1-alpha), the reverse step is exactly
+//   trans /= (1-alpha) = trans * (1/(1-alpha))
+// so we can carry `trans` multiplicatively and drop both logf and expf(sum)
+// per pair (keeping only expf(quad) for the weight). One expf per thread per
+// tile initializes trans = expf(lastCumsum). fp reassociation only; the Kahan
+// log-domain error term is not used in this mode. Flip to 1 and rebuild
+// to enable the multiplicative form.
+// ---------------------------------------------------------------------------
+#ifndef GS_BWD_TRANS_MUL
+#define GS_BWD_TRANS_MUL 0
+#endif
 
 } // namespace NsCalcRenderBwdClipLastids

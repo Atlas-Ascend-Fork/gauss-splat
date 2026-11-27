@@ -18,6 +18,32 @@
 #include "simt_api/device_atomic_functions.h"
 #include "bwd_constants.h"
 namespace NsCalcRenderBwdClipLastids {
+
+// Macro to call BwdSimtPixel with gsAttr row fields.
+#define BWD_PIX_CALL(S, PX, PY, VR, VG, VB, VD, ROW, BUF) \
+    BwdSimtPixel<HasBg>(BUF, ROW, PX, PY, \
+        BUF[ROW+ATTR_CONIC_0], BUF[ROW+ATTR_CONIC_1], \
+        BUF[ROW+ATTR_CONIC_2], BUF[ROW+ATTR_OPACITY], \
+        BUF[ROW+ATTR_COLOR_R], BUF[ROW+ATTR_COLOR_G], \
+        BUF[ROW+ATTR_COLOR_B], BUF[ROW+ATTR_DEPTH], \
+        VR, VG, VB, VD, S)
+
+// Per-pixel mutable state extracted from BwdSimtCompute to keep the function
+// under the 50-line codecheck limit. All gradient accumulators and
+// transmittance state for one pixel live here.
+struct PixelState {
+    float cumR, cumG, cumB, cumD;     // running cumsum of (alpha*trans*color)
+    float vx, vy, vc0, vc1, vc2, vo;  // per-gaussian gradient outputs
+    float r, g, b, d;                 // per-gaussian color/depth contribution
+    bool valid;                       // pixel still active for this gaussian
+    float vTbg, tFinal;               // bg_color path seeds (HasBg only)
+#if GS_BWD_TRANS_MUL
+    float trans;                      // multiplicative reverse transmittance
+#else
+    float sum, err;                   // log-domain Kahan sum + compensation
+#endif
+};
+
 __simt_callee__ __aicore__ inline void ScatterGradient(
     __gm__ float* vGsGm, int flushGid, int laneId,
     float accMeanX, float accMeanY, float accConic0, float accConic1,
@@ -35,7 +61,7 @@ __simt_callee__ __aicore__ inline void ScatterGradient(
     float rColB   = asc_reduce_add(accColB);
     float rColD   = asc_reduce_add(accColD);
     if (laneId == 0) {
-        uint64_t rowAddr = static_cast<uint64_t>(flushGid) * NUM_GS_ATTRIBUTES;   // GM address in uint64
+        uint64_t rowAddr = static_cast<uint64_t>(flushGid) * NUM_GS_ATTRIBUTES;
         asc_atomic_add(vGsGm + rowAddr + ATTR_MEAN_X,  rMeanX);
         asc_atomic_add(vGsGm + rowAddr + ATTR_MEAN_Y,  rMeanY);
         asc_atomic_add(vGsGm + rowAddr + ATTR_CONIC_0, rConic0);
@@ -46,6 +72,97 @@ __simt_callee__ __aicore__ inline void ScatterGradient(
         asc_atomic_add(vGsGm + rowAddr + ATTR_COLOR_G, rColG);
         asc_atomic_add(vGsGm + rowAddr + ATTR_COLOR_B, rColB);
         asc_atomic_add(vGsGm + rowAddr + ATTR_DEPTH,   rColD);
+    }
+}
+
+// Read per-pixel UB state into PixelState.
+template<bool HasBg>
+__simt_callee__ __aicore__ inline void InitPixelState(
+    PixelState& s, int pix,
+    __ubuf__ float* cumsumBufUb, __ubuf__ float* lastCumsumUb,
+    __ubuf__ float* errorUb, __ubuf__ float* tFinalUb)
+{
+    s = {};
+    s.cumR = cumsumBufUb[CUMSUM_R_OFFSET+pix];
+    s.cumG = cumsumBufUb[CUMSUM_G_OFFSET+pix];
+    s.cumB = cumsumBufUb[CUMSUM_B_OFFSET+pix];
+    s.cumD = cumsumBufUb[CUMSUM_D_OFFSET+pix];
+#if GS_BWD_TRANS_MUL
+    s.trans = lastCumsumUb[pix];
+#else
+    s.sum = lastCumsumUb[pix]; s.err = errorUb[pix];
+#endif
+    if constexpr (HasBg) { s.tFinal = tFinalUb[pix]; }
+}
+
+// Write per-pixel state back to UB.
+__simt_callee__ __aicore__ inline void WriteBackPixel(
+    const PixelState& s, int pix,
+    __ubuf__ float* lastCumsumUb, __ubuf__ float* errorUb,
+    __ubuf__ float* cumsumBufUb)
+{
+#if GS_BWD_TRANS_MUL
+    lastCumsumUb[pix] = s.trans;
+#else
+    lastCumsumUb[pix] = s.sum; errorUb[pix] = s.err;
+#endif
+    cumsumBufUb[CUMSUM_R_OFFSET+pix] = s.cumR;
+    cumsumBufUb[CUMSUM_G_OFFSET+pix] = s.cumG;
+    cumsumBufUb[CUMSUM_B_OFFSET+pix] = s.cumB;
+    cumsumBufUb[CUMSUM_D_OFFSET+pix] = s.cumD;
+}
+
+// Per-pixel gradient computation for one gaussian row. Extracted to keep
+// BwdSimtCompute under the 50-line codecheck limit.
+template<bool HasBg>
+__simt_callee__ __aicore__ inline void BwdSimtPixel(
+    __ubuf__ float* gsAttrBatchUb, int row, float px, float py,
+    float c0, float c1, float c2, float opacity,
+    float cr, float cg, float cb, float cd,
+    float vr, float vg, float vb, float vd, PixelState& s)
+{
+    const float dx = gsAttrBatchUb[row+ATTR_MEAN_X] - px;
+    const float dy = gsAttrBatchUb[row+ATTR_MEAN_Y] - py;
+    float weight = expf(-0.5f*(c0*dx*dx + 2.0f*c1*dx*dy + c2*dy*dy));
+    const float raw = opacity * weight;
+    const float alpha = fminf(ALPHA_UPPER_BOUND, raw);
+    s.valid = alpha >= ALPHA_THRESHOLD;
+    s.vx=0; s.vy=0; s.vc0=0; s.vc1=0; s.vc2=0; s.vo=0; s.r=0; s.g=0; s.b=0; s.d=0;
+    if (s.valid) {
+        const float oneMinus = 1.0f - alpha;
+#if (GS_BWD_TRANS_MUL || GS_BWD_VA_FACTOR)
+        const float inv = 1.0f / oneMinus;
+#endif
+#if GS_BWD_TRANS_MUL
+        s.trans = s.trans * inv;
+        const float transm = s.trans;
+#else
+        const float minus = logf(oneMinus) + s.err;
+        const float next = s.sum - minus;
+        s.err = (next - s.sum) + minus;
+        s.sum = next;
+        const float transm = expf(s.sum);
+#endif
+        const float at = alpha * transm;
+        s.r=at*vr; s.g=at*vg; s.b=at*vb; s.d=at*vd;
+#if GS_BWD_VA_FACTOR
+        const float dotp  = cr*vr + cg*vg + cb*vb + cd*vd;
+        const float cdotp = s.cumR*vr + s.cumG*vg + s.cumB*vb + s.cumD*vd;
+        float va = transm*dotp - cdotp*inv;
+#else
+        float va = (transm*cr-s.cumR/oneMinus)*vr
+                 + (transm*cg-s.cumG/oneMinus)*vg
+                 + (transm*cb-s.cumB/oneMinus)*vb
+                 + (transm*cd-s.cumD/oneMinus)*vd;
+#endif
+        if constexpr (HasBg) { va += -s.vTbg * s.tFinal / oneMinus; }
+        if (raw > ALPHA_UPPER_BOUND) { va=0.0f; weight=0.0f; }
+        s.vo = va*weight;
+        const float vw = -opacity*s.vo;
+        s.vx = (c0*dx+c1*dy)*vw;
+        s.vy = (c1*dx+c2*dy)*vw;
+        s.vc0 = 0.5f*vw*dx*dx; s.vc1 = vw*dx*dy; s.vc2 = 0.5f*vw*dy*dy;
+        s.cumR += at*cr; s.cumG += at*cg; s.cumB += at*cb; s.cumD += at*cd;
     }
 }
 
@@ -65,89 +182,27 @@ __simt_vf__ __aicore__ __launch_bounds__(Threads) inline void BwdSimtCompute(
     __gm__ float* vGsGm,
     __ubuf__ float* bgColorUb, __ubuf__ float* tFinalUb)
 {
-    (void)gsGm;
-    const int tid = static_cast<int>(AscendC::Simt::GetThreadIdx());
-    const int lane = tid % WARP_SIZE;
-    const int last = lastIdsUb[tid];
-    const int64_t batchStart = scalarParamsUb[SCALAR_BATCH_START];
-    const int batchSize = static_cast<int>(scalarParamsUb[SCALAR_BATCH_SIZE]);
-    float sum = lastCumsumUb[tid], error = errorUb[tid];
-    // 前向最终透光率 T_K 由编排层在 tile 起始 Exp 固化到 tFinalUb_
-    // （lastCumsumUb_ 会在批循环中被逐批回退改写；指数每 tile 只算一次）。
-    // 背景色路径的精确分摊不需要跨批后缀连乘：dT_K/dα_i = -T_K/(1-α_i)，与批划分无关。
-    float tFinal = 0.0f;
-    if constexpr (HasBg) { tFinal = tFinalUb[tid]; }
-    float cumR = cumsumBufUb[CUMSUM_R_OFFSET + tid];
-    float cumG = cumsumBufUb[CUMSUM_G_OFFSET + tid];
-    float cumB = cumsumBufUb[CUMSUM_B_OFFSET + tid];
-    float cumD = cumsumBufUb[CUMSUM_D_OFFSET + tid];
-    const float vr = vColorDepthUb[VCOLOR_R_OFFSET + tid];
-    const float vg = vColorDepthUb[VCOLOR_G_OFFSET + tid];
-    const float vb = vColorDepthUb[VCOLOR_B_OFFSET + tid];
-    const float vd = vColorDepthUb[VCOLOR_VDEPTH_OFFSET + tid];
-    const float px = tileCoordXUb[tid], py = tileCoordYUb[tid];
-    // 背景色路径的透射率梯度种子：dL/dT_K = Σ_c bg_c · v_c（仅颜色 RGB 路径；
-    // 深度通道不叠加背景色）。bg_c 取自 bgColor 输入（与前向同一份数值，不是梯度）；
-    // 背景色本身不可微，算子不产出其梯度。
-    float vTbg = 0.0f;
-    if constexpr (HasBg) {
-        vTbg = bgColorUb[0] * vr + bgColorUb[1] * vg + bgColorUb[2] * vb;
-    }
+    (void)gsGm; const int tid = static_cast<int>(AscendC::Simt::GetThreadIdx());
+    const int lane = tid % WARP_SIZE, last = lastIdsUb[tid];
+    const int64_t batchStart = scalarParamsUb[SCALAR_BATCH_START]; const int batchSize = static_cast<int>(scalarParamsUb[SCALAR_BATCH_SIZE]);
+    PixelState s;
+    InitPixelState<HasBg>(s, tid, cumsumBufUb, lastCumsumUb, errorUb, tFinalUb);
+    const float vr=vColorDepthUb[VCOLOR_R_OFFSET+tid], vg=vColorDepthUb[VCOLOR_G_OFFSET+tid];
+    const float vb=vColorDepthUb[VCOLOR_B_OFFSET+tid], vd=vColorDepthUb[VCOLOR_VDEPTH_OFFSET+tid];
+    const float px=tileCoordXUb[tid], py=tileCoordYUb[tid];
+    if constexpr (HasBg) { s.vTbg = bgColorUb[0]*vr + bgColorUb[1]*vg + bgColorUb[2]*vb; }
     for (int t = batchSize - 1; t >= 0; --t) {
-        bool valid = batchStart + t <= last;
-        if (!asc_any(static_cast<int>(valid))) { continue; }
-        float vx=0, vy=0, vc0=0, vc1=0, vc2=0, vo=0;
-        float r=0, g=0, b=0, d=0;
-        if (valid) {
-            const int row=t*GS_ATTR_STRIDE;
-            const float dx=gsAttrBatchUb[row+ATTR_MEAN_X]-px;
-            const float dy=gsAttrBatchUb[row+ATTR_MEAN_Y]-py;
-            const float c0=gsAttrBatchUb[row+ATTR_CONIC_0];
-            const float c1=gsAttrBatchUb[row+ATTR_CONIC_1];
-            const float c2=gsAttrBatchUb[row+ATTR_CONIC_2];
-            const float opacity=gsAttrBatchUb[row+ATTR_OPACITY];
-            float weight=expf(-0.5f*(c0*dx*dx+2.0f*c1*dx*dy+c2*dy*dy));
-            const float raw=opacity*weight;
-            const float alpha=fminf(ALPHA_UPPER_BOUND,raw);
-            valid=alpha>=ALPHA_THRESHOLD;
-            if (valid) {
-                const float oneMinus=1.0f-alpha;
-                const float minus=logf(oneMinus)+error;
-                const float next=sum-minus;
-                error=(next-sum)+minus;
-                sum=next;
-                const float trans=expf(sum);
-                const float at=alpha*trans;
-                const float cr=gsAttrBatchUb[row+ATTR_COLOR_R];
-                const float cg=gsAttrBatchUb[row+ATTR_COLOR_G];
-                const float cb=gsAttrBatchUb[row+ATTR_COLOR_B];
-                const float cd=gsAttrBatchUb[row+ATTR_DEPTH];
-                r=at*vr; g=at*vg; b=at*vb; d=at*vd;
-                float va=(trans*cr-cumR/oneMinus)*vr
-                        +(trans*cg-cumG/oneMinus)*vg
-                        +(trans*cb-cumB/oneMinus)*vb
-                        +(trans*cd-cumD/oneMinus)*vd;
-                // bg_color：叠加背景色路径对 dL/dα_i 的贡献 -vTbg · T_K/(1-α_i)。
-                // 用 T_K（入口读取的前向最终透光率）而非后缀连乘，天然跨批一致。
-                if constexpr (HasBg) { va += -vTbg * tFinal / oneMinus; }
-                if (raw>ALPHA_UPPER_BOUND) { va=0.0f; weight=0.0f; }
-                vo=va*weight;
-                const float vw=-opacity*vo;
-                vx=(c0*dx+c1*dy)*vw;
-                vy=(c1*dx+c2*dy)*vw;
-                vc0=0.5f*vw*dx*dx; vc1=vw*dx*dy; vc2=0.5f*vw*dy*dy;
-                cumR+=at*cr; cumG+=at*cg; cumB+=at*cb; cumD+=at*cd;
-            }
-        }
-        if (!asc_any(static_cast<int>(valid))) { continue; }
-        ScatterGradient(vGsGm,static_cast<int>(gsIdsBatchUb[t]),lane,
-                        vx,vy,vc0,vc1,vc2,vo,r,g,b,d);
+        s.valid = batchStart + t <= last;
+        if (!asc_any(static_cast<int>(s.valid))) { continue; }
+        const int row = t * GS_ATTR_STRIDE;
+        s.vx=0;s.vy=0;s.vc0=0;s.vc1=0;s.vc2=0;s.vo=0;s.r=0;s.g=0;s.b=0;s.d=0;
+        if (s.valid) { BWD_PIX_CALL(s, px, py, vr, vg, vb, vd, row, gsAttrBatchUb); }
+        if (!asc_any(static_cast<int>(s.valid))) { continue; }
+        ScatterGradient(vGsGm, static_cast<int>(gsIdsBatchUb[t]), lane,
+                        s.vx, s.vy, s.vc0, s.vc1, s.vc2, s.vo,
+                        s.r, s.g, s.b, s.d);
     }
-    lastCumsumUb[tid]=sum; errorUb[tid]=error;
-    cumsumBufUb[CUMSUM_R_OFFSET+tid]=cumR;
-    cumsumBufUb[CUMSUM_G_OFFSET+tid]=cumG;
-    cumsumBufUb[CUMSUM_B_OFFSET+tid]=cumB;
-    cumsumBufUb[CUMSUM_D_OFFSET+tid]=cumD;
+    WriteBackPixel(s, tid, lastCumsumUb, errorUb, cumsumBufUb);
     asc_threadfence_block();
     asc_syncthreads();
 }

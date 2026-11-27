@@ -8,6 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 import math
+import os
 from typing import Dict, Optional, Tuple, NamedTuple
 
 import torch
@@ -58,6 +59,15 @@ class ConfigData(NamedTuple):
 def assert_check(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def _inv4x4(mat):
+    if mat.shape[-2:] == (4, 4) and os.environ.get("GS_INV4X4_PYTHON", "0") != "1":
+        import numpy as np
+        mat_cpu = mat.detach().cpu().numpy()
+        inv = torch.from_numpy(np.linalg.inv(mat_cpu.copy()))
+        return inv.to(mat.device, mat.dtype)
+    return torch.linalg.inv(mat)
 
 
 def _validate_inputs(
@@ -191,7 +201,7 @@ class Rasterizer:
 
         ### wrapper camera-relatived data
         camtoworlds, ks, render_mode = cam
-        w2c = torch.linalg.inv(camtoworlds)
+        w2c = _inv4x4(camtoworlds)
         camera = CameraData(
             width=size[0],
             height=size[1],
@@ -272,7 +282,7 @@ class Rasterizer:
             return (torch.cat(rendered, dim=0), torch.cat(depths_per_view, dim=0),
                 alphas, meta)
 
-        camtoworlds = torch.inverse(viewmats)
+        camtoworlds = _inv4x4(viewmats)
         rays_d = sh_preprocess(camtoworlds, means)   # [B, 3, N] unit dirs
         k = (sh_degree + 1) ** 2
         colors = spherical_harmonics(

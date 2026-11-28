@@ -125,6 +125,29 @@ class Rasterizer:
         self._geometry_key = None
         self.rast_ctx = RastCtx()
 
+    @staticmethod
+    def _gs_to_channel_first(gs: GaussianData) -> GaussianData:
+        """Convert GaussianData from N-first to the internal channel-first layout.
+
+        N-first:       means/quats/scales [N,D], sh [N,K,3]
+        channel-first: means/quats/scales [D,N], sh [K,3,N]
+        opacities are layout independent ([N] in both modes).
+        """
+        features_dc = gs.features_dc
+        features_sh = gs.features_sh
+        if features_dc is not None and features_dc.dim() == 3:
+            features_dc = features_dc.permute(1, 2, 0).contiguous()
+        if features_sh is not None and features_sh.dim() == 3:
+            features_sh = features_sh.permute(1, 2, 0).contiguous()
+        return GaussianData(
+            means=gs.means.transpose(0, 1).contiguous(),
+            quats=gs.quats.transpose(0, 1).contiguous(),
+            scales=gs.scales.transpose(0, 1).contiguous(),
+            opacities=gs.opacities,
+            features_dc=features_dc,
+            features_sh=features_sh,
+        )
+
     def tile2image(self, rendered_image, height, width):
         ts = self.tile_size
         nh = self.tilenum_height
@@ -158,6 +181,13 @@ class Rasterizer:
         camera: CameraData,
         config: ConfigData = ConfigData()
     ) -> Tuple[Tensor, Tensor, Optional[Tensor], Dict]:
+        # Normalise N-first input once at the public enhance-API boundary.
+        # ConfigData is an immutable NamedTuple; _replace returns a new instance,
+        # so the caller's config is unchanged and every call converts independently.
+        if not config.channel_first:
+            gs = self._gs_to_channel_first(gs)
+            config = config._replace(channel_first=True)
+
         width, height = camera.width, camera.height
         device = gs.means.device
         tile_size = config.tile_size
@@ -187,16 +217,23 @@ class Rasterizer:
         camera_model: str = "pinhole",
     ) -> Tuple[Tensor, Tensor, Dict]:
         ### wrapper gaussian-relatived data
+        # No layout conversion here: pass the flag to `rasterize`, which owns the
+        # N-first -> channel-first conversion. dc/sh are split by input layout.
+        is_channel_first = splats.get("is_channel_first", False)
         colors = splats["sh"]
-        features_dc = colors[..., :1, :, :].contiguous()
-        features_sh = colors[..., 1:, :, :].contiguous()
+        if is_channel_first:
+            features_dc = colors[:1].contiguous()           # [1, 3, N]
+            features_sh = colors[1:].contiguous()           # [K-1, 3, N]
+        else:
+            features_dc = colors[:, :1, :].contiguous()     # [N, 1, 3]
+            features_sh = colors[:, 1:, :].contiguous()     # [N, K-1, 3]
         gs = GaussianData(
-            means=splats["means"],                          # [3, N]
-            quats=splats["quats"],                          # [4, N]
-            scales=splats["scales"],                        # [3, N]
+            means=splats["means"],                          # [3, N] or [N, 3]
+            quats=splats["quats"],                          # [4, N] or [N, 4]
+            scales=splats["scales"],                        # [3, N] or [N, 3]
             opacities=splats["opacities"],                  # [N]
-            features_dc=features_dc,                        # [1, 3, N]
-            features_sh=features_sh                         # [K-1, 3, N]
+            features_dc=features_dc,
+            features_sh=features_sh,
         )
 
         ### wrapper camera-relatived data
@@ -217,7 +254,7 @@ class Rasterizer:
             render_mode=render_mode,
             scale_log=True,
             opacity_logit=True,
-            channel_first=splats.get("is_channel_first", True),
+            channel_first=is_channel_first,
             bg_color=_resolve_bg_color(splats)
         )
 
@@ -233,6 +270,7 @@ class Rasterizer:
         config: ConfigData,
         rast_ctx: Optional[RastCtx] = None
     ) -> Tuple[Tensor, Tensor, Optional[Tensor], Dict]:
+        # Internal pipeline is channel-first only; `rasterize` normalises input.
         means, quats, scales, opacities = gs.means, gs.quats, gs.scales, gs.opacities
         scales = torch.exp(scales) if config.scale_log else scales
         opacities = torch.sigmoid(opacities) if config.opacity_logit else opacities
@@ -312,7 +350,8 @@ class Rasterizer:
         )
 
         # apply color exposure
-        if camera.exposure is not None:
+        color_exposure_enable = (rast_ctx is not None and rast_ctx.features.color_exposure_enable)
+        if color_exposure_enable and camera.exposure is not None:
             exposure = camera.exposure
             if exposure.shape[-2:] == (4, 3):
                 exposure = exposure.transpose(-2, -1)

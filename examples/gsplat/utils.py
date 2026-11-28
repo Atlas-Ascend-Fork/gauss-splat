@@ -21,8 +21,22 @@ def _transpose_if_channel_first(array: np.ndarray, channels: int) -> np.ndarray:
     return array
 
 
-def _splats_to_n_first(numpy_data: dict) -> dict:
-    """Accept both N-first [N,D]/[N,K,3] and channel-first [D,N]/[K,3,N]."""
+def _splats_to_n_first(numpy_data: dict, is_channel_first=None) -> dict:
+    """Convert splats to N-first [N,D]/[N,K,3] for PLY export.
+
+    ``is_channel_first`` is authoritative when provided; when it is None the
+    layout is inferred from tensor shapes (legacy behaviour, ambiguous for
+    N == 3/4).
+    """
+    if is_channel_first is True:
+        numpy_data["means"] = numpy_data["means"].T
+        numpy_data["scales"] = numpy_data["scales"].T
+        numpy_data["quats"] = numpy_data["quats"].T
+        numpy_data["sh"] = numpy_data["sh"].transpose(2, 0, 1)
+        return numpy_data
+    if is_channel_first is False:
+        return numpy_data
+
     numpy_data["means"] = _transpose_if_channel_first(numpy_data["means"], 3)
     numpy_data["scales"] = _transpose_if_channel_first(numpy_data["scales"], 3)
     numpy_data["quats"] = _transpose_if_channel_first(numpy_data["quats"], 4)
@@ -110,15 +124,17 @@ def _write_ply(path: str, numpy_data: dict, sh0: np.ndarray,
             _write_vertex(handle, i, numpy_data, sh0, sh_n, color_values)
 
 
-def save_ply(splats: torch.nn.ParameterDict, dir: str, colors: torch.Tensor = None):
+def save_ply(splats: torch.nn.ParameterDict, path: str, colors: torch.Tensor = None,
+             is_channel_first=None):
     warnings.warn(
         "save_ply() is deprecated and may be removed in a future release. "
         "Please use the new export_splats() function instead.",
         DeprecationWarning,
         stacklevel=2,
     )
-    print(f"Saving ply to {dir}")
-    numpy_data = _splats_to_n_first({k: v.detach().cpu().numpy() for k, v in splats.items()})
+    print(f"Saving ply to {path}")
+    numpy_data = _splats_to_n_first(
+        {k: v.detach().cpu().numpy() for k, v in splats.items()}, is_channel_first)
 
     num_points = numpy_data["means"].shape[0]
     sh0, sh_n = _split_sh_coeffs(numpy_data["sh"], num_points)
@@ -132,4 +148,4 @@ def save_ply(splats: torch.nn.ParameterDict, dir: str, colors: torch.Tensor = No
     sh0 = sh0[~invalid_mask]
     sh_n = sh_n[~invalid_mask]
 
-    _write_ply(dir, numpy_data, sh0, sh_n, colors)
+    _write_ply(path, numpy_data, sh0, sh_n, colors)

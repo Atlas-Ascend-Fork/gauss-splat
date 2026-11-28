@@ -81,6 +81,8 @@ python quick_start.py
 
 ### 完整渲染流程（使用Rasterizer）
 
+> 提示：推荐先将高斯参数组织为 channel-first（如下例中的 `is_channel_first=True`），可避免算子内部的布局转换，性能更好。
+
 ```python
 import torch
 import gauss_splat
@@ -96,6 +98,7 @@ splats = {
     "scales": torch.randn(3, N, device='npu:0'),          # 缩放（log空间）
     "opacities": torch.randn(N, device='npu:0'),          # 不透明度（logits）
     "sh": torch.randn(16, 3, N, device='npu:0'),          # 0至3阶球谐系数
+    "is_channel_first": True,                             # channel-first（推荐，省去内部转换）
 }
 
 # 3. 准备相机参数

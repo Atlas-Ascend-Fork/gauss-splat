@@ -8,10 +8,12 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 import torch
-from gauss_splat.gsplat_c import (
-    color_exposure_fwd,
-    color_exposure_bwd,
-)
+
+try:
+    from gauss_splat.gsplat_c import color_exposure_fwd, color_exposure_bwd
+except ImportError:
+    color_exposure_fwd = None
+    color_exposure_bwd = None
 
 
 class ColorExposure(torch.autograd.Function):
@@ -26,6 +28,8 @@ class ColorExposure(torch.autograd.Function):
                 height: int,
                 clamp: bool = True,
                 calc_exp_grad: bool = True):
+        if color_exposure_fwd is None:
+            raise RuntimeError("color exposure is not supported.")
         if colors.dim() != 4 or means2d.dim() != 4:
             raise ValueError("colors and means2d need [B, C, D, N] dimensions.")
         colors_out, grid_index, grid_weight = color_exposure_fwd(
@@ -37,6 +41,8 @@ class ColorExposure(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, *v_args):
+        if color_exposure_bwd is None:
+            raise RuntimeError("color exposure is not supported.")
         v_colors_in = v_args[0].contiguous()
         colors, exposure, cnt, grid_index, grid_weight = ctx.saved_tensors
         v_colors_out, v_exposure = color_exposure_bwd(

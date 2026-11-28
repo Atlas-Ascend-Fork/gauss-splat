@@ -86,6 +86,7 @@ def gen_splats(n_gs, sh_degree, device='npu'):
         "scales": scales.to(device),
         "opacities": opacities.to(device),
         "sh": sh.to(device),
+        "is_channel_first": True,
     }
 
 

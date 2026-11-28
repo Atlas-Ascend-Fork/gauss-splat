@@ -33,7 +33,18 @@ python train.py --data_dir data/360_v2/garden --result_dir results/garden --ckpt
 
 # 配置 densify 高斯球数量上限
 python train.py --data_dir data/360_v2/garden --result_dir results/garden --densify --max-n-gaussian 1000000
+
+# 切换到 channel-first 布局（默认是 N-first）
+python train.py --data_dir data/360_v2/garden --result_dir results/garden --is-channel-first
 ```
+
+### 参数布局开关
+
+训练脚本默认使用 **N-first** 布局（`is_channel_first=False`）：`means/quats/scales` 为 `[N,D]`，`sh` 为 `[N,K,3]`。如需 channel-first（`[D,N]`、`[K,3,N]`），追加 `--is-channel-first`。
+
+如果数据本身已经是 channel-first，建议直接开启 `--is-channel-first`，避免算子内部做布局转换，性能更好。
+
+Checkpoint 始终以 N-first 规范格式保存，加载时按当前开关自动转换；PLY 导出也始终写 N-first。
 
 ### `max_n_gaussian` 作用说明
 

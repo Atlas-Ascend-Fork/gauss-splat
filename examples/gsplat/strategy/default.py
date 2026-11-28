@@ -113,6 +113,15 @@ class DefaultStrategy(Strategy):
     revised_opacity: bool = False
     verbose: bool = False
     key_for_gradient: Literal["means2d", "gradient_2dgs"] = "means2d"
+    _is_channel_first: bool = False
+
+    def set_channel_first(self, is_channel_first: bool):
+        """Select the GS parameter layout used by densification.
+
+        Channel-first uses [D,N] for means/quats/scales and [K,3,N] for sh;
+        N-first uses [N,D] and [N,K,3]. Only the N dimension handling changes.
+        """
+        self._is_channel_first = bool(is_channel_first)
 
     def initialize_state(self, scene_scale: float = 1.0) -> Dict[str, Any]:
         """Initialize and return the running state for this strategy.
@@ -179,7 +188,7 @@ class DefaultStrategy(Strategy):
         packed: bool = False,
     ):
         """Callback function to be executed after the `loss.backward()` call."""
-        before = len(params["means"])
+        before = self._get_n(params["means"])
         if step >= self.refine_stop_iter:
             return density_stats(before, before)
 
@@ -199,7 +208,7 @@ class DefaultStrategy(Strategy):
             if self.verbose:
                 print(
                     f"Step {step}: {n_dupli} GSs duplicated, {n_split} GSs split. "
-                    f"Now having {len(params['means'])} GSs."
+                    f"Now having {self._get_n(params['means'])} GSs."
                 )
 
             # prune GSs
@@ -207,17 +216,19 @@ class DefaultStrategy(Strategy):
             if self.verbose:
                 print(
                     f"Step {step}: {n_prune} GSs pruned. "
-                    f"Now having {len(params['means'])} GSs."
+                    f"Now having {self._get_n(params['means'])} GSs."
                 )
 
             # hard cap: if over cap_max, remove the lowest-opacity excess GSs
-            if self.cap_max > 0 and len(params["means"]) > self.cap_max:
-                n_capped = len(params["means"]) - self.cap_max
+            n_gs = self._get_n(params["means"])
+            if self.cap_max > 0 and n_gs > self.cap_max:
+                n_capped = n_gs - self.cap_max
                 opa = torch.sigmoid(params["opacities"].flatten())
                 _, low_ids = torch.topk(opa, k=n_capped, largest=False)
                 cap_mask = torch.zeros(len(opa), dtype=torch.bool, device=opa.device)
                 cap_mask[low_ids] = True
-                remove(params=params, optimizers=optimizers, state=state, mask=cap_mask)
+                remove(params=params, optimizers=optimizers, state=state, mask=cap_mask,
+                       is_channel_first=self._is_channel_first)
                 if self.verbose:
                     print(f"Step {step}: capped to {self.cap_max} GSs (removed {n_capped}).")
 
@@ -237,7 +248,7 @@ class DefaultStrategy(Strategy):
                 value=self.reset_value,
             )
 
-        after = len(params["means"])
+        after = self._get_n(params["means"])
         return density_stats(
             before,
             after,
@@ -247,6 +258,19 @@ class DefaultStrategy(Strategy):
             capped=n_capped,
             refined=refined,
         )
+
+    def _get_n(self, tensor) -> int:
+        """Number of Gaussians for the current layout."""
+        if self._is_channel_first and tensor.dim() == 2 and tensor.shape[0] == 3:
+            return tensor.shape[1]
+        if self._is_channel_first and tensor.dim() == 3 and tensor.shape[1] == 3:
+            return tensor.shape[-1]
+        return tensor.shape[0]
+
+    def _scale_max(self, scales):
+        """Per-Gaussian max 3D scale along the value axis."""
+        dim = 0 if self._is_channel_first else -1
+        return torch.exp(scales).max(dim=dim).values
 
     def _update_state(
         self,
@@ -295,7 +319,7 @@ class DefaultStrategy(Strategy):
         grads[..., 1] *= info["height"] / 2.0 * info["n_cameras"]
 
         # initialize state on the first run
-        n_gaussian = len(list(params.values())[0])
+        n_gaussian = self._get_n(params["means"])
 
         if state["grad2d"] is None:
             state["grad2d"] = torch.zeros(n_gaussian, device=grads.device)
@@ -367,7 +391,7 @@ class DefaultStrategy(Strategy):
 
         is_grad_high = grads > self.grow_grad2d
         is_small = (
-            torch.exp(params["scales"]).max(dim=-1).values
+            self._scale_max(params["scales"])
             <= self.grow_scale3d * state["scene_scale"]
         )
         is_dupli = is_grad_high & is_small
@@ -381,7 +405,8 @@ class DefaultStrategy(Strategy):
 
         # first duplicate
         if n_dupli > 0:
-            duplicate(params=params, optimizers=optimizers, state=state, mask=is_dupli)
+            duplicate(params=params, optimizers=optimizers, state=state, mask=is_dupli,
+                      is_channel_first=self._is_channel_first)
 
         # new GSs added by duplication will not be split
         is_split = torch.cat(
@@ -399,6 +424,7 @@ class DefaultStrategy(Strategy):
                 state=state,
                 mask=is_split,
                 revised_opacity=self.revised_opacity,
+                is_channel_first=self._is_channel_first,
             )
         return n_dupli, n_split
 
@@ -418,7 +444,7 @@ class DefaultStrategy(Strategy):
             is_prune = is_prune | (state["radii"] > self.prune_scale2d)
         if step > self.reset_every:
             is_too_big = (
-                torch.exp(params["scales"]).max(dim=-1).values
+                self._scale_max(params["scales"])
                 > self.prune_scale3d * state["scene_scale"]
             )
             if step < self.refine_scale2d_stop_iter:
@@ -428,6 +454,7 @@ class DefaultStrategy(Strategy):
 
         n_prune = is_prune.sum().item()
         if n_prune > 0:
-            remove(params=params, optimizers=optimizers, state=state, mask=is_prune)
+            remove(params=params, optimizers=optimizers, state=state, mask=is_prune,
+                   is_channel_first=self._is_channel_first)
 
         return n_prune

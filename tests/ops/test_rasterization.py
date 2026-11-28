@@ -52,6 +52,7 @@ def _gen_splats(n_gs, sh_degree, device='npu'):
         "scales": scales.to(device),
         "opacities": opacities.to(device),
         "sh": sh.to(device),
+        "is_channel_first": True,
     }
 
 
@@ -368,6 +369,7 @@ class TestRasterizerValidation(TestCase):
             "scales": torch.zeros(3, 10, device='npu'),
             "opacities": torch.zeros(10, device='npu'),
             "sh": torch.zeros(1, 3, 10, device='npu'),
+            "is_channel_first": True,
         }
         cam = _gen_camera(32, 32)
         with self.assertRaises(ValueError):
@@ -384,6 +386,7 @@ class TestRasterizerValidation(TestCase):
             "scales": torch.zeros(3, 10, device='npu'),
             "opacities": torch.zeros(10, device='npu'),
             "sh": torch.zeros(1, 3, 10, device='npu'),
+            "is_channel_first": True,
         }
         cam = _gen_camera(32, 32)
         with self.assertRaises(ValueError):
@@ -518,6 +521,7 @@ class TestRasterizerMinimalGaussians(TestCase):
             "scales": scales,
             "opacities": opacities,
             "sh": torch.zeros(1, 3, 1, device='npu'),
+            "is_channel_first": True,
         }
         cam = _gen_camera(32, 32)
         render_colors, render_depths, meta = rasterizer.rasterization(

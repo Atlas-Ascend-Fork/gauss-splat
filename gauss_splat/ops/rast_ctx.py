@@ -11,6 +11,11 @@ class Features:
         self.proj_backward_culling = getattr(_C, "use_arch35", False)
         self.pose_refine = getattr(_C, "use_arch35", False)
         self.covars_fused = getattr(_C, "sf_covars_fused", False)
+        try:
+            from _C import (color_exposure_fwd, color_exposure_bwd)
+            self.color_exposure_enable = True
+        except ImportError:
+            self.color_exposure_enable = False
 
 
 class RastCtx:

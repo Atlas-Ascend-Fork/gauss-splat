@@ -166,7 +166,7 @@ class MultiCameraAutogradTest(unittest.TestCase):
         views = torch.eye(4).repeat(2, 1, 1)
         views[1, 0, 3] = 1
         camera = ns["CameraData"](2, 2, views, torch.eye(3).repeat(2, 1, 1))
-        config = ns["ConfigData"](sh_degree=0)
+        config = ns["ConfigData"](sh_degree=0, channel_first=True)
         originals = []
 
         class Renderer:

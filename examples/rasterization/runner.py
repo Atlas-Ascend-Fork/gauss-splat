@@ -55,15 +55,21 @@ def _to_CN2(t):
     return t
 
 
-def _to_gaussian_data(splats: dict) -> GaussianData:
+def _to_gaussian_data(splats: dict, is_channel_first: bool = False) -> GaussianData:
     colors = splats["sh"]
+    if is_channel_first:
+        features_dc = colors[:1].contiguous()
+        features_sh = colors[1:].contiguous()
+    else:
+        features_dc = colors[:, :1, :].contiguous()
+        features_sh = colors[:, 1:, :].contiguous()
     return GaussianData(
         means=splats["means"],
         quats=splats["quats"],
-        scales=splats["scales"],  
+        scales=splats["scales"],
         opacities=splats["opacities"],
-        features_dc=colors[:1].contiguous(),
-        features_sh=colors[1:].contiguous()
+        features_dc=features_dc,
+        features_sh=features_sh,
     )
 
 
@@ -78,10 +84,7 @@ class Rasterizer:
         camera: CameraData,
         config: ConfigData
     ) -> Tuple:
-        if not self.cfg.is_channel_first:
-            from rasterization.utils import to_channel_first
-            splats = to_channel_first(splats)
-        gs = _to_gaussian_data(splats)
+        gs = _to_gaussian_data(splats, self.cfg.is_channel_first)
         return self._impl.rasterize(
             gs, camera, config
         )
@@ -103,10 +106,6 @@ class Runner:
 
         # Densify Strategy
         self.strategy_name = "adc" if is_arch35() else "default"
-        if cfg.is_channel_first and not is_arch35() and cfg.densify:
-            print("[layout] is_channel_first requested but DefaultStrategy only "
-                  "supports N-first; falling back to N-first.", flush=True)
-            cfg.is_channel_first = False
         self.strategy = None
 
         # Where to dump results.
@@ -204,6 +203,7 @@ class Runner:
                     reset_every=cfg.reset_every,
                     verbose=(world_rank == 0),
                 )
+                self.strategy.set_channel_first(cfg.is_channel_first)
                 if cfg.max_n_gaussian > 0:
                     self.strategy.cap_max = cfg.max_n_gaussian
                 self.strategy.check_sanity(self.splats, self.optimizers)
@@ -506,7 +506,8 @@ class Runner:
                 step in [i - 1 for i in cfg.ply_steps] or step == max_steps - 1
             ) and cfg.save_ply:
                 rgb = None
-                save_ply(self.splats, f"{self.ply_dir}/point_cloud_{step}.ply", rgb)
+                save_ply(self.splats, f"{self.ply_dir}/point_cloud_{step}.ply", rgb,
+                         is_channel_first=cfg.is_channel_first)
 
             # optimize
             for optimizer in self.optimizers.values():

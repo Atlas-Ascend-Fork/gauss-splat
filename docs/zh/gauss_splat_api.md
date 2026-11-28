@@ -31,7 +31,8 @@
 - `size` (Tuple): 图像尺寸 (width, height)
 - `tile_size` (int): 分块大小，默认为32
 - `active_sh_degree` (int): 激活的球谐函数阶数
-- `splats` (dict): 高斯点云字典，包含:
+- `splats` (dict): 高斯点云字典。下列形状为 **channel-first**（`is_channel_first=True`）；默认 N-first 时依次为 `(N, 3)`、`(N, 4)`、`(N, 3)`、`(N,)`、`(N, K, 3)`。包含:
+  - `is_channel_first` (bool, optional): 参数布局开关。`True` 为 channel-first，`False`（默认）为 N-first；**建议显式传入**，避免布局歧义。如追求性能，建议外部调用方自行将数据转换为 channel-first 并传 `True`，避免算子内部每次调用做布局转换
   - `means` (Tensor): 高斯中心位置，形状 (3, N)
   - `quats` (Tensor): 四元数表示旋转，形状 (4, N)
   - `scales` (Tensor): 缩放参数（log空间），形状 (3, N)
@@ -392,7 +393,7 @@ lb_sched_tensor = gauss_splat.get_render_schedule_cpp(
 - **四元数**: 用于表示旋转的四元数 (w, x, y, z)
 - **缩放**: log空间的缩放因子，渲染时通过`torch.exp(scales)`转换
 - **不透明度**: logit形式，渲染时通过`torch.sigmoid(opacities)`转换
-- **球谐系数**: Rasterizer 的 `splats["sh"]` 形状为 (K, 3, N)，K为系数数量；独立的 `spherical_harmonics` 接口使用 `dirs` (B, 3, N)、`coeffs` (B, K, 3, N) 布局。
+- **球谐系数**: 当 `splats["is_channel_first"]=True` 时，Rasterizer 的 `splats["sh"]` 形状为 (K, 3, N)；默认 N-first 时为 (N, K, 3)。K 为系数数量。独立的 `spherical_harmonics` 接口固定使用 `dirs` (B, 3, N)、`coeffs` (B, K, 3, N) 布局。
 
 ### 相机模型
 
@@ -427,6 +428,7 @@ splats = {
     "scales": torch.randn(3, N, device='npu:0'),          # 缩放（log空间）
     "opacities": torch.randn(N, device='npu:0'),          # 不透明度（logits）
     "sh": torch.randn(16, 3, N, device='npu:0'),          # 0至3阶球谐系数
+    "is_channel_first": True,                             # channel-first（推荐，省去内部转换）
 }
 
 # 3. 准备相机参数

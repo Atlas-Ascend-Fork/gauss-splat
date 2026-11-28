@@ -103,7 +103,7 @@ def create_splats_with_optimizers(
     device: str = "npu",
     world_rank: int = 0,
     world_size: int = 1,
-    is_channel_first: bool = True,
+    is_channel_first: bool = False,
 ) -> Tuple[torch.nn.ParameterDict, Dict[str, torch.optim.Optimizer]]:
     if init_type == "sfm":
         points = torch.from_numpy(parser.points).float()

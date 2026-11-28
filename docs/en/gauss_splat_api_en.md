@@ -31,7 +31,8 @@ Renders 3D Gaussian point clouds to 2D images.
 - `size` (Tuple): Image size (width, height)
 - `tile_size` (int): Tile size, default is 32
 - `active_sh_degree` (int): Active spherical harmonics degree
-- `splats` (dict): Gaussian point cloud dictionary, containing:
+- `splats` (dict): Gaussian point cloud dictionary. The shapes below are **channel-first** (`is_channel_first=True`); with the default N-first layout they are `(N, 3)`, `(N, 4)`, `(N, 3)`, `(N,)`, `(N, K, 3)` respectively. Containing:
+  - `is_channel_first` (bool, optional): parameter layout switch. `True` means channel-first, `False` (default) means N-first; **pass it explicitly** to avoid layout ambiguity. For better performance, external callers are advised to convert their data to channel-first themselves and pass `True`, avoiding the in-operator layout conversion on every call
   - `means` (Tensor): Gaussian center positions, shape (3, N)
   - `quats` (Tensor): Quaternions for rotation, shape (4, N)
   - `scales` (Tensor): Scale parameters (log space), shape (3, N)
@@ -394,7 +395,7 @@ Operator inputs generally reside on NPU. `get_render_schedule_cpp` is an excepti
 - **Quaternions**: Quaternions used to represent rotation (w, x, y, z)
 - **Scales**: Scale factors in log space, converted through `torch.exp(scales)` during rendering
 - **Opacities**: In logit form, converted through `torch.sigmoid(opacities)` during rendering
-- **Spherical harmonics coefficients**: Rasterizer uses `splats["sh"]` with shape (K, 3, N), where K is the number of coefficients. The separate `spherical_harmonics` API uses `dirs` (B, 3, N) and `coeffs` (B, K, 3, N).
+- **Spherical harmonics coefficients**: When `splats["is_channel_first"]=True`, Rasterizer uses `splats["sh"]` with shape (K, 3, N); with the default N-first layout the shape is (N, K, 3). K is the number of coefficients. The separate `spherical_harmonics` API always uses `dirs` (B, 3, N) and `coeffs` (B, K, 3, N).
 
 ### Camera Model
 
@@ -429,6 +430,7 @@ splats = {
     "scales": torch.randn(3, N, device='npu:0'),          # Scales (log space)
     "opacities": torch.randn(N, device='npu:0'),          # Opacities (logits)
     "sh": torch.randn(16, 3, N, device='npu:0'),          # SH coefficients for degrees 0 to 3
+    "is_channel_first": True,                             # channel-first (recommended, avoids conversion)
 }
 
 # 3. Prepare camera parameters

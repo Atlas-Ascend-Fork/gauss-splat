@@ -82,6 +82,8 @@ Do not run the script directly from the project root. Otherwise, Python imports 
 
 ### Complete Rendering Pipeline (Using Rasterizer)
 
+> Tip: prepare Gaussian parameters in channel-first layout first (see `is_channel_first=True` below) to avoid the in-operator layout conversion and get better performance.
+
 ```python
 import torch
 import gauss_splat
@@ -97,6 +99,7 @@ splats = {
     "scales": torch.randn(3, N, device='npu:0'),          # Scales (log space)
     "opacities": torch.randn(N, device='npu:0'),          # Opacities (logits)
     "sh": torch.randn(16, 3, N, device='npu:0'),          # SH coefficients for degrees 0 to 3
+    "is_channel_first": True,                             # channel-first (recommended, avoids conversion)
 }
 
 # 3. Prepare camera parameters
